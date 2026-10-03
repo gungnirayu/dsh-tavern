@@ -30,7 +30,17 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream https://github.com/flizzywine/dsh-tavern.git
           git fetch upstream main
-          git merge upstream/main --no-edit
+          if ! git merge upstream/main --no-edit; then
+            conflicts=$(git diff --name-only --diff-filter=U)
+            # Each fork generates its own manifest; never resolve source conflicts automatically.
+            if [ "$conflicts" != dsh-tavern-runtime.json ]; then
+              echo '::error::Upstream source conflict requires manual resolution'
+              exit 1
+            fi
+            git checkout --ours dsh-tavern-runtime.json
+            git add dsh-tavern-runtime.json
+            git commit --no-edit
+          fi
           # Stop on conflict; never force-push or discard Docker files.
           git fetch origin main
           git rebase origin/main
