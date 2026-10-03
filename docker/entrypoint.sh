@@ -23,7 +23,7 @@ elif [[ $(cat /data/.docker-image-revision) != "$revision" ]]; then
         cp -a "$seed/$entry" "/data/$entry"
     done
     rm -f /data/logs/tavern.pid.json
-    node "$app" install --host cli
+    CI=true node "$app" install --host cli
     cp "$seed/.docker-image-revision" /data/.docker-image-revision
 fi
 mkdir -p /data/logs
