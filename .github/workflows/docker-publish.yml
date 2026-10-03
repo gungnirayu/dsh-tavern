@@ -1,0 +1,106 @@
+name: Docker sync, test and publish
+on:
+  push:
+    branches: [main]
+    paths-ignore: [dsh-tavern-runtime.json]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  packages: write
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+jobs:
+  docker:
+    # Never publish to the upstream repository.
+    if: github.repository == 'gungnirayu/dsh-tavern'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Sync upstream (scheduled/manual runs)
+        if: github.event_name != 'push'
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/flizzywine/dsh-tavern.git
+          git fetch upstream main
+          git merge upstream/main --no-edit
+          # Stop on conflict; never force-push or discard Docker files.
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+      - name: Select exact source revision
+        id: source
+        shell: bash
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tavern:test
+          platforms: linux/amd64
+          build-args: SOURCE_COMMIT=${{ steps.source.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Test empty bind mount, HTTP, persistence and shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tavern-data"
+          cleanup() { docker logs tavern-test || true; docker rm -f tavern-test || true; }
+          trap cleanup EXIT
+          docker run -d --name tavern-test -p 127.0.0.1:3080:3080 \
+            -v "$RUNNER_TEMP/tavern-data:/data" tavern:test
+          ready() {
+            for attempt in $(seq 1 90); do
+              state=$(docker inspect -f '{{.State.Health.Status}}' tavern-test)
+              if [ "$state" = healthy ]; then return 0; fi
+              if [ "$(docker inspect -f '{{.State.Running}}' tavern-test)" != true ]; then return 1; fi
+              sleep 2
+            done
+            return 1
+          }
+          ready
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/)
+          [[ "$code" = 200 || "$code" = 401 ]]
+          docker exec tavern-test sh -c 'echo persisted > /data/profile-data/docker-smoke-marker'
+          docker stop -t 30 tavern-test
+          [[ $(docker inspect -f '{{.State.ExitCode}}' tavern-test) != 137 ]]
+          docker start tavern-test
+          ready
+          docker exec tavern-test test -f /data/profile-data/docker-smoke-marker
+          # Force the upgrade path against a populated mount.
+          docker stop -t 30 tavern-test
+          sudo sh -c 'echo smoke-old > "$1/.docker-image-revision"' sh "$RUNNER_TEMP/tavern-data"
+          docker start tavern-test
+          ready
+          docker exec tavern-test test -f /data/profile-data/docker-smoke-marker
+          docker exec tavern-test sh -c 'test "$(cat /data/.docker-image-revision)" != smoke-old'
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested image
+        shell: bash
+        env:
+          REVISION: ${{ steps.source.outputs.sha }}
+          SHORT: ${{ steps.source.outputs.short }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker tag tavern:test "$image:sha-$SHORT"
+          docker tag tavern:test "$image:$REVISION"
+          docker tag tavern:test "$image:latest"
+          docker push "$image:sha-$SHORT"
+          docker push "$image:$REVISION"
+          docker push "$image:latest"

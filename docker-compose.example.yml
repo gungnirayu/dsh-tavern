@@ -1,0 +1,12 @@
+services:
+  dsh-tavern:
+    image: ghcr.io/gungnirayu/dsh-tavern:latest
+    container_name: dsh-tavern
+    restart: unless-stopped
+    ports:
+      - "3080:3080"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - /Volume1/docker/dsh-tavern/data:/data
+    stop_grace_period: 30s
