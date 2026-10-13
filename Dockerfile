@@ -21,6 +21,8 @@ RUN test -n "$SOURCE_COMMIT" \
     && printf '%s\n' "$SOURCE_COMMIT" > /data/.docker-image-revision \
     && mkdir /opt/tavern-seed && cp -a /data/. /opt/tavern-seed/ \
     && rm -rf /data && mkdir /data
+# Leave the removed installation cwd before another RUN can recreate /data/apps.
+WORKDIR /
 COPY docker/public-url.mjs /usr/local/lib/tavern-public-url.mjs
 COPY docker/tavern-url /usr/local/bin/tavern-url
 COPY docker/entrypoint.sh /usr/local/bin/tavern-entrypoint

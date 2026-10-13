@@ -21,6 +21,7 @@
 | Tavern 其他 UUID、DSH UUID helpers、iframe SHA-256 | 已有 fallback / scoped polyfill | 核查后保留；不伪造 isSecureContext，不移除浏览器安全边界 |
 | sandbox="allow-scripts" 的人物卡请求 Origin:null | 原代理误拒绝只读资源 | 精确开放上游已公开的 GET 静态资源；session-resource/helper-history 必须有独立 cap 并由上游验证。公开资源补齐 CORS/CORP 响应头；POST 和一般 API 不适用例外 |
 | 浏览器 API / SSE URL 使用 location.origin | 正确使用外部地址 | 非 loopback Chromium 与实际 RPC 测试 |
+| 镜像删除安装根目录后仍在旧 WORKDIR 运行构建步骤 | 会重建空 apps 目录，阻止无挂载初始化 | 删除后切换到 / 再执行后续 RUN；独立浏览器容器覆盖无挂载启动 |
 | 原 status 输出内部 127.0.0.1 URL | 用户容易复制到错误 IP/端口 | 新增 tavern-url，启动输出与 status helper 显示 PUBLIC_URL，保留 token |
 | new URL(req.url, 'http://localhost') | 解析相对路径的基址，没有发起网络访问 | 保留 |
 | 系统剪贴板、原生应用/编辑器、用户第三方脚本 | 浏览器/宿主或外部脚本能力，不能等同于 NAS 自带功能 | 保留现有降级和手动操作；不宣称 HTTP 页面拥有 HTTPS 权限，不审计任意用户人物卡/插件代码 |

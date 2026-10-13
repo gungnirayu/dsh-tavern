@@ -95,6 +95,7 @@ jobs:
             -e DSH_TAVERN_PUBLIC_URL=http://tavern.test:3088 tavern:test
           for attempt in $(seq 1 90); do
             if [ "$(docker inspect -f '{{.State.Health.Status}}' tavern-browser)" = healthy ]; then break; fi
+            test "$(docker inspect -f '{{.State.Running}}' tavern-browser)" = true
             sleep 2
           done
           test "$(docker inspect -f '{{.State.Health.Status}}' tavern-browser)" = healthy
