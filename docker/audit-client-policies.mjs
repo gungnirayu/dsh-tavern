@@ -2,12 +2,20 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 // Explicitly reviewed active loopback facts/gates. New client-side policies require review.
 const approved = new Map([
+  ['dsh-mnemon/lib/client.js', [
+    'const DEFAULT_EMBEDDING_ENDPOINT = "http://localhost:11434";',
+    'function isLoopbackHostname(hostname) {',
+    'if (hostname === "localhost" || hostname === "[::1]") return true;',
+    'const hostname = globalThis.location?.hostname;',
+    'return typeof hostname === "string" && hostname !== "" && !isLoopbackHostname(hostname) || connection.isLoopback === false;',
+    'embeddingEndpoint: resolved.embedding?.endpoint?.trim() || "http://localhost:11434",',
+  ]],
   ['dsh-api-gateway/lib/client.js', ['isLoopback: this.connection.isLoopback']],
   ['dsh-client-connection/lib/client.js', ['function isLoopbackHostname(hostname) {', 'if (hostname === "localhost" || hostname === "[::1]") return true;', 'isLoopback: transport?.ownsHost === true || pageLocation === void 0 || isLoopbackHostname(pageLocation.hostname),']],
   // This hides "open server settings.yaml in a native editor", not browser settings reads/writes.
   ['dsh-client-ui-settings-general/lib/client.js', ['const documentController = ctx.remote.$host.isLoopback ? new SettingsDocumentStore(ctx, ctx.settingsScope.describe()) : void 0;']],
 ]);
-let clients = 0, gates = 0;
+let clients = 0, dependencies = 0, gates = 0;
 const failures = [];
 function walk(directory) {
   let entries;
@@ -16,14 +24,18 @@ function walk(directory) {
   for (const entry of entries) {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) walk(file);
-    else if (entry.isFile() && entry.name === 'client.js' && /\/node_modules\/@deepseek-ai\/[^/]+\/lib\/client\.js$/.test(file)) {
-      clients++;
-      const key = file.split('/@deepseek-ai/').at(-1);
+    else if (entry.isFile() && entry.name === 'client.js' && /\/node_modules\/(?:@[^/]+\/)?[^/]+\/lib\/client\.js$/.test(file)) {
       const source = readFileSync(file, 'utf8');
+      if (!source.includes('window.__ModuleLoader__.load(')) continue;
+      const fullKey = file.split('/node_modules/').at(-1);
+      const key = fullKey.startsWith('@deepseek-ai/') ? fullKey.slice('@deepseek-ai/'.length) : fullKey;
+      if (fullKey.startsWith('@deepseek-ai/')) clients++; else dependencies++;
       source.split('\n').forEach((line, index) => {
         const code = line.trim();
         if (!/\bisLoopback\b|\bisLoopbackHostname\b|\bisSecureContext\b|localhost|127\.0\.0\.1|location\??\.hostname/.test(code)) return;
-        if (code.startsWith('//') || code.startsWith('*') || code.startsWith('declaration:')) return;
+        if (/^(?:\/\/|\/\*|\*|declaration:)/.test(code)) return;
+        // Reviewed display-only endpoint examples, not an address policy.
+        if (['dsh-mnemon/lib/client.js', 'dsh-mnemon-source-memory-spaces/lib/client.js'].includes(key) && code.startsWith('"overview.providerEndpointPlaceholder":')) return;
         gates++;
         if (!approved.get(key)?.includes(code)) failures.push(`${key}:${index+1}: ${code.slice(0, 220)}`);
       });
@@ -45,7 +57,7 @@ function walkTavern(directory, relative = '') {
   catch (error) { if (error.code === 'ENOENT') return; throw error; }
   for (const entry of entries) {
     const file = path.join(directory, entry.name), key = relative + entry.name;
-    if (entry.isDirectory() && entry.name !== 'vendor') walkTavern(file, key + '/');
+    if (entry.isDirectory() && !['vendor', 'node_modules'].includes(entry.name)) walkTavern(file, key + '/');
     else if (entry.isFile() && /^client(?:-[^/]*)?\.js$/.test(entry.name)) {
       tavernClients++;
       readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
@@ -66,4 +78,4 @@ for (const directory of ['apps', 'runtime', 'profiles']) walk(path.join(root, di
 walkTavern(path.join(root, 'apps/dsh-tavern/tavern-plugin'));
 if (!clients) throw new Error('No installed DSH browser clients found for audit');
 if (failures.length) throw new Error(`Unreviewed browser address/security policy:\n${failures.join('\n')}`);
-console.log(`PASS: address-policy audit (${clients} DSH clients, ${tavernClients} Tavern clients, ${gates} DSH reviewed facts/native-only gates)`);
+console.log(`PASS: address-policy audit (${clients} DSH clients, ${tavernClients} Tavern clients, ${dependencies} installed dependency clients, ${gates} reviewed facts/defaults/routes)`);
