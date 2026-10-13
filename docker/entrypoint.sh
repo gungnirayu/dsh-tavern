@@ -1,5 +1,6 @@
 #!/bin/bash
 set -Eeuo pipefail
+: "${DSH_TAVERN_PUBLIC_URL:?Set DSH_TAVERN_PUBLIC_URL to your browser origin, e.g. http://192.168.1.10:3088}"
 seed=/opt/tavern-seed
 app=/data/apps/dsh-tavern/bin/dsh-tavern.mjs
 revision=$(cat "$seed/.docker-image-revision")
@@ -43,7 +44,7 @@ touch /data/logs/tavern.log
 tail -n 0 -F /data/logs/tavern.log &
 log_pid=$!
 node "$app" start
-socat TCP-LISTEN:3080,reuseaddr,fork,bind=0.0.0.0 "TCP:127.0.0.1:${DSH_TAVERN_PORT:-3081}" &
+node /usr/local/lib/tavern-proxy.mjs &
 proxy_pid=$!
 # A failed service must stop the container so restart: unless-stopped can recover.
 (

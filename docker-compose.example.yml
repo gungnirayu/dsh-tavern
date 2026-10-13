@@ -4,9 +4,10 @@ services:
     container_name: dsh-tavern
     restart: unless-stopped
     ports:
-      - "3080:3080"
+      - "3088:3080"
     environment:
       TZ: Asia/Shanghai
+      DSH_TAVERN_PUBLIC_URL: "http://192.168.1.10:3088"
     volumes:
       - /Volume1/docker/dsh-tavern/data:/data
     stop_grace_period: 30s

@@ -6,7 +6,7 @@ ENV DSH_TAVERN_HOST=cli DSH_TAVERN_RUNTIME_HOST=cli \
     pnpm_config_update_notifier=false
 ENV PATH="/data/tools/bin:/root/.local/bin:${PATH}"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git socat tini procps lsof python3 make g++ \
+    ca-certificates curl git tini procps lsof python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /data/apps/dsh-tavern
 COPY . .
@@ -20,6 +20,7 @@ RUN test -n "$SOURCE_COMMIT" \
     && mkdir /opt/tavern-seed && cp -a /data/. /opt/tavern-seed/ \
     && rm -rf /data && mkdir /data
 COPY docker/entrypoint.sh /usr/local/bin/tavern-entrypoint
+COPY docker/proxy.mjs /usr/local/lib/tavern-proxy.mjs
 COPY docker/healthcheck.mjs /usr/local/lib/tavern-healthcheck.mjs
 RUN chmod +x /usr/local/bin/tavern-entrypoint
 WORKDIR /data

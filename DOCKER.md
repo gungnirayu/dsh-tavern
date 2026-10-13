@@ -2,7 +2,7 @@
 
 本 fork 每 6 小时尝试合并 flizzywine/dsh-tavern 的 main，然后在同一条 Actions 流程中构建、启动测试并发布 GHCR 镜像。支持手动运行 `Docker sync, test and publish`；默认分支推送也会构建。GitHub 调度可能延迟，长期无活动的公开仓库可能暂停调度。fork 的 Actions 需要在网页启用。
 
-镜像为 linux/amd64，标签为 `latest`、`sha-<12 位提交号>` 和完整提交号。只有容器通过空目录初始化、HTTP、重启持久化和升级路径测试后，才发布镜像。合并冲突时流程失败，保留原分支和旧镜像，不强制覆盖。
+镜像为 linux/amd64，标签为 `latest`、`sha-<12 位提交号>` 和完整提交号。只有容器通过空目录初始化、HTTP、重启持久化和升级路径测试及 NAS Origin 下的 token 登录、真实 Tavern API POST、未登录和跨站拒绝测试后，才发布镜像。合并冲突时流程失败，保留原分支和旧镜像，不强制覆盖。
 
 ## 部署
 
@@ -14,7 +14,9 @@ docker logs -f dsh-tavern
 docker exec dsh-tavern node /data/apps/dsh-tavern/bin/dsh-tavern.mjs status
 ```
 
-将 status 输出完整 URL 中的 `127.0.0.1:3081` 换成 `NAS-IP:3080`，保留 token。token 是访问凭证。容器内 socat 将 3080 转发到上游固定的 loopback 3081，不修改上游源码。
+将 status 输出完整 URL 中的 `127.0.0.1:3081` 换成 `NAS-IP:3080`，保留 token。token 是访问凭证。容器内 HTTP 代理监听 3080；必须设置 `DSH_TAVERN_PUBLIC_URL` 为浏览器访问的完整 origin（例如 `http://192.168.1.10:3088`），并让 Compose 对外端口与之匹配。代理先验证 Host、Origin 和跨站标记，再转换为 DSH 的 loopback 地址；上游的 token/cookie 验证继续保留。对 Tavern 自定义路由也会先通过 DSH 验证 cookie。支持 HTTP 流式响应和 WebSocket。
+
+旧版 socat 镜像升级后，应重新打开当前 token 链接登录：内部 cookie authority 已转换为 loopback，原来的 NAS authority cookie 不再使用。此前手动添加的 web-runtime/connection trustedHosts 覆盖可以删除；不要删除其他用户配置。PUBLIC_URL 变更后需要重新创建容器。代理只接受配置的一个公开地址；如经 NPM 使用 HTTPS 域名，PUBLIC_URL 应为该 HTTPS origin，NPM 应保留浏览器的 Host。
 
 ## 更新与备份
 
