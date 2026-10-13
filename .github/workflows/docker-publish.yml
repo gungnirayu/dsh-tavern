@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/docker-sync.sh
       - name: Test Docker HTTP adapter
-        run: node --test docker/proxy.test.mjs docker/settings-adapter.test.mjs
+        run: node --test docker/proxy.test.mjs docker/settings-adapter.test.mjs docker/browser-compat.test.mjs
       - name: Select exact source revision
         id: source
         shell: bash
@@ -83,6 +83,22 @@ jobs:
           docker exec tavern-test test -f /data/profile-data/docker-smoke-marker
           docker exec tavern-test node /tmp/api-smoke.mjs
           docker exec tavern-test sh -c 'test "$(cat /data/.docker-image-revision)" != smoke-old'
+      - name: Test real browser at a non-loopback HTTP origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() { docker logs tavern-browser 2>&1 | sed -E 's/(token=)[^[:space:]]+/\1[redacted]/g' || true; docker rm -f tavern-browser || true; }
+          trap cleanup EXIT
+          npm install --prefix "$RUNNER_TEMP/docker-browser" playwright@1.58.2 --no-audit --no-fund
+          "$RUNNER_TEMP/docker-browser/node_modules/.bin/playwright" install --with-deps chromium
+          docker run -d --name tavern-browser -p 127.0.0.1:3088:3080 \
+            -e DSH_TAVERN_PUBLIC_URL=http://tavern.test:3088 tavern:test
+          for attempt in $(seq 1 90); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' tavern-browser)" = healthy ]; then break; fi
+            sleep 2
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' tavern-browser)" = healthy
+          PLAYWRIGHT_PACKAGE_DIR="$RUNNER_TEMP/docker-browser" node docker/browser-smoke.mjs
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

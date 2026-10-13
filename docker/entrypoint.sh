@@ -44,7 +44,7 @@ trap 'exit 130' INT
 touch /data/logs/tavern.log
 tail -n 0 -F /data/logs/tavern.log &
 log_pid=$!
-node "$app" start
+node /usr/local/lib/tavern-public-url.mjs start
 node /usr/local/lib/tavern-proxy.mjs &
 proxy_pid=$!
 # A failed service must stop the container so restart: unless-stopped can recover.

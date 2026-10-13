@@ -17,14 +17,18 @@ RUN test -n "$SOURCE_COMMIT" \
     && printf '{"commit":"%s"}\n' "$SOURCE_COMMIT" > .dsh-tavern-release.json \
     && node bin/dsh-tavern.mjs install --host cli \
     && node docker/settings-adapter.mjs /data \
+    && node docker/audit-client-policies.mjs /data \
     && printf '%s\n' "$SOURCE_COMMIT" > /data/.docker-image-revision \
     && mkdir /opt/tavern-seed && cp -a /data/. /opt/tavern-seed/ \
     && rm -rf /data && mkdir /data
+COPY docker/public-url.mjs /usr/local/lib/tavern-public-url.mjs
+COPY docker/tavern-url /usr/local/bin/tavern-url
 COPY docker/entrypoint.sh /usr/local/bin/tavern-entrypoint
+COPY docker/browser-compat.js /usr/local/lib/browser-compat.js
 COPY docker/settings-adapter.mjs /usr/local/lib/tavern-settings-adapter.mjs
 COPY docker/proxy.mjs /usr/local/lib/tavern-proxy.mjs
 COPY docker/healthcheck.mjs /usr/local/lib/tavern-healthcheck.mjs
-RUN chmod +x /usr/local/bin/tavern-entrypoint
+RUN chmod +x /usr/local/bin/tavern-entrypoint /usr/local/bin/tavern-url
 WORKDIR /data
 EXPOSE 3080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=4 \

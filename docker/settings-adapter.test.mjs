@@ -9,12 +9,16 @@ test('enables host settings only in the settings client and is idempotent', t =>
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const file = path.join(root, 'runtime/lib/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js');
   mkdirSync(path.dirname(file), {recursive: true});
+  const bootstrap = path.join(root, 'runtime/lib/node_modules/@deepseek-ai/dsh-client-modules/lib/client.js');
+  mkdirSync(path.dirname(bootstrap), {recursive: true});
+  writeFileSync(bootstrap, 'window.__ModuleLoader__.load({});');
   const original = 'const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";';
   writeFileSync(file, original + '\nconst otherSetting = 1;');
   assert.equal(adaptSettingsClient(root), 1);
   assert.match(readFileSync(file, 'utf8'), /const persistence = "host";/);
   assert.match(readFileSync(file, 'utf8'), /const otherSetting = 1;/);
   assert.equal(adaptSettingsClient(root), 1);
+  assert.equal(readFileSync(bootstrap, 'utf8').split('DSH_DOCKER_BROWSER_COMPAT').length, 2);
   writeFileSync(file, 'changed upstream implementation');
   assert.throws(() => adaptSettingsClient(root), /Settings client changed/);
 });

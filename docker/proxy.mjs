@@ -8,12 +8,34 @@ export function createProxy({ publicUrl, upstreamPort = 3081 }) {
   }
   const internalAuthority = `127.0.0.1:${upstreamPort}`;
   const internalOrigin = `http://${internalAuthority}`;
+  function publicRead(req) {
+    if (req.method !== 'GET') return false;
+    let url, pathname;
+    try { url = new URL(req.url, 'http://docker.invalid'); pathname = decodeURIComponent(url.pathname); }
+    catch { return false; }
+    if (pathname.includes('\\') || pathname.split('/').includes('..') || pathname.includes('\0')) return false;
+    // These two routes already require a scoped upstream-signed capability, not a browser cookie.
+    if (['/api/dsh-tavern/session-resource', '/api/dsh-tavern/helper-history'].includes(pathname)) {
+      return url.searchParams.getAll('cap').length === 1 && Boolean(url.searchParams.get('cap'));
+    }
+    // Explicitly public/cacheable resource routes from Tavern. No settings, API POSTs,
+    // arbitrary files or general /api prefix is allowed through this exception.
+    return ['/api/dsh-tavern/vendor/st-prompt-template/', '/api/dsh-tavern/vendor/runtime-assets/',
+      '/api/dsh-tavern/client-assets/', '/api/dsh-tavern/plugin-assets/'].some(prefix => pathname.startsWith(prefix))
+      || pathname === '/api/dsh-tavern/vendor/magvarupdate/bundle.js'
+      || pathname === '/api/dsh-tavern/static-assets'
+      || /^\/api\/dsh-tavern\/remote-assets\/[0-9a-f]{64}(?:\/[^/]*)?$/i.test(pathname);
+  }
   function accepted(req) {
     const host = req.headers.host;
     const localHealth = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
       && host === `127.0.0.1:${req.socket.localPort}` && req.method === 'GET' && req.url === '/' && !req.headers.origin;
     if (localHealth) return true;
-    if (host !== publicOrigin.host || req.headers['sec-fetch-site'] === 'cross-site') return false;
+    if (!req.url.startsWith('/') || req.url.startsWith('//')) return false;
+    if (host !== publicOrigin.host) return false;
+    // Sandboxed card frames have opaque origins and cannot send SameSite=Strict cookies.
+    if (publicRead(req) && (req.headers.origin === undefined || req.headers.origin === 'null' || req.headers.origin === publicOrigin.origin)) return true;
+    if (req.headers['sec-fetch-site'] === 'cross-site') return false;
     // Reject external origins BEFORE rewriting headers for the loopback-only Tavern API.
     if (req.headers.origin !== undefined && req.headers.origin !== publicOrigin.origin) return false;
     if (!req.url.startsWith('/') || req.url.startsWith('//')) return false;
@@ -21,7 +43,7 @@ export function createProxy({ publicUrl, upstreamPort = 3081 }) {
   }
   function upstreamHeaders(req, upgrade = false) {
     const headers = { ...req.headers, host: internalAuthority };
-    if (headers.origin !== undefined) headers.origin = internalOrigin;
+    if (headers.origin !== undefined && !publicRead(req)) headers.origin = internalOrigin;
     delete headers.forwarded;
     for (const key of Object.keys(headers)) if (key.startsWith('x-forwarded-')) delete headers[key];
     if (!upgrade) {
@@ -51,7 +73,7 @@ export function createProxy({ publicUrl, upstreamPort = 3081 }) {
   }
   const server = http.createServer(async (req, res) => {
     if (!accepted(req)) { res.writeHead(403); res.end('Docker proxy: untrusted Host or Origin'); return; }
-    if (req.url.split('?')[0] !== '/') {
+    if (req.url.split('?')[0] !== '/' && !publicRead(req)) {
       const status = await authenticated(req);
       if (status !== 200) { res.writeHead(status, { 'Cache-Control': 'no-store' }); res.end(status === 401 ? 'unauthorized; reopen the token URL' : 'DSH upstream unavailable'); return; }
     }

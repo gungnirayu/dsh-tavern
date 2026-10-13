@@ -11,10 +11,10 @@
 ```sh
 docker compose -f docker-compose.example.yml up -d
 docker logs -f dsh-tavern
-docker exec dsh-tavern node /data/apps/dsh-tavern/bin/dsh-tavern.mjs status
+docker exec dsh-tavern tavern-url
 ```
 
-将 status 输出完整 URL 中的 `127.0.0.1:3081` 换成 `NAS-IP:3080`，保留 token。token 是访问凭证。容器内 HTTP 代理监听 3080；必须设置 `DSH_TAVERN_PUBLIC_URL` 为浏览器访问的完整 origin（例如 `http://192.168.1.10:3088`），并让 Compose 对外端口与之匹配。代理先验证 Host、Origin 和跨站标记，再转换为 DSH 的 loopback 地址；上游的 token/cookie 验证继续保留。对 Tavern 自定义路由也会先通过 DSH 验证 cookie。支持 HTTP 流式响应和 WebSocket。
+`tavern-url` 直接输出配置的 PUBLIC_URL 登录地址，保留 token，无需手动替换 IP 或端口。token 是访问凭证。容器内 HTTP 代理监听 3080；必须设置 `DSH_TAVERN_PUBLIC_URL` 为浏览器访问的完整 origin（例如 `http://192.168.1.10:3088`），并让 Compose 对外端口与之匹配。代理先验证 Host、Origin 和跨站标记，再转换为 DSH 的 loopback 地址；上游的 token/cookie 验证继续保留。对 Tavern 自定义路由也会先通过 DSH 验证 cookie。支持 HTTP 流式响应和 WebSocket。
 
 旧版 socat 镜像升级后，应重新打开当前 token 链接登录：内部 cookie authority 已转换为 loopback，原来的 NAS authority cookie 不再使用。此前手动添加的 web-runtime/connection trustedHosts 覆盖可以删除；不要删除其他用户配置。PUBLIC_URL 变更后需要重新创建容器。代理只接受配置的一个公开地址；如经 NPM 使用 HTTPS 域名，PUBLIC_URL 应为该 HTTPS origin，NPM 应保留浏览器的 Host。
 
@@ -40,3 +40,7 @@ Dockerfile 直接安装 checkout 源码，避免 install.sh 的 Git 路径重新
 ## 模型设置的局域网适配
 
 DSH 0.1.5-rc.2 的设置前端对非 loopback 浏览器地址主动使用 memory 模式，会显示 `settings are unavailable in this browser`。镜像的 settings-adapter 仅修改该客户端的持久化选择，允许已通过 Docker 代理认证的 NAS 页面读取和保存服务端设置。构建和启动时均检查适配；上游实现变化会明确失败，避免静默发布不可用设置页。代理的 Host/Origin 和登录验证继续生效。CI 验证实际提供的客户端模块和 settings describe RPC。
+
+## 局域网兼容审查
+
+完整检查范围、保留与修复的判断、回归测试和实际限制见 [DOCKER-AUDIT.md](DOCKER-AUDIT.md)。Docker bootstrap 统一补上 HTTP 页面可能缺少的 UUID API；不伪造安全上下文。人物卡 Origin:null 仅开放明确的静态 GET 及上游 cap 验证的资源接口，不开放任意设置 API。新增 DSH 客户端地址策略必须经过审核，真实非 loopback Chromium 测试通过才发布。

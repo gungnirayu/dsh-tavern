@@ -38,12 +38,14 @@ const moduleUrls = [...index.text.matchAll(/(?:src|href)="([^"<>]+)"/g)]
   .map(match => match[1].replaceAll('&amp;', '&'))
   .filter(url => url.startsWith('/plugins/'));
 assert.ok(moduleUrls.length, 'boot HTML must reference client module batches');
-let settingsSource;
+let settingsSource, browserCompat;
 for (const url of new Set(moduleUrls)) {
   const client = await request(url, {headers: {Cookie: cookie}});
   assert.equal(client.status, 200, 'boot client module batch must be served');
+  if (client.text.includes('DSH_DOCKER_BROWSER_COMPAT')) browserCompat = true;
   if (client.text.includes('DSH_DOCKER_AUTHENTICATED_SETTINGS')) settingsSource = client.text;
 }
+assert.ok(browserCompat, 'browser bootstrap must include the HTTP UUID compatibility layer');
 assert.ok(settingsSource, 'browser boot modules must include the authenticated LAN settings adapter');
 assert.ok(!settingsSource.includes('const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";'));
 const settingsRead = await request('/api/settings/describe', {
@@ -54,3 +56,15 @@ assert.equal(settingsRead.status, 200, 'settings describe RPC should succeed');
 const described = JSON.parse(settingsRead.text);
 assert.equal(described.result?.ok, true, `settings describe must return a valid settings snapshot: ${JSON.stringify(described.result?.error)}`);
 console.log('PASS: LAN settings client and settings describe RPC');
+
+const publicStatus = execFileSync('tavern-url', [], {encoding: 'utf8'});
+assert.ok(publicStatus.includes(publicUrl.origin + '/?token='), 'public status must print the browser origin');
+assert.ok(!publicStatus.includes('http://127.0.0.1:'), 'public status must not send the browser to an internal port');
+const opaque = {method: 'GET', headers: {Origin: 'null', 'Sec-Fetch-Site': 'cross-site'}};
+const vendor = await request('/api/dsh-tavern/vendor/runtime-assets/lodash.min.js', opaque);
+// Route may not contain this filename: 404 is valid; a proxy authentication/fence error is not.
+assert.ok([200, 404].includes(vendor.status), `opaque vendor route must reach asset handler: ${vendor.status}`);
+const invalidCap = await request('/api/dsh-tavern/session-resource?cap=invalid', opaque);
+assert.equal(invalidCap.status, 403);
+assert.match(invalidCap.text, /Resource unavailable/, 'upstream must reject the capability, not the Docker origin fence');
+console.log('PASS: public login URL and opaque sandbox resource routing');

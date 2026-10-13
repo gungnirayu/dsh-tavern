@@ -7,7 +7,13 @@ import { createProxy } from './proxy.mjs';
 async function fixture(t) {
   const upstream = http.createServer((req, res) => {
     assert.equal(req.headers.host, `127.0.0.1:${upstream.address().port}`);
-    if (req.headers.origin) assert.equal(req.headers.origin, `http://${req.headers.host}`);
+    if (req.headers.origin && req.headers.origin !== 'null') assert.equal(req.headers.origin, `http://${req.headers.host}`);
+    if (req.url.startsWith('/api/dsh-tavern/vendor/')) { res.writeHead(200, {'Access-Control-Allow-Origin': '*'}); res.end('public script'); return; }
+    if (req.url.startsWith('/api/dsh-tavern/session-resource')) {
+      if (new URL(req.url, 'http://x').searchParams.get('cap') === 'signed-cap') { res.writeHead(200, {'Access-Control-Allow-Origin': '*'}); res.end('scoped resource'); }
+      else { res.writeHead(403); res.end('invalid capability'); }
+      return;
+    }
     if (req.url === '/?token=test-token') {
       res.writeHead(302, { 'set-cookie': 'dsh-auth=test-cookie; HttpOnly; SameSite=Strict; Path=/', location: '/' });
       res.end(); return;
@@ -82,4 +88,15 @@ test('public URL must be an explicit origin', () => {
   for (const publicUrl of ['http://user:pass@host', 'http://host/path', 'file:///tmp/x', 'http://host/?token=x']) {
     assert.throws(() => createProxy({publicUrl}));
   }
+});
+
+test('opaque sandbox reads only explicit public assets or an upstream-verified capability', async t => {
+  const port = await fixture(t);
+  const sandbox = {Origin: 'null', 'Sec-Fetch-Site': 'cross-site'};
+  assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/vendor/magvarupdate/bundle.js', headers: sandbox, body: ''})).status, 200);
+  assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/session-resource?cap=signed-cap', headers: sandbox, body: ''})).status, 200);
+  assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/session-resource?cap=forged', headers: sandbox, body: ''})).status, 403);
+  assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/session-resource', headers: sandbox, body: ''})).status, 403);
+  assert.equal((await request(port, {method: 'POST', path: '/api/dsh-tavern/getUpdateStatus', headers: sandbox})).status, 403);
+  assert.equal((await request(port, {method: 'GET', path: '/api/settings/describe', headers: sandbox, body: ''})).status, 403);
 });
