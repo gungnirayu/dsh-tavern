@@ -61,9 +61,9 @@ const publicStatus = execFileSync('tavern-url', [], {encoding: 'utf8'});
 assert.ok(publicStatus.includes(publicUrl.origin + '/?token='), 'public status must print the browser origin');
 assert.ok(!publicStatus.includes('http://127.0.0.1:'), 'public status must not send the browser to an internal port');
 const opaque = {method: 'GET', headers: {Origin: 'null', 'Sec-Fetch-Site': 'cross-site'}};
-const vendor = await request('/api/dsh-tavern/vendor/runtime-assets/lodash.min.js', opaque);
-// Route may not contain this filename: 404 is valid; a proxy authentication/fence error is not.
-assert.ok([200, 404].includes(vendor.status), `opaque vendor route must reach asset handler: ${vendor.status}`);
+const vendor = await request('/api/dsh-tavern/client-assets/tavern.css', opaque);
+assert.equal(vendor.status, 200, 'opaque sandbox must load the actual packaged Tavern stylesheet');
+assert.equal(vendor.headers['access-control-allow-origin'], '*');
 const invalidCap = await request('/api/dsh-tavern/session-resource?cap=invalid', opaque);
 assert.equal(invalidCap.status, 403);
 assert.match(invalidCap.text, /Resource unavailable/, 'upstream must reject the capability, not the Docker origin fence');
