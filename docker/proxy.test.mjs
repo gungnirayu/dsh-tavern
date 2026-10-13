@@ -94,6 +94,8 @@ test('public URL must be an explicit origin', () => {
 test('opaque sandbox reads only explicit public assets or an upstream-verified capability', async t => {
   const port = await fixture(t);
   const sandbox = {Origin: 'null', 'Sec-Fetch-Site': 'cross-site'};
+  const parentCss = await request(port, {method: 'GET', path: '/api/dsh-tavern/client-assets/tavern.css', body: ''});
+  assert.equal(parentCss.status, 200);
   const css = await request(port, {method: 'GET', path: '/api/dsh-tavern/client-assets/tavern.css', headers: sandbox, body: ''});
   assert.equal(css.status, 200);
   assert.equal(css.headers['access-control-allow-origin'], '*');

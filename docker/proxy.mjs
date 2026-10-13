@@ -43,7 +43,7 @@ export function createProxy({ publicUrl, upstreamPort = 3081 }) {
   }
   function upstreamHeaders(req, upgrade = false) {
     const headers = { ...req.headers, host: internalAuthority };
-    if (headers.origin !== undefined && !publicRead(req)) headers.origin = internalOrigin;
+    if (headers.origin !== undefined && (!publicRead(req) || headers.origin !== 'null')) headers.origin = internalOrigin;
     delete headers.forwarded;
     for (const key of Object.keys(headers)) if (key.startsWith('x-forwarded-')) delete headers[key];
     if (!upgrade) {
