@@ -54,13 +54,23 @@ function normalizeDraft(value, revision, now) {
 
 function document(value) {
   const current = value && typeof value === 'object' ? value : {}
+  // Some saved profiles contain the confirmed Markdown itself, rather than
+  // the structured confirmation envelope. Normalize in memory, without
+  // rewriting the user's file or treating a draft as confirmed.
+  const confirmedText = typeof current.confirmed === 'string' ? current.confirmed.trim() : ''
+  const confirmed = typeof current.confirmed === 'string'
+    ? confirmedText ? {
+      ...normalizeDraft({ summary: confirmedText, injectionText: confirmedText }, integer(current.revision), integer(current.updatedAt)),
+      profileRevision: integer(current.revision), confirmedAt: integer(current.updatedAt)
+    } : null
+    : current.confirmed && typeof current.confirmed === 'object' ? current.confirmed : null
   return {
     spec: SPEC,
     version: VERSION,
     revision: integer(current.revision),
     defaultEnabled: current.defaultEnabled === true,
     draft: current.draft && typeof current.draft === 'object' ? current.draft : null,
-    confirmed: current.confirmed && typeof current.confirmed === 'object' ? current.confirmed : null,
+    confirmed,
     updatedAt: integer(current.updatedAt)
   }
 }
@@ -99,6 +109,7 @@ function createSingleProfile({ store, now = Date.now }) {
       if (typeof input.content !== 'string' || !input.content.trim() || input.content.length > 3000) throw new Error('画像正文须为 1 至 3000 字')
       input = { ...input, summary: input.content, injectionText: input.content, rawAnswers: [], dimensions: [], uncertainties: [] }
     }
+    if (!multiline(input?.injectionText || input?.summary, 3000)) throw new Error('长期偏好正文不能为空，未保存')
     const saved = await store.updateJson(PROFILE_PATH, value => {
       const current = document(value)
       const timestamp = now()
@@ -262,7 +273,10 @@ export function createUserPreferenceProfile({ store, now = Date.now }) {
     const value = collection(await store.readJson(PROFILE_PATH))
     const item = entry(value, id)
     return { ...present(item.data), defaultEnabled: value.defaultProfileId === item.id, profileId: item.id, name: item.name, selectedId: value.selectedId, defaultProfileId: value.defaultProfileId,
-      profiles: value.profiles.map(item => ({ id: item.id, name: item.name, hasConfirmed: !!item.data.confirmed, confirmedRevision: integer(item.data.confirmed?.profileRevision) })) }
+      profiles: value.profiles.map(item => {
+        const data = document(item.data)
+        return { id: item.id, name: item.name, hasConfirmed: data.confirmed !== null, confirmedRevision: integer(data.confirmed?.profileRevision) }
+      }) }
   }
   async function mutateProfile(action, input = {}) {
     const id = input.profileId || (await read()).profileId
@@ -290,7 +304,7 @@ export function createUserPreferenceProfile({ store, now = Date.now }) {
         value.selectedId = entry(value, input.profileId).id
       } else if (input.action === 'default') {
         if (typeof input.profileId !== 'string') throw new Error('请选择默认画像')
-        if (input.profileId && !entry(value, input.profileId).data.confirmed) throw new Error('请先确认画像')
+        if (input.profileId && !document(entry(value, input.profileId).data).confirmed) throw new Error('请先确认画像')
         value.defaultProfileId = input.profileId
       } else if (input.action === 'rename') {
         const name = str(input.name, 100)

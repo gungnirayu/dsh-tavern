@@ -42,6 +42,24 @@ try {
     }));
   });
   for (const result of rpc) { assert.equal(result.status, 200); assert.equal(result.result.result?.ok, true, `${result.method} should succeed`); }
+  // Isolated fixture only: exercise the saved Markdown shape found on NAS.
+  execFileSync('docker', ['exec', 'tavern-browser', 'node', '-e', `
+    const fs = require('node:fs');
+    const path = '/data/profile-data/tavern/data/user-preference-profile.json';
+    fs.writeFileSync(path, JSON.stringify({version:3,selectedId:'browser-profile',defaultProfileId:'browser-profile',profiles:[
+      {id:'default',data:{confirmed:null}},
+      {id:'browser-profile',name:'Browser regression',data:{revision:4,confirmed:'Saved Markdown preference'}}
+    ]}));
+  `]);
+  const preference = await page.evaluate(async () => {
+    const response = await fetch('/api/dsh-tavern/getUserPreferenceProfile', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    return {status:response.status,result:await response.json()};
+  });
+  assert.equal(preference.status, 200);
+  assert.equal(preference.result.ok, true);
+  assert.equal(preference.result.userProfile.hasConfirmed, true);
+  assert.equal(preference.result.userProfile.confirmed.injectionText, 'Saved Markdown preference');
+  assert.equal(preference.result.userProfile.profiles[1].confirmedRevision, 4);
   const frameResult = await page.evaluate(async () => {
     const frame = document.createElement('iframe');
     frame.setAttribute('sandbox', 'allow-scripts');
@@ -58,7 +76,7 @@ try {
   assert.equal(frameResult.status, 403);
   assert.match(frameResult.text, /Resource unavailable/, 'opaque frame must reach capability verifier, not proxy origin rejection');
   assert.ok(!pageErrors.some(error => /randomUUID|settings are unavailable|SecurityError/.test(error)), JSON.stringify(pageErrors));
-  console.log('PASS: real Chromium non-loopback HTTP, UUID, model settings UI/RPC and opaque iframe capability route');
+  console.log('PASS: real Chromium non-loopback HTTP, UUID, model settings UI/RPC, saved Markdown preferences and opaque iframe capability route');
 } catch (error) {
   console.error('Browser validation failed:', error.message);
   console.error('Visible button labels:', await page.getByRole('button').allTextContents().catch(() => []));
