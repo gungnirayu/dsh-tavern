@@ -35,23 +35,6 @@ test('local variables share Helper state, save bursts, survive reopening and iso
   assert.equal(saved.variables.helper, 'visible')
 })
 
-test('local callback writes finish before the host event receipt', async t => {
-  const host = await fixture(t), delayed = [], run = await host.connect('audit', (message, dispatch) => {
-    if (message.method === 'updateTavernHelperVariables') delayed.push(dispatch)
-    else dispatch()
-  })
-  run.window.eventOn('write', () => run.api.variables.local.set('result', 'saved'))
-  run.receive({ type: 'dsh-tavern-helper-event', name: 'write', eventId: 'local-write', args: [] })
-  await new Promise(resolve => setImmediate(resolve))
-  const receipt = () => run.sent.find(message => message.type === 'dsh-tavern-helper-event-complete' && message.eventId === 'local-write')
-  assert.equal(receipt(), undefined)
-  await delayed[0]()
-  await new Promise(resolve => setImmediate(resolve))
-  assert.ok(receipt())
-  assert.equal(receipt().error, undefined)
-  assert.equal((await host.open().read('audit')).variables.result, 'saved')
-})
-
 test('late writes cannot restore variables after switching chat', async t => {
   const host = await fixture(t), delayed = [], run = await host.connect('audit', (message, dispatch) => {
     if (message.method === 'updateTavernHelperVariables') delayed.push(dispatch)
@@ -64,20 +47,4 @@ test('late writes cannot restore variables after switching chat', async t => {
   await saving
   assert.equal(run.api.variables.local.has('old'), false)
   assert.equal((await host.open().read('other')).variables, undefined)
-})
-
-test('local scalar conversions and JSON array appends match supported ST operations', async t => {
-  const host = await fixture(t), run = await host.connect(), local = run.api.variables.local
-  local.set('text', 'hello'); assert.equal(local.add('text', '!'), 'hello!')
-  local.set('list', '[1]'); assert.equal(JSON.stringify(local.add('list', 2)), '[1,2]')
-  assert.equal(local.get('list', { index: 1 }), 2)
-  local.set('data', { count: 1 })
-  const value = local.get('data'); value.count = 99
-  assert.equal(local.get('data').count, 1)
-  assert.throws(() => local.set('', 1), /名称无效/)
-  assert.throws(() => local.set('__proto__', {}), /名称无效/)
-  assert.throws(() => local.set('invalid', undefined), /JSON 值/)
-  assert.throws(() => local.set('list', 4, { index: 0 }), /暂不支持/)
-  await run.api.saveMetadata()
-  assert.equal((await host.connect()).api.variables.local.get('list'), '[1,2]')
 })

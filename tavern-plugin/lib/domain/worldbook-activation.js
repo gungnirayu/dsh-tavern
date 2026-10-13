@@ -1,11 +1,11 @@
 // Selection priority and prompt order are different in SillyTavern.
 const str = value => value == null ? '' : String(value)
 export const DEFAULT_WORLD_BOOK_TOKEN_BUDGET = 8192
-// Local admission estimate, not provider usage. Count non-ASCII more conservatively than ASCII.
+// Local admission estimate, not provider usage. CJK text is about 0.6 tokens per character on current tokenizers.
 export function estimateWorldBookTokens(value) {
   let ascii = 0, other = 0
   for (const char of str(value)) char.codePointAt(0) < 128 ? ascii++ : other++
-  return Math.ceil(ascii / 4 + other)
+  return Math.ceil(ascii / 4 + other * 0.6)
 }
 export function priorityOrder(entries) {
   return entries.map((entry, index) => ({ entry, index })).sort((a, b) =>
@@ -29,9 +29,7 @@ export function placementKey(entry) {
   const position = entry.position === 'before_char' ? 0 : entry.position === 'after_char' ? 1 : Number(entry.position ?? 0)
   return position === 4 ? `4:${entry.depth ?? 4}:${entry.role ?? 0}` : String(position)
 }
-export function dynamicPlacementKeys(entries) {
-  return new Set(entries.filter(entry => entry.enabled !== false && (entry.constant !== true || entry.group)).map(placementKey))
-}
+
 function integer(value, fallback, max = 1000) {
   return value == null || value === '' || !Number.isFinite(Number(value)) ? fallback : Math.max(0, Math.min(max, Math.trunc(Number(value))))
 }
@@ -44,6 +42,14 @@ export function worldBookSettings(worldBook) {
     caseSensitive: raw.case_sensitive === true,
     matchWholeWords: raw.match_whole_words === true
   }
+}
+
+/** Deepest history any entry of this book scans, in user/assistant floors. */
+export function historyScanDepth(worldBook) {
+  const fallback = worldBookSettings(worldBook).scanDepth
+  let depth = fallback
+  for (const entry of worldBook?.view?.entries || []) depth = Math.max(depth, integer(entry.scanDepth, fallback))
+  return depth
 }
 
 function regexKey(value) {
@@ -166,22 +172,6 @@ function filterGroups(candidates, activated, textFor, random, reject) {
   return candidates.filter(entry => retained.has(entry))
 }
 
-/** Script keyword queries share the ordinary matcher and group rules, without a recall quota. */
-export function selectScriptWorldbookEntries(entries, keywords, condition = {}, settings = {}, random = Math.random) {
-  const text = (Array.isArray(keywords) ? keywords : [keywords]).map(str).join('\n')
-  const candidates = priorityOrder(entries).map(entry => ({ ...entry,
-    caseSensitive: entry.caseSensitive ?? settings.caseSensitive,
-    matchWholeWords: entry.matchWholeWords ?? settings.matchWholeWords
-  })).filter(entry => {
-    if (/^@@dont_activate(?:\s|$)/m.test(str(entry.content))) return false
-    if (condition.constant != null && (entry.constant === true) !== condition.constant) return false
-    if (condition.disabled != null && (entry.enabled === false) !== condition.disabled) return false
-    if (condition.vectorized != null && Boolean(entry.vectorized ?? entry.rawEntry?.vectorized) !== condition.vectorized) return false
-    return entry.constant === true || keywordEvaluation(entry, text, [{ text, source: 'script' }]).matched
-  })
-  return filterGroups(candidates, [], () => text, random, () => {})
-}
-
 /** ST-style bounded history, keyword conditions, inclusion groups and recursion.
  * No model-based search, no full-text lookup of inactive entries. Timed effects
  * deliberately remain owned by the existing DSH ten-turn cooldown.
@@ -214,7 +204,11 @@ export function activateWorldBook(input) {
       if (rejected.has(entry.ref) || activated.some(item => item.ref === entry.ref)) continue
       const requests = (input.activationRequests || []).filter(request => request.ref === entry.ref)
       if (requests.length) reject(entry, 'requested', { activationRequests: requests })
-      if (!entry.constant && input.isCoolingDown(entry)) { reject(entry, 'cooldown', { cooldown: { readTurn: input.chat?.worldBookReads?.[entry.ref]?.turn, currentTurn: input.turn, duration: 10 } }); continue }
+      const cooling = !entry.constant && input.isCoolingDown(entry)
+      // A screened-out entry comes back as soon as the player names it in this turn's input.
+      const playerNamed = cooling === 'screened' && !input.userTextInHistory && str(input.userText).trim() &&
+        keywordEvaluation(entry, str(input.userText), [{ text: str(input.userText), source: 'current-input' }]).matched
+      if (cooling && !playerNamed) { reject(entry, cooling === 'screened' ? 'screened-cooldown' : 'cooldown', { cooldown: { readTurn: input.chat?.worldBookReads?.[entry.ref]?.turn, currentTurn: input.turn, duration: 10 } }); continue }
       const delay = integer(entry.delayUntilRecursion, 0)
       if (delay && (!iteration || delay > level)) { reject(entry, 'recursion-delay'); continue }
       if (iteration && entry.excludeRecursion) { reject(entry, 'recursion-excluded'); continue }

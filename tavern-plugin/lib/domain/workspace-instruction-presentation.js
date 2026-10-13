@@ -1,3 +1,5 @@
+import { markRequestHandled, requestHandledBy } from './request-lineage.js'
+
 // Request-only filtering: preserve files and durable Session reconciliation state.
 const blockedSections = new Set(['approval:policy', 'deployment:persona-prefix'])
 const instructionPlugins = new Set(['agent-instructions', '@deepseek-ai/dsh-agent-instructions', 'user-approval', '@deepseek-ai/dsh-user-approval'])
@@ -26,12 +28,14 @@ export function presentWorkspaceInstructions(request) {
   return changed ? { ...request, messages } : request
 }
 
+const PRESENTED = 'workspace-instructions'
+
 export function installWorkspaceInstructionPresentation(ctx, ownsSession) {
   ctx.on('llm/stream', (request, next) => (async function * () {
-    if (request?.sessionId && await ownsSession(request.sessionId)) {
+    if (request?.sessionId && !requestHandledBy(request, PRESENTED) && await ownsSession(request.sessionId)) {
       const presented = presentWorkspaceInstructions(request)
       if (presented !== request) {
-        yield * ctx.llm.stream(presented)
+        yield * ctx.llm.stream(markRequestHandled(presented, PRESENTED))
         return
       }
     }

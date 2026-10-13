@@ -5,7 +5,7 @@
 // Run from the NEW source before copying: delete what the previous install placed
 // (recorded in INVENTORY) but the new source no longer ships, then record the new list.
 // The first run after this file exists has no inventory and deletes nothing.
-import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -60,7 +60,11 @@ export function pruneInstalledFiles(sourceDir, appDir) {
   return removed
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Installers run this from a temp directory whose path may be a symlink (macOS
+// /var -> /private/var); compare real paths or the command silently does nothing.
+let isEntryPoint = false
+try { isEntryPoint = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (isEntryPoint) {
   const [sourceDir, appDir] = process.argv.slice(2)
   if (!sourceDir || !appDir) { console.error('用法：node prune-installed-files.mjs <新版本源码目录> <程序目录>'); process.exit(2) }
   const removed = pruneInstalledFiles(path.resolve(sourceDir), path.resolve(appDir))

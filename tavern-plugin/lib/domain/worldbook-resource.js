@@ -288,6 +288,9 @@ function nextId(entries, field) {
   return entries.reduce(function (maximum, entry) { return Math.max(maximum, numberOr(entry && entry[field], -1)) }, -1) + 1
 }
 
+// Field vocabulary accepted by entry patches; anything else would be dropped silently.
+export const WORLD_BOOK_PATCH_FIELDS = Object.freeze(['comment', 'content', 'enabled', 'primaryKeys', 'secondaryKeys', 'constant', 'selective', 'order', 'caseSensitive', 'displayIndex', 'selectiveLogic', 'vectorized', 'position', 'depth', 'role', 'probabilityEnabled', 'probability', 'groupOverride', 'groupWeight', 'useGroupScoring', 'scanDepth', 'matchWholeWords', 'excludeRecursion', 'preventRecursion', 'group', 'delayUntilRecursion', 'sticky', 'cooldown', 'delay', 'helperExtra'])
+
 function assignKnownPatch(entry, patch, format) {
   const embedded = format !== 'sillytavern-worldbook'
   const extensions = Object.assign({}, object(entry.extensions) || {})

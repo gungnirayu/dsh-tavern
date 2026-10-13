@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
@@ -34,7 +34,7 @@ function fixture(t) {
   return { root, pluginDirectory, original, bootstrap, packages }
 }
 
-test('真实 pnpm 离线安装本地链接，并由插件解析到宿主原包及其传递依赖', t => {
+test('真实 pnpm 离线安装本地链接，并由插件解析到宿主原包及其传递依赖', async t => {
   const f = fixture(t)
   const staleTools = path.join(f.pluginDirectory, 'node_modules/@deepseek-ai/dsh-tools')
   mkdirSync(staleTools, { recursive: true })
@@ -46,7 +46,7 @@ test('真实 pnpm 离线安装本地链接，并由插件解析到宿主原包�
   writeFileSync(path.join(helper, 'index.js'), 'export default "host-transitive"')
   writeFileSync(path.join(f.packages['@deepseek-ai/dsh-tools'], 'index.js'), 'import value from "host-helper"; export function defineTool() { return value }')
   const originalPackages = Object.values(f.packages).map(directory => readFileSync(path.join(directory, 'package.json'), 'utf8'))
-  installPluginDependencies({ ...f, host: 'desktop', env: { ...process.env, DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap },
+  await installPluginDependencies({ ...f, host: 'desktop', env: { ...process.env, DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap },
     run(command, args, options) {
       // Neither registry access nor a cached alpha.1 package can make this pass.
       const result = spawnSync(command, [...args, '--offline', '--store-dir', './empty-store'], {
@@ -64,7 +64,7 @@ test('真实 pnpm 离线安装本地链接，并由插件解析到宿主原包�
 })
 
 for (const failure of ['missing', 'export', 'transitive']) {
-  test(`宿主依赖 ${failure} 异常时明确报错，不删除旧依赖、不调用 pnpm`, t => {
+  test(`宿主依赖 ${failure} 异常时明确报错，不删除旧依赖、不调用 pnpm`, async t => {
     const f = fixture(t)
     const directory = f.packages['@deepseek-ai/dsh-subagent']
     if (failure === 'missing') rmSync(directory, { recursive: true })
@@ -72,36 +72,13 @@ for (const failure of ['missing', 'export', 'transitive']) {
     mkdirSync(path.join(f.pluginDirectory, 'node_modules'))
     const sentinel = path.join(f.pluginDirectory, 'node_modules', 'keep.txt')
     writeFileSync(sentinel, 'keep')
-    assert.throws(() => installPluginDependencies({ ...f, host: 'desktop', env: { DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap },
+    await assert.rejects(() => installPluginDependencies({ ...f, host: 'desktop', env: { DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap },
       run() { assert.fail('不得调用 pnpm') },
     }), failure === 'missing' ? /缺少必需依赖 @deepseek-ai\/dsh-subagent/ : /dsh-subagent.*无法加载所需接口 snapshotSubagentDescriptor/)
     assert.equal(readFileSync(sentinel, 'utf8'), 'keep')
     assert.equal(readFileSync(path.join(f.pluginDirectory, 'pnpm-workspace.yaml'), 'utf8'), f.original)
   })
 }
-
-test('CLI npm/pnpm 包目录及符号链接按当前 dsh 定位，不受 Desktop 环境变量影响', t => {
-  const f = fixture(t)
-  const cliRoot = path.join(f.root, 'cli/node_modules/@deepseek-ai/dsh')
-  mkdirSync(path.join(cliRoot, 'lib'), { recursive: true })
-  writeFileSync(path.join(cliRoot, 'package.json'), '{"name":"@deepseek-ai/dsh","bin":{"dsh":"lib/bin.js"}}')
-  writeFileSync(path.join(cliRoot, 'lib/bin.js'), '')
-  renameSync(path.resolve(path.dirname(f.bootstrap), '../node_modules'), path.join(cliRoot, 'node_modules'))
-  const wrapper = path.join(f.root, 'cli/dsh.cmd')
-  writeFileSync(wrapper, '@echo off')
-  for (const dsh of [wrapper, path.join(cliRoot, 'lib/bin.js')]) {
-    const deps = resolveHostDependencies({ dsh, env: { DSH_DESKTOP_DSH_BOOTSTRAP: '/wrong/desktop.js' } })
-    assert.ok(deps.every(dep => dep.directory.startsWith(realpathSync(cliRoot))))
-    assert.equal(realpathSync(resolveDshBootModule({ dsh })), realpathSync(path.join(cliRoot, 'node_modules/@deepseek-ai/dsh-app-boot/index.js')))
-  }
-  if (process.platform !== 'win32') {
-    const bin = path.join(f.root, 'bin')
-    mkdirSync(bin)
-    symlinkSync(path.join(cliRoot, 'lib/bin.js'), path.join(bin, 'dsh'))
-    const deps = resolveHostDependencies({ dsh: 'dsh', env: { PATH: bin }, host: 'android' })
-    assert.ok(deps.every(dep => dep.directory.startsWith(realpathSync(cliRoot))))
-  }
-})
 
 test('Desktop 无 bootstrap 环境变量时按 app 可执行文件定位，不使用另一套 CLI', t => {
   const f = fixture(t)

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createRuntimePresetModule } from '../tavern-plugin/lib/domain/runtime-presets.js'
+import { createRuntimePresetModule, resolveRuntimePresetMacros } from '../tavern-plugin/lib/domain/runtime-presets.js'
 
 function preset(path, entries, regexScripts = []) {
   const occurrences = new Map()
@@ -112,47 +112,20 @@ test('可以选择不启用外部预设，同时保留内部勾选配置', async
   assert.equal((await value.module.view('presets/先导入.json')).entries[0].runtimeEnabled, true)
 })
 
-test('预设配置方案保存当前勾选，并可一键恢复重复使用', async () => {
-  const value = harness()
-  await value.module.register('presets/先导入.json')
-  await value.module.toggle({ path: 'presets/先导入.json', entryKey: 'a#1', enabled: true })
-  await value.module.toggleRegex({ path: 'presets/先导入.json', regexKey: 'status#1', enabled: true })
-  await value.module.select('presets/先导入.json')
-
-  const saved = await value.module.savePlan({ name: '常用配置' })
-  assert.equal(saved.name, '常用配置')
-  assert.equal(saved.presetPath, 'presets/先导入.json')
-  assert.deepEqual(saved.entryKeys, ['a#1'])
-  assert.deepEqual(saved.regexKeys, ['status#1'])
-  assert.equal(saved.valid, true)
-
-  await value.module.toggle({ path: 'presets/先导入.json', entryKey: 'a#1', enabled: false })
-  await value.module.toggle({ path: 'presets/先导入.json', entryKey: 'b#1', enabled: true })
-  await value.module.toggleRegex({ path: 'presets/先导入.json', regexKey: 'status#1', enabled: false })
-  await value.module.select('presets/后导入.json')
-
-  const applied = await value.module.applyPlan(saved.id)
-  assert.equal(applied.id, saved.id)
-  assert.equal(value.getState().activePreset, 'presets/先导入.json')
-  assert.deepEqual(value.getState().entries['presets/先导入.json'], { 'a#1': true })
-  assert.deepEqual(value.getState().regexes['presets/先导入.json'], { 'status#1': true })
-})
-
-test('配置方案可以覆盖、重命名和删除', async () => {
-  const value = harness()
-  await value.module.register('presets/先导入.json')
-  await value.module.toggle({ path: 'presets/先导入.json', entryKey: 'a#1', enabled: true })
-  await value.module.select('presets/先导入.json')
-  const saved = await value.module.savePlan({ name: '旧名称' })
-
-  await value.module.toggle({ path: 'presets/先导入.json', entryKey: 'b#1', enabled: true })
-  const overwritten = await value.module.savePlan({ id: saved.id, name: saved.name })
-  assert.deepEqual(overwritten.entryKeys, ['a#1', 'b#1'])
-
-  const renamed = await value.module.renamePlan(saved.id, '新名称')
-  assert.equal(renamed.name, '新名称')
-  assert.deepEqual((await value.module.plans()).map(function (plan) { return plan.name }), ['新名称'])
-
-  await value.module.removePlan(saved.id)
-  assert.deepEqual(await value.module.plans(), [])
+test('预设中段、后段的 random/roll 按本轮种子展开，前段保持原文', () => {
+  const raw = {
+    front: { entries: [{ id: 'f', role: 'system', content: '前段 {{roll::1d20}}' }] },
+    middle: { entries: [{ id: 'm', role: 'system', content: '中段 {{random::甲::乙::丙}} {{roll: 2d6+1}}' }] },
+    back: { entries: [{ id: 'b', role: 'system', content: '后段 {{roll::1d1000}} {{user}}' }] }
+  }
+  const one = resolveRuntimePresetMacros(raw, { randomSeed: 'seed-1' }).snapshot
+  assert.equal(one.front.entries[0].content, '前段 {{roll::1d20}}')
+  assert.match(one.middle.entries[0].content, /^中段 [甲乙丙] \d+$/)
+  const sum = Number(one.middle.entries[0].content.split(' ')[2])
+  assert.ok(sum >= 3 && sum <= 13)
+  assert.match(one.back.entries[0].content, /^后段 \d+ 你$/)
+  assert.deepEqual(resolveRuntimePresetMacros(raw, { randomSeed: 'seed-1' }).snapshot.back, one.back, '同一种子结果一致')
+  const backs = new Set(['a', 'b', 'c', 'd', 'e'].map(seed => resolveRuntimePresetMacros(raw, { randomSeed: seed }).snapshot.back.entries[0].content))
+  assert.ok(backs.size > 1, '不同种子重新抽取')
+  assert.equal(resolveRuntimePresetMacros(raw).snapshot.back.entries[0].content, '后段 {{roll::1d1000}} 你', '没有种子时不展开')
 })

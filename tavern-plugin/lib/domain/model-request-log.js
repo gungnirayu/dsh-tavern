@@ -44,10 +44,20 @@ function evidenceRecord(record, result) {
   }
 }
 
+// Request bodies are debugging evidence (every agent step of a long chat is
+// several MB); keep the full text of the most recent turns only. Index rows,
+// timing and responses stay for every request.
+export const MODEL_REQUEST_KEEP_TURNS = 30
+const PRUNED_NOTE = '该请求原文已清理（只保留最近 ' + MODEL_REQUEST_KEEP_TURNS + ' 轮）'
+
 export function createModelRequestLog(options = {}) {
   const readJson = options.readJson
   const writeJson = options.writeJson
   const updateJson = options.updateJson
+  const remove = typeof options.remove === 'function' ? options.remove : async function () {}
+  // Bodies are written compactly when the adapter allows: indentation alone inflates MBs.
+  const writeBody = typeof options.writeText === 'function'
+    ? function (path, value) { return options.writeText(path, JSON.stringify(value)) } : writeJson
   const now = typeof options.now === 'function' ? options.now : Date.now
   const id = typeof options.id === 'function' ? options.id : function () { return randomUUID() }
   if (typeof readJson !== 'function' || typeof writeJson !== 'function' || typeof updateJson !== 'function') throw new TypeError('模型请求日志缺少存储适配器')
@@ -76,6 +86,29 @@ export function createModelRequestLog(options = {}) {
     })()
     ownerWrites.set(sessionId, pending)
     try { await pending } finally { if (ownerWrites.get(sessionId) === pending) ownerWrites.delete(sessionId) }
+  }
+
+  // Writes run off the request path, in order per chat: completion follows its record.
+  const queues = new Map()
+  function enqueue(chatId, task) {
+    const next = (queues.get(chatId) || Promise.resolve()).then(task)
+    const settled = next.catch(function (error) { console.error('dsh-tavern: 模型请求日志写入失败', str(error && error.message || error)) })
+    queues.set(chatId, settled)
+    settled.then(function () { if (queues.get(chatId) === settled) queues.delete(chatId) })
+    return next
+  }
+  // Readers see every record already returned to a caller.
+  function settled(chatId) { return queues.get(str(chatId)) || Promise.resolve() }
+  // Mark rows beyond the retained window; the caller deletes their bodies afterwards.
+  function retainRecentBodies(requests, latestTurn, pruned) {
+    const cutoff = latestTurn - MODEL_REQUEST_KEEP_TURNS
+    if (cutoff < 1) return requests
+    return requests.map(function (entry) {
+      const turn = Number(entry && entry.turn)
+      if (!entry || entry.pruned || !(turn > 0 && turn <= cutoff)) return entry
+      pruned.push(entry.id)
+      return Object.assign({}, entry, { pruned: true })
+    })
   }
 
   async function record(input) {
@@ -112,27 +145,35 @@ export function createModelRequestLog(options = {}) {
       request: serializableRequest(requestOptions)
     }
     const base = 'model-requests/' + chat.id + '/'
-    await writeJson(base + requestId + '.json', record)
-    // Persist timing separately so completion after a restart never loads the body.
-    await writeJson(base + requestId + '.result.json', { createdAt: stamp, status: 'running' })
-    await updateJson(base + 'index.json', function (value) {
-      const current = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
-      const requests = Array.isArray(current.requests) ? current.requests : []
-      return {
-        version: 1,
-        chatId: chat.id,
-        requests: requests.concat([{
-          id: requestId, scope, task: record.task, sessionId: record.sessionId,
-          turn: record.turn, agentTurn: record.agentTurn, step: record.step,
-          createdAt: record.createdAt, preset: record.preset
-        }])
-      }
+    // The body was cloned above; the model request itself must not wait for the disk.
+    enqueue(chat.id, async function () {
+      await writeBody(base + requestId + '.json', record)
+      // Persist timing separately so completion after a restart never loads the body.
+      await writeJson(base + requestId + '.result.json', { createdAt: stamp, status: 'running' })
+      const pruned = []
+      await updateJson(base + 'index.json', function (value) {
+        const current = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+        const requests = Array.isArray(current.requests) ? current.requests : []
+        return {
+          version: 1,
+          chatId: chat.id,
+          requests: retainRecentBodies(requests.concat([{
+            id: requestId, scope, task: record.task, sessionId: record.sessionId,
+            turn: record.turn, agentTurn: record.agentTurn, step: record.step,
+            createdAt: record.createdAt, preset: record.preset
+          }]), Math.max(turn, record.agentTurn), pruned)
+        }
+      })
+      for (const prunedId of pruned) await remove(base + prunedId + '.json')
+      await ensureSessionOwner(record.sessionId, chat.id)
     })
-    await ensureSessionOwner(record.sessionId, chat.id)
     return evidenceRecord(record)
   }
 
-  async function complete(input = {}) {
+  function complete(input = {}) {
+    return enqueue(str(input.chatId), function () { return completeNow(input) })
+  }
+  async function completeNow(input) {
     const base = 'model-requests/' + str(input.chatId) + '/'
     const path = base + str(input.id) + '.json'
     const resultPath = base + str(input.id) + '.result.json'
@@ -158,6 +199,7 @@ export function createModelRequestLog(options = {}) {
   }
 
   async function evidence(chatId, turn) {
+    await settled(chatId)
     const base = 'model-requests/' + chatId + '/'
     const index = await readJson(base + 'index.json')
     const entries = Array.isArray(index && index.requests) ? index.requests.filter(function (item) {
@@ -165,6 +207,10 @@ export function createModelRequestLog(options = {}) {
     }) : []
     const requests = []
     for (const entry of entries) {
+      if (entry.pruned) {
+        requests.push(Object.assign({}, entry, await readJson(base + entry.id + '.result.json'), { pruned: true, note: PRUNED_NOTE, request: null }))
+        continue
+      }
       const record = await readJson(base + entry.id + '.json')
       if (record) requests.push(evidenceRecord(record, await readJson(base + entry.id + '.result.json')))
     }
@@ -172,12 +218,15 @@ export function createModelRequestLog(options = {}) {
   }
 
   async function list(chatId) {
+    await settled(chatId)
     const index = await readJson('model-requests/' + chatId + '/index.json')
     return Array.isArray(index?.requests) ? index.requests : []
   }
   async function detail(chatId, id) {
     const entries = await list(chatId)
-    if (!entries.some(entry => entry.id === id)) throw new Error('请求记录不存在')
+    const entry = entries.find(item => item.id === id)
+    if (!entry) throw new Error('请求记录不存在')
+    if (entry.pruned) throw new Error(PRUNED_NOTE)
     const base = 'model-requests/' + chatId + '/'
     const record = await readJson(base + id + '.json')
     if (!record) throw new Error('请求记录已缺失')

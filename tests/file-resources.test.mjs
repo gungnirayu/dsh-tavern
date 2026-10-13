@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { createFileResourceStore, normalizeResourcePath, resourceUri, safeResourceName, stripPngTextChunks } from '../tavern-plugin/lib/domain/file-resources.js'
+import { createFileResourceStore, normalizeResourcePath, safeResourceName, stripPngTextChunks } from '../tavern-plugin/lib/domain/file-resources.js'
 
 function pngCardBuffer(card) {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -22,7 +22,7 @@ function pngCardBuffer(card) {
 
 test('资源相对路径就是身份，并拒绝目录逃逸', () => {
   assert.equal(normalizeResourcePath('cards/阿芙拉.json', 'card'), 'cards/阿芙拉.json')
-  assert.equal(resourceUri('materials/长篇 小说.md'), 'tavern-file:materials%2F%E9%95%BF%E7%AF%87%20%E5%B0%8F%E8%AF%B4.md')
+  assert.equal(normalizeResourcePath('materials/长篇 小说.md', 'source'), 'materials/长篇 小说.md')
   assert.throws(() => normalizeResourcePath('../cards/x.json'), /路径不合法/)
   assert.throws(() => normalizeResourcePath('materials/x.md', 'card'), /类型不匹配/)
   assert.throws(() => safeResourceName('CON.txt'), /文件名不合法/)
@@ -69,30 +69,6 @@ test('标准酒馆预设从资料库迁移到预设库并同步对话引用', as
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('人物卡绑定资料只保存路径引用，重命名任一端都会保持绑定', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-files-'))
-  try {
-    const store = createFileResourceStore({ dataRoot: root })
-    const cardPath = await store.importCard({ name: '旧名.json', text: '{"name":"角色名"}' }, { name: '角色名', description: '' })
-    const materialPath = await store.importText('source', { name: '故事.txt', text: '剧本正文' })
-    await store.bindMaterial(cardPath, materialPath)
-    assert.equal(await store.scriptForCard(cardPath), materialPath)
-
-    const renamed = await store.rename(cardPath, '新文件名.json')
-    assert.equal(renamed.path, 'cards/新文件名.json')
-    assert.equal(await store.scriptForCard(renamed.path), materialPath)
-    assert.equal((await store.readCard(renamed.path)).name, '角色名')
-    assert.equal(await readFile(path.join(root, 'originals/cards/新文件名.json'), 'utf8'), '{"name":"旧名"}'.replace('旧名', '角色名'))
-
-    const renamedMaterial = await store.rename(materialPath, '新故事.txt')
-    assert.equal(await store.scriptForCard(renamed.path), renamedMaterial.path)
-    await assert.rejects(store.remove(renamedMaterial.path), /仍被人物卡绑定/)
-    await store.unbindMaterial(renamed.path)
-    assert.equal(await store.scriptForCard(renamed.path), undefined)
-    assert.equal(await store.readText(renamedMaterial.path), '剧本正文')
-  } finally { await rm(root, { recursive: true, force: true }) }
-})
-
 test('旧 scripts 副本迁移为资料引用，同名资料优先且旧副本可恢复', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-files-'))
   try {
@@ -108,30 +84,6 @@ test('旧 scripts 副本迁移为资料引用，同名资料优先且旧副本�
     assert.equal(await store.readText(materialPath), '资料正文')
     await assert.rejects(readFile(path.join(root, 'resources', legacyPath)), /ENOENT/)
     assert.equal(await readFile(path.join(root, 'legacy-id-storage/script-copies/角色/故事.txt'), 'utf8'), '旧副本正文')
-  } finally { await rm(root, { recursive: true, force: true }) }
-})
-
-test('多世界书有序绑定支持复用、重复校验及重命名删除同步', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'tavern-multi-books-'))
-  try {
-    const store = createFileResourceStore({ dataRoot: root })
-    await store.ensure()
-    for (const name of ['a', 'b']) await store.writeWorking('cards/' + name + '.json', JSON.stringify({ name, character_book: { entries: [] } }))
-    for (const name of ['one', 'two']) await store.writeWorking('worldbooks/' + name + '.json', JSON.stringify({ name, entries: {} }))
-    const sources = [{ kind: 'embedded', cardPath: 'cards/a.json' }, { kind: 'standalone', path: 'worldbooks/one.json' }, { kind: 'standalone', path: 'worldbooks/two.json' }]
-    await store.bindWorldBooks('cards/a.json', sources)
-    await store.bindWorldBooks('cards/b.json', sources)
-    assert.deepEqual((await store.worldBookBindingForCard('cards/a.json')).sources.map(({ available, ...item }) => item), sources)
-    await assert.rejects(store.bindWorldBooks('cards/a.json', [sources[1], sources[1]]), /重复绑定/)
-    const renamed = await store.rename('worldbooks/one.json', 'renamed')
-    for (const card of ['a', 'b']) assert.equal((await store.worldBookBindingForCard('cards/' + card + '.json')).sources[1].path, renamed.path)
-    await store.remove('worldbooks/two.json')
-    assert.equal((await store.worldBookBindingForCard('cards/b.json')).sources.length, 2)
-    const renamedCard = await store.rename('cards/a.json', 'renamed-card')
-    assert.equal((await store.worldBookBindingForCard('cards/b.json')).sources[0].cardPath, renamedCard.path)
-    assert.equal((await store.worldBookBindingForCard(renamedCard.path)).sources.length, 2)
-    await store.bindWorldBooks('cards/b.json', [])
-    assert.deepEqual(await store.worldBookBindingForCard('cards/b.json'), { kind: 'multiple', sources: [] })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -199,7 +151,6 @@ for (const kind of ['worldbook', 'json', 'png']) {
     assert.deepEqual(await store.metadata(again.path), fallback)
   })
 }
-
 
 test('全局世界书选择持久化，重命名跟随、删除清理并保留人物卡绑定', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tavern-global-books-'))

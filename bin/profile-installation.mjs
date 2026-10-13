@@ -1,4 +1,10 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import installationState from './installation-state.cjs'
+import { recordInstallationReceipt } from './installation-receipt.mjs'
+import { assertRuntimeDependencies } from './runtime-dependencies.mjs'
+import { createUpdateState } from './update-state.mjs'
+import { recordUpdateDiagnostic } from './update-diagnostics.mjs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stopService } from './service-lifecycle.mjs'
@@ -10,7 +16,7 @@ import { migrateLegacyTavernData, resolveTavernDataRoot } from '../tavern-plugin
 import { ensureUserExtensions } from '../tavern-plugin/lib/domain/user-extensions.js'
 import { beginProfileConfigurationUpdate, loadProfileManifest, mergeProfileManifest, prepareProfilePatch, prepareProfileWorkspace, syncProfileDependencyPatches } from './profile-configuration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
-import { INSTALL_HOSTS, SOURCE_ROOT, DSH_ROOT, LEGACY_DSH_ROOT, CLI_RUNTIME_ROOT, RUNTIME_HOST, PROFILE_DIR, LOG_DIR, SCRIPT_PATH, PROFILE, RELEASE_FILE, DEFAULT_COMMIT_URL, REQUIRED_SOURCE_FILES, findDshCommand, requireCommand, run, runDsh } from './launcher-environment.mjs'
+import { INSTALL_HOSTS, SOURCE_ROOT, DSH_ROOT, LEGACY_DSH_ROOT, CLI_RUNTIME_ROOT, RUNTIME_HOST, PROFILE_DIR, LOG_DIR, SCRIPT_PATH, PROFILE, RELEASE_FILE, DEFAULT_COMMIT_URL, REQUIRED_SOURCE_FILES, findDshCommand, requireCommand, run, runInstallCommand, runInstallDsh } from './launcher-environment.mjs'
 
 // Own installation transaction and legacy-source discovery. Desktop never installs a CLI shim.
 export { extractDshVersion } from './dsh-compatibility.mjs'
@@ -209,6 +215,39 @@ export async function recordInstalledRelease(options = {}) {
 }
 
 export async function installProfile(host = RUNTIME_HOST) {
+  const attemptId = process.env.DSH_TAVERN_INSTALL_ATTEMPT || randomUUID()
+  const lease = installationState.acquireInstallation({ dshHome: DSH_ROOT, sourceRoot: SOURCE_ROOT, host, attemptId })
+  let safeToRelease = true
+  const state = createUpdateState(path.join(resolveTavernDataRoot({ dshHome: DSH_ROOT }), 'update-status.json'), DSH_ROOT)
+  async function stage(name, operation) {
+    lease.update({ stage: name, progressAt: Date.now() })
+    recordUpdateDiagnostic(resolveTavernDataRoot({ dshHome: DSH_ROOT }), { event: 'installer.stage.started', attemptId, step: name })
+    try {
+      const result = await operation()
+      recordUpdateDiagnostic(resolveTavernDataRoot({ dshHome: DSH_ROOT }), { event: 'installer.stage.succeeded', attemptId, step: name })
+      return result
+    } catch (error) {
+      recordUpdateDiagnostic(resolveTavernDataRoot({ dshHome: DSH_ROOT }), { event: 'installer.stage.failed', attemptId, step: name, error: String(error.message || error) })
+      throw error
+    }
+  }
+  const supervisedOptions = () => ({ processDirectory: path.join(lease.lockDir, 'processes', randomUUID()) })
+  const runInstall = (command, args, options = {}) => stage(options.label || command, () => runInstallCommand(command, args, { ...options, ...supervisedOptions() }))
+  const runDsh = (command, args, options = {}) => stage(args.includes('--dump-config') ? '验证 Tavern 配置' : '读取 DSH 版本', () => runInstallDsh(command, args, { ...options, ...supervisedOptions() }))
+  try {
+    const receipt = await installProfileOwned(host, { attemptId, runInstall, runDsh })
+    // A manual local install is authoritative only after the same complete
+    // validation/finalization path succeeds. Nested installs leave final status
+    // to their updater, which still has to verify the bootstrap outcome.
+    if (lease.created) await state.write({ phase: 'completed', host, attemptId, completedAt: receipt.verifiedAt, requiresRestart: host === 'desktop' }, { attemptId })
+  } catch (error) {
+    if (error.unsafeToRetry) { safeToRelease = false; lease.retain(String(error.message || error)) }
+    if (lease.created) await state.write({ phase: safeToRelease ? 'failed' : 'blocked', host, attemptId, failedAt: Date.now(), repairSince: Date.now(), repairRequired: true, error: String(error.message || error) }, { attemptId })
+    throw error
+  } finally { if (safeToRelease) lease.release() }
+}
+
+async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
   requireCommand('node', '请安装 Node.js 22.19 或更高版本')
   requireCommand('pnpm', '请运行 npm install -g pnpm')
   verifySource()
@@ -216,11 +255,11 @@ export async function installProfile(host = RUNTIME_HOST) {
   if (host === 'cli' && migrateCliHome({ source: LEGACY_DSH_ROOT, target: DSH_ROOT })) {
     console.log(`已复制旧 CLI 配置与游戏数据到 ${DSH_ROOT}；原数据保持不变。`)
   }
-  const runtime = host === 'cli' ? installCliRuntime({ root: CLI_RUNTIME_ROOT, run }) : null
+  const runtime = host === 'cli' ? await installCliRuntime({ root: CLI_RUNTIME_ROOT, run: runInstall }) : null
   if (runtime?.reused) console.log('已复用版本匹配且可启动的独立 DSH，无需重新下载。')
   try {
     const dsh = runtime?.command || findDshCommand(host)
-    const dshVersion = extractDshVersion(runDsh(dsh, ['--version'], { capture: true, host }))
+    const dshVersion = extractDshVersion(await runDsh(dsh, ['--version'], { capture: true, host, timeoutMs: 30_000 }))
     assertCompatibleDshVersion(dshVersion, host)
     console.log(dshCompatibilityNotice(dshVersion, host))
 
@@ -238,7 +277,7 @@ export async function installProfile(host = RUNTIME_HOST) {
     await ensureUserExtensions(dataRoot)
     if (migration.migratedSources > 0) console.log(`已迁移 ${migration.migratedSources} 处旧数据；冲突保留 ${migration.conflicts} 个。`)
 
-    const hostDependencies = installPluginDependencies({ pluginDirectory: path.join(SOURCE_ROOT, 'tavern-plugin'), dsh, host, run })
+    const hostDependencies = await installPluginDependencies({ pluginDirectory: path.join(SOURCE_ROOT, 'tavern-plugin'), dsh, host, run: runInstall })
     for (const dependency of hostDependencies) console.log(`复用当前 DSH 依赖：${dependency.name} ${dependency.version}`)
     const configuration = prepareProfileConfiguration(host, dshVersion)
     const transaction = await beginProfileConfigurationUpdate({
@@ -255,14 +294,16 @@ export async function installProfile(host = RUNTIME_HOST) {
       syncProfileDependencyPatches({ sourceRoot: SOURCE_ROOT, profileDir: PROFILE_DIR, workspaceText })
       // This generated profile changes dependencies and patch settings on upgrade.
       // Its previous lockfile is not the source repository's frozen lockfile.
-      run('pnpm', ['install', '--no-frozen-lockfile'], { cwd: PROFILE_DIR })
-      runDsh(dsh, ['--profile', PROFILE, '--dump-config'], { host })
+      await runInstall('pnpm', ['install', '--no-frozen-lockfile'], { cwd: PROFILE_DIR })
+      await runDsh(dsh, ['--profile', PROFILE, '--dump-config'], { host, timeoutMs: 60_000 })
+      // --dump-config never imports the plugin; a partial node_modules would only fail after restart.
+      assertRuntimeDependencies(SOURCE_ROOT)
       ensureSidebarDefaults()
       const [theme] = resolveHostDependencies({ dsh, host, requiredExports: { '@deepseek-ai/dsh-client-ui-theme': null } })
       if (patchThemeFontLimit(theme.directory)) console.log('已将 DSH 原有字号上限放宽到 32px。')
       transaction.commit()
     } catch (error) {
-      await transaction.rollback()
+      if (!error.unsafeToRetry) await transaction.rollback()
       throw error
     }
     if (host === 'cli') installCommand()
@@ -274,6 +315,7 @@ export async function installProfile(host = RUNTIME_HOST) {
 
     writeFileSync(path.join(SOURCE_ROOT, '.dsh-tavern-local.json'), JSON.stringify({ host, dshHome: DSH_ROOT }) + '\n')
     runtime?.commit()
+    const receipt = await recordInstallationReceipt({ sourceRoot: SOURCE_ROOT, dshHome: DSH_ROOT, host, attemptId })
     console.log('DSH Tavern 已安装。')
     console.log(host === 'cli' ? `已安装独立 DSH ${dshVersion}：${CLI_RUNTIME_ROOT}；不使用全局 DSH。` : `已复用当前 DSH ${dshVersion} 的本地依赖；未升级或降级宿主。`)
     if (host === 'desktop') {
@@ -286,8 +328,9 @@ export async function installProfile(host = RUNTIME_HOST) {
     if (host === 'cli' && process.platform === 'win32') {
       console.log('如果当前 PowerShell 尚未识别新命令，也可以在仓库目录运行：pnpm run start:tavern')
     }
+    return receipt
   } catch (error) {
-    runtime?.rollback()
+    if (!error.unsafeToRetry) runtime?.rollback()
     throw error
   }
 }

@@ -6,8 +6,6 @@ import {join} from 'node:path'
 import {createChatJournalStore} from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import {createChatPersistence} from '../tavern-plugin/lib/domain/chat-persistence.js'
 import {createTavernScriptHostAdapter} from '../tavern-plugin/lib/domain/tavern-script-host-adapter.js'
-import {createMvuWorkingCopy} from '../tavern-plugin/lib/domain/mvu-working-copy.js'
-import {createConversationPageStore} from '../tavern-plugin/lib/domain/conversation-page-store.js'
 
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'mvu-native-lazy-'));t.after(()=>rm(root,{recursive:true,force:true}))
@@ -15,34 +13,7 @@ async function fixture(t){
  await db.write({id:'c',sessionId:'s',mode:'story',mvu:{enabled:true,owner:'official'},timeline:{schemaVersion:1,branchId:'b',revision:1,checkpoints:[],operations:{}},messages:Array.from({length:256},(_,i)=>({role:'assistant',turn:i+1,text:'body '+i,swipeId:0,variables:[{stat_data:{hp:i},schema:{}}]}))})
  return {db,io,root}
 }
-test('native reader pins old revisions, loads points, and retains local edits through full materialization',async t=>{
- const {db,io}=await fixture(t),base=await db.readSettlementBase('c')
- io.length=0
- assert.throws(()=>base.chat.messages[20],/not loaded/)
- const work=createMvuWorkingCopy(base.chat,'e',{ensure:base.ensure})
- await db.patch('c',base.chat._storageRevision,[{op:'set',path:['messages',20,'variables',0,'stat_data','hp'],value:999}])
- io.length=0
- await work.touchAsync(20)
- assert.equal(work.chat.messages[20].variables[0].stat_data.hp,20,'read must use pinned revision')
- assert.ok(io.filter(e=>e.type==='page').length<=2)
- work.chat.messages[20].variables[0].stat_data.hp=77
- assert.equal(await base.previousMvu(255),254)
- await work.ensure()
- assert.equal(work.chat.messages[20].variables[0].stat_data.hp,77)
- assert.equal(base.chat.messages[20].variables[0].stat_data.hp,20)
- assert.equal(work.chat.messages[0].text,'body 0')
- assert.deepEqual([...work.dirty],[20])
-})
-test('old native pages without MVU flags remain searchable and changed flags are persisted',async t=>{
- const {db,root}=await fixture(t),pages=createConversationPageStore({root:join(root,'chats')})
- const head=await pages.readHead('c'),page=await pages.readHistoryPage('c',{cursor:head.snapshotCursor,limit:2})
- for(const row of page.messages)delete row.message.session.mvuSnapshot
- await pages.commit('c',{expectedRevision:head.revision,edits:page.messages})
- assert.equal(await (await db.readSettlementBase('c')).previousMvu(255),254)
- const state=await db.readSlice('c',[])
- await db.patch('c',state.chat._storageRevision,[{op:'set',path:['messages',254,'variables'],value:[{}]}])
- assert.equal(await (await db.readSettlementBase('c')).previousMvu(255),253)
-})
+
 for(const full of [false,true])test(`adapter transaction edits old floors and reads its writes, full=${full}`,async t=>{
  const {db}=await fixture(t)
  let adapter,eventId,materializations=0,reads=0
@@ -106,23 +77,4 @@ test('native effects reject conflicting fields while allowing unrelated concurre
  const conflicting=structuredClone(before);conflicting.messages[0].variables[0].hp=10
  assert.throws(()=>applyMvuSettlementEffect(conflicting,effect),/并发修改/)
  assert.equal(conflicting.messages[0].variables[0].hp,10)
-})
-
-test('a write waiting for an old floor cannot mutate after its transaction finishes',async t=>{
- const {db}=await fixture(t),base=await db.readSettlementBase('c'),originalEnsure=base.ensure
- let unblock,started,late,adapter
- const blocked=new Promise(r=>{unblock=r}),entered=new Promise(r=>{started=r})
- base.ensure=async indices=>{if(indices?.includes(20)){started();await blocked}return originalEnsure(indices)}
- adapter=createTavernScriptHostAdapter({resolveChat:db.read,writeChat:db.write,resolveSettlementBase:async()=>base,
-  resolveChatSlice:(_s,indices,fields)=>db.readSlice('c',indices,fields),readCard:async()=>({}),worldBooks:{bound:async()=>null},
-  scriptDispatch:{supportsContextProjection:true,status:()=>({ready:true}),async dispatch(_s,_n,_a,_c,options){
-   await options.contextForBaseline({workContextVersion:1,complete:true,chatId:'c',stateRevision:base.chat._storageRevision,lifecycleRevision:0,messageCount:256})
-   late=adapter.updateVariables('s',{type:'message',message_id:20},{stat_data:{hp:99},schema:{}},0,options.eventId).then(()=>null,error=>error)
-   await entered
-   return {handled:true}
-  }}})
- const result=await adapter.settleMvuUpdate({sessionId:'s',operationId:'op',branchId:'b',basedOnRevision:1,messageId:255,swipeId:0,expectedLifecycleRevision:0,command:'update',compactResult:true,compactContext:true,preserveForeground:true})
- unblock()
- assert.match((await late).message,/结算已结束/)
- assert.ok(!result.effect.changes.some(c=>c.path[0]==='messages'&&c.path[1]===20))
 })

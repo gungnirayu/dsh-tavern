@@ -51,7 +51,7 @@ export function initializationFixture(options = {}) {
       timeline,
       userPreferenceProfile: options.userPreferenceProfile,
       presets: { fullSnapshot: async () => { state.presetReads++; await fail('preset'); return structuredClone(state.preset) } },
-      settings: async () => state.settings, cardGreeting: () => '卡片工作台开场白', emptyCardWorkspace: () => ({ mountedResources: [], draft: {} }),
+      settings: async () => state.settings, emptyCardWorkspace: () => ({ mountedResources: [], draft: {} }),
       id: prefix => prefix + '-' + ++sequence, now: () => 123,
       native: {
         async wait(id) { trace.push('wait'); await fail('wait'); const target = session(id); return { session: target, agent: { phase: target.phase } } },

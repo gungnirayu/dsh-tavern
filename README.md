@@ -7,13 +7,13 @@
 
 # DSH Tavern
 
-**基于 DSH（DeepSeek Harness）的 Agent 酒馆。兼容 SillyTavern 生态，人物卡直接导入就能玩。**
+**基于 DSH（DeepSeek Harness）的 Agent 酒馆。兼容 SillyTavern 生态，人物卡导入就能玩。**
 
-更快 · 更稳 · 更鲜活 · 所有模型都能用（不限于 DeepSeek）· 手机也能玩
+更快 · 更稳 · 更鲜活 · 所有模型都能用 · 手机也能玩
 
 [![观看 3 分钟实机演示：兼容酒馆生态，更快、更稳、更鲜活](docs/images/readme/promo-video.jpg)](https://www.bilibili.com/video/BV1MHaU6NE7S/)
 
-[下载安装](#快速开始) · [使用文档](https://flizzywine.github.io/dsh-tavern/) · [宣传视频](https://www.bilibili.com/video/BV1MHaU6NE7S/) · [讨论区](https://github.com/flizzywine/dsh-tavern/discussions) · [Discord](https://discord.com/channels/1134557553011998840/1538577327028445194)
+[下载安装](#快速开始) · [使用文档](https://flizzywine.github.io/dsh-tavern/) · [宣传视频](https://www.bilibili.com/video/BV1MHaU6NE7S/) · [讨论区](https://github.com/flizzywine/dsh-tavern/discussions)
 
 - **兼容 SillyTavern 生态**：人物卡、世界书、预设、正则美化、MVU、酒馆助手脚本，导入就能用。
 - **更快**：一轮约 10 秒，缓存命中率 95% 以上。
@@ -62,7 +62,7 @@
 
 ### 自助调试 Agent
 
-正则没生效、美化显示不对、状态栏没更新？在右侧点「交给卡片 Agent 调试」，Agent 会读取这局的实际游玩记录和日志，分析原因并修改相关资源，不用自己翻配置猜问题。[了解更多 →](https://flizzywine.github.io/dsh-tavern/#h08)
+正则没生效、美化显示不对、状态栏没更新？在右侧展开「遇到显示或生成问题？」，点「交给卡片 Agent 调试」，Agent 会读取这局的实际游玩记录和日志，分析原因并修改相关资源，不用自己翻配置猜问题。[了解更多 →](https://flizzywine.github.io/dsh-tavern/#h08)
 
 ### Guide：给这一局注入上下文指引
 
@@ -82,9 +82,23 @@
 
 把写作教程或喜欢的样文交给 Agent，提炼成场景写作 Skill，比如打斗、悬疑、感情戏各有一套写法；游玩时模型按场景自动选用。[了解更多 →](https://flizzywine.github.io/dsh-tavern/#m04)
 
-### 支持 DSH 插件生态
+### 支持插件生态
 
-酒馆运行在 DSH 上，可以自行安装其他 DSH 插件一起使用，例如手机访问的 [dsh-pocket](https://github.com/shaobeichen/dsh-pocket)、远程登录认证的 [dsh-webui-auth](https://github.com/Yuuz12/dsh-webui-auth)、语音朗读插件等。缺什么能力，也可以让 Agent 帮你写一个自定义工具。[了解更多 →](https://flizzywine.github.io/dsh-tavern/#m07)
+插件分两类：
+
+**DSH 插件**：酒馆运行在 DSH 上，可以直接安装其他 DSH 插件一起使用，例如手机访问的 [dsh-pocket](https://github.com/shaobeichen/dsh-pocket)、远程登录认证的 [dsh-webui-auth](https://github.com/Yuuz12/dsh-webui-auth)、语音朗读插件等。缺什么能力，也可以让 Agent 帮你写一个自定义工具。[了解更多 →](https://flizzywine.github.io/dsh-tavern/#m07)
+
+**DSH Tavern 专属插件**：为酒馆游玩专门开发的插件。社区已有：
+
+| 插件                                                                           | 作用                                 |
+| ---------------------------------------------------------------------------- | ---------------------------------- |
+| [dsh-tavern-image](https://github.com/weixinlll/dsh-tavern-image)            | 剧情自动配图，支持 ComfyUI、NovelAI、Gemini 等多平台，带人物库 |
+| [dsh-card-updater](https://github.com/flizzywine/dsh-tavern/discussions/149) | 卡片更新器，作者发布新版时提醒你                   |
+| [dsh-wrongbook](https://github.com/flizzywine/dsh-tavern/discussions/150)    | 错题库，按人物卡记下调试踩过的坑                   |
+| [动态世界书生成](https://github.com/flizzywine/dsh-tavern/discussions/147)          | 后台结算时生成世界书条目                       |
+| [SQLite V2](https://github.com/flizzywine/dsh-tavern/discussions/156)        | SQLite 存档，回退时清掉被回退的内容              |
+
+以上均为社区作者开发，更多插件见[讨论区的 Show and tell](https://github.com/flizzywine/dsh-tavern/discussions/categories/show-and-tell)。
 
 ## 看看实际效果
 
@@ -92,9 +106,7 @@
 
 ![MVU 人物卡的变量更新结果与右侧酒馆状态栏](docs/images/readme/mvu-status-panel.png)
 
-**小手机**：边读剧情，边看角色发来的消息。
-
-![正文与右侧小手机聊天界面](docs/images/readme/phone-panel.png)
+**小手机**：带小手机的人物卡也能用。
 
 **场景插画**：为当前剧情配一张图。
 
@@ -106,7 +118,7 @@
 
 **方式一：一键安装包（推荐）**
 
-**[下载 Windows 安装包](https://github.com/flizzywine/dsh-tavern/releases/download/v2.4/DSH-Tavern-Desktop-2.0.13-x64-Setup5.exe)**（x64），双击运行，保持联网，按提示完成。以后从桌面「DSH Tavern」快捷方式打开，无需另装 Node.js 或 DSH Desktop。[图文教程 →](https://flizzywine.github.io/dsh-tavern/#a02--section-2)
+**[下载 Windows 安装包](https://github.com/flizzywine/dsh-tavern/releases/download/v2.6/DSH-Tavern-Desktop-2.0.13-x64-Setup8.exe)**（x64），双击运行，保持联网，按提示完成。以后从桌面「DSH Tavern」快捷方式打开，无需另装 Node.js 或 DSH Desktop。[图文教程 →](https://flizzywine.github.io/dsh-tavern/#a02--section-2)
 
 **方式二：借助 DSH Desktop**
 
@@ -174,9 +186,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/install.sh | D
 欢迎交流使用经验、分享人物卡或反馈问题：
 
 - **[GitHub Discussions](https://github.com/flizzywine/dsh-tavern/discussions)**：任何人都可以直接发帖。
-- **[Discord 讨论频道](https://discord.com/channels/1134557553011998840/1538577327028445194)**：需要类脑社区成员资格才能进入。
 
-本项目没有 QQ 群、微信群或其他群聊。
+本项目没有官方的 QQ 群、微信群或其他群聊。想建群的朋友可以在 Discussions 发帖招呼大家，但我不会加入。
 
 反馈故障时，可从对话顶部的“日志”下载执行记录；分享前请检查其中的对话和附件隐私。
 

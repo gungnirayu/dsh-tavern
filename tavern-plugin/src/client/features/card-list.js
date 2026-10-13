@@ -124,15 +124,25 @@
 				} catch (error) { setNotice(previous => previous + " 刷新失败：" + String(error && error.message || error)); }
 				finally { running.current = false; setBusy(false); }
 			}
-			function toolbar(visible) {
+			// One compact bar: select-all, count, actions, done. `extra` holds the
+			// caller's own actions (e.g. moving to a group).
+			function toolbar(visible, extra) {
 				const h = React.createElement;
+				const allSelected = visible.length > 0 && visible.every(card => paths.includes(card.path));
+				function toggleAll() {
+					if (allSelected) setPaths(previous => previous.filter(path => !visible.some(card => card.path === path)));
+					else setPaths(previous => Array.from(new Set(previous.concat(visible.map(card => card.path)))));
+				}
 				return h("div", { className: "dsh-tavern-card-batch" },
-					h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: function () { setManaging(!managing); setPaths([]); setNotice(""); } }, managing ? "取消批量选择" : "批量管理"),
-					managing ? h(React.Fragment, null,
-						h("button", { className: "dsh-tavern-btn", disabled: busy || !visible.length, onClick: function () { setPaths(previous => Array.from(new Set(previous.concat(visible.map(card => card.path))))); } }, "全选当前列表"),
-						h("button", { className: "dsh-tavern-btn", disabled: busy || !selected.length, onClick: function () { setPaths([]); } }, "清空选择"),
-						h("span", { className: "dsh-tavern-card-batch-count" }, "已选 " + selected.length + " 张"),
-						h("button", { className: "dsh-tavern-btn danger", disabled: busy || !selected.length, onClick: removeSelected }, busy ? "正在删除…" : "删除所选（" + selected.length + "）")) : null,
+					h("label", { className: "dsh-tavern-card-batch-all" },
+						h("input", { type: "checkbox", className: "dsh-tavern-card-batch-checkbox", checked: allSelected, disabled: busy || !visible.length, "aria-label": "全选当前列表",
+							ref: function (element) { if (element) element.indeterminate = !allSelected && selected.length > 0; }, onChange: toggleAll }),
+						"全选"),
+					h("span", { className: "dsh-tavern-card-batch-count" }, selected.length ? "已选 " + selected.length + " 张" : "点击人物卡选择"),
+					h("span", { className: "dsh-tavern-spacer" }),
+					extra || null,
+					h("button", { className: "dsh-tavern-btn danger", disabled: busy || !selected.length, onClick: removeSelected }, busy ? "正在删除…" : "删除" + (selected.length ? "（" + selected.length + "）" : "")),
+					h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: reset }, "完成"),
 					notice ? h("div", { role: "status", className: "dsh-tavern-card-batch-notice" }, notice) : null);
 			}
 			function checkbox(card) {
@@ -156,11 +166,14 @@
 		function groupTavernHistory(history, summaries = {}) {
 			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
 			function activity(item) { return Math.max(timestamp(item.lastOpenedAt), timestamp(item.updatedAt), timestamp(summaries[item.sessionId]?.updatedAt)); }
+			// Groups follow the latest activity; conversations inside keep their creation order.
 			const groups = new Map();
-			for (const item of history.slice().sort((a, b) => activity(b) - activity(a))) {
+			for (const item of history.slice().sort((a, b) => timestamp(b.createdAt) - timestamp(a.createdAt))) {
 				const key = tavernHistoryCardKey(item);
-				if (!groups.has(key)) groups.set(key, { key, name: item.cardName || "未命名人物卡", path: item.cardPath || "", items: [] });
-				groups.get(key).items.push(item);
+				if (!groups.has(key)) groups.set(key, { key, name: item.cardName || "未命名人物卡", path: item.cardPath || "", items: [], activity: 0 });
+				const group = groups.get(key);
+				group.items.push(item);
+				group.activity = Math.max(group.activity, activity(item));
 			}
-			return Array.from(groups.values());
+			return Array.from(groups.values()).sort((a, b) => b.activity - a.activity);
 		}

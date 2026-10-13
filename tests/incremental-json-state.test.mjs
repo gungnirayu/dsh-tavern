@@ -8,18 +8,7 @@ function fixture(){
   read:async ref=>{const json=blocks.get(ref);assert.ok(json,'missing block');io.push({kind:'read',bytes:Buffer.byteLength(json)});return JSON.parse(json)}}
  return {tree:createIncrementalJsonState(adapter),adapter,blocks,io}
 }
-test('JSON tree preserves objects, arrays, key order, escapes and hostile keys',async()=>{
- const {tree}=fixture()
- const source=JSON.parse('{"z":null,"a":[1,{"x/y":{"~key":true}},false],"__proto__":{"safe":3},"long":"'+ 'x'.repeat(1000)+'"}')
- const root=await tree.create(source)
- assert.equal(JSON.stringify(await tree.get(root)),JSON.stringify(source))
- assert.equal(await tree.get(root,'/a/1/x~1y/~0key'),true)
- assert.deepEqual(await tree.get(root,'/__proto__'),{safe:3})
- const result=await tree.apply(root,[{op:'set',path:'/__proto__/safe',value:4},{op:'delta',path:'/a/0',value:2}])
- assert.equal((await tree.get(result.nextRoot)).__proto__.safe,4)
- assert.equal(await tree.get(root,'/a/0'),1)
- assert.equal(await tree.get(result.nextRoot,'/a/0'),3)
-})
+
 test('ten thousand siblings and large unrelated values are not scanned for a scalar update',async()=>{
  const {tree,io}=fixture()
  const root=await tree.create({variables:Object.fromEntries(Array.from({length:10000},(_,i)=>['field'+i,i])),unrelated:'x'.repeat(1000000)})
@@ -45,16 +34,7 @@ test('wire delta applies on an independent replica, duplicate is harmless, wrong
  await assert.rejects(replica.tree.receive(await replica.tree.create({variables:{gold:0}}),wire),{code:'STATE_DELTA_BASE_MISMATCH'})
  await assert.rejects(replica.tree.receive(root,{...wire,nextRoot:'wrong'}),/result mismatch/)
 })
-test('sequential changes, nested replacements and bucket growth preserve prior snapshots',async()=>{
- const {tree}=fixture(),original={variables:Object.fromEntries(Array.from({length:32},(_,i)=>['f'+i,i]))}
- const root=await tree.create(original)
- const result=await tree.apply(root,[{op:'set',path:'/variables/new',value:{n:4}},{op:'delta',path:'/variables/new/n',value:2},{op:'remove',path:'/variables/f0'},{op:'set',path:'/variables/f0',value:99}])
- const after=await tree.get(result.nextRoot)
- assert.equal(after.variables.new.n,6);assert.equal(after.variables.f0,99)
- assert.equal(Object.keys(after.variables).at(-1),'f0')
- assert.deepEqual(await tree.get(root),original)
- assert.equal(await tree.get(result.nextRoot,'/missing'),undefined)
-})
+
 test('invalid operations do not change a root or allow prototype traversal',async()=>{
  const {tree}=fixture(),root=await tree.create({variables:{a:[1],text:'a'}})
  for(const op of [

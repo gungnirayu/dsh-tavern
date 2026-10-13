@@ -66,7 +66,7 @@ DSH Tavern 是一个以文字为主的 AI 角色扮演与故事游玩工具，�
 - 一个可用的文字模型服务（任意模型均可，不限于 DeepSeek），准备服务地址、模型名称和所需的 API 密钥；模型调用可能产生费用。
 - 一张想玩的 PNG / JSON 人物卡；也可以安装后再通过卡片模式制作。
 
-不用先导入外部预设。用户画像、文生图和其他高级设置都可以先跳过，遇到需要时再查。
+不用先导入外部预设。长期偏好、文生图和其他高级设置都可以先跳过，遇到需要时再查。
 
 ## 下一步
 
@@ -85,7 +85,7 @@ export const installation = `
 | 想用浏览器访问，并自己管理服务；或使用 Linux / WSL2 | [C．命令行版](#a02--section-4) | 需要，先准备 Node.js |
 | Android 11 及以上、ARM64，想直接装酒馆应用 | [D．Android 独立 APK](#a02--section-5) | 不需要 |
 | Android，已经在使用 DSHA，或需要尝试兼容包 | [E．通过 DSHA 安装](#a02--section-6) | 在 DSHA 中执行安装命令 |
-| 已有适配版本的 DSH，准备新建 Tavern Profile | [标准插件安装（试验）](#plugin-installation) | 需要 |
+| 已有适配版本的 DSH，准备新建 Tavern Profile | [用 DSH 命令安装 Tavern（试验）](#plugin-installation) | 需要 |
 
 **Windows 不知道怎么选，就选 A；想按你已有的 DSH Desktop 来安装，就选 B。** A 已包含 Desktop，不用再做一遍 B。
 
@@ -97,9 +97,9 @@ export const installation = `
 
 ### 第 1 步：下载安装包
 
-[下载 Windows 一键在线安装 EXE](https://github.com/flizzywine/dsh-tavern/releases/download/v2.4/DSH-Tavern-Desktop-2.0.13-x64-Setup5.exe)
+[下载 Windows 一键在线安装 EXE](https://github.com/flizzywine/dsh-tavern/releases/download/v2.6/DSH-Tavern-Desktop-2.0.13-x64-Setup8.exe)
 
-下载的文件名是 \`DSH-Tavern-Desktop-2.0.13-x64-Setup5.exe\`。这是在线安装器，安装时仍需要联网。
+下载的文件名是 \`DSH-Tavern-Desktop-2.0.13-x64-Setup8.exe\`。这是在线安装器，安装时仍需要联网。
 
 ### 第 2 步：安装并等待完成
 
@@ -350,7 +350,7 @@ dsh-tavern --help
 3. 导入一张 PNG / JSON 人物卡，选择新建游玩。
 4. 预览开场，按需设置玩家称呼，发送第一条行动。
 
-看到新生成的剧情正文，就完成了第一次游玩。详细步骤见[第一次游玩](#a04)。外部预设、用户画像、文生图等功能可以之后再配置。
+看到新生成的剧情正文，就完成了第一次游玩。详细步骤见[第一次游玩](#a04)。外部预设、长期偏好、文生图等功能可以之后再配置。
 
 ## 关机后如何重新打开
 

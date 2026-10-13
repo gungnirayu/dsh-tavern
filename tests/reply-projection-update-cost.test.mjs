@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createIncrementalReplyView} from '../tavern-plugin/lib/domain/incremental-reply-view.js'
 import {createSessionViewSync} from '../tavern-plugin/lib/domain/session-view-sync.js'
-import {projectRuntimeReplyHistory} from '../tavern-plugin/lib/domain/runtime-content-projection.js'
+import {projectReplyHistory} from '../tavern-plugin/lib/domain/reply-presentation.js'
 import {projectPersistentStatusView} from '../tavern-plugin/lib/domain/persistent-status-view.js'
 const options={charName:'角色',macroState:{userName:'玩家'}}
 for(const count of [20,400,10000])test(`body point projection and wire delta avoid traversing ${count} historical rows`,async()=>{
@@ -36,7 +36,7 @@ test('indexed reply cache preserves append, role-change and truncation results',
  const cache=createIncrementalReplyView({readChanges:async()=>changes})
  async function check(){
   const actual=await cache.project(chat,options,options)
-  const history=projectRuntimeReplyHistory(chat.messages,options)
+  const history=projectReplyHistory(chat.messages,options)
   assert.deepEqual(actual,{...projectPersistentStatusView(chat.messages,history.projections,options),presentation:null,latestSourceBacked:history.latestSourceBacked})
  }
  await check()
@@ -45,18 +45,4 @@ test('indexed reply cache preserves append, role-change and truncation results',
  await edit(chat.messages.map((m,i)=>i===1?{role:'assistant',text:'<b>changed role</b>'}:m),[1])
  await edit(chat.messages.slice(0,1),[])
  await edit([],[])
-})
-
-
-test('persistent status declarations still remove captured panels and track the current target',async()=>{
- const opts={...options,regexScripts:[{id:'panel',placement:[2],markdownOnly:true,findRegex:'<StatusPlaceHolderImpl/>',replaceString:'<script>show()</script>'}]}
- let chat={id:'panel',_storageRevision:1,messages:[{role:'assistant',greeting:true,sourceText:'<StatusPlaceHolderImpl/>',text:'<StatusPlaceHolderImpl/>'}]},changes
- const cache=createIncrementalReplyView({readChanges:async()=>changes})
- for(let i=0;i<2;i++){
-  const history=projectRuntimeReplyHistory(chat.messages,opts)
-  assert.deepEqual(await cache.project(chat,opts,opts),{...projectPersistentStatusView(chat.messages,history.projections,opts),presentation:null,latestSourceBacked:history.latestSourceBacked})
-  const baseRevision=chat._storageRevision
-  chat={...chat,_storageRevision:2,messages:[...chat.messages,{role:'assistant',turn:2,bodyEdit:true,text:'new'}]}
-  changes={baseRevision,chat,messageCount:2,denseMessages:true,indices:[1]}
- }
 })

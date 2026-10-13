@@ -15,6 +15,18 @@
 
 自动执行：启动酒馆 → 选择角色卡 → 新开一局 → 发消息玩一轮 → 检查正文、金币和人物姿势 → 刷新页面 → 确认同一局的数据仍然保留 → 生成 4+1 候选项并选择行动 → 再玩一轮 → 重新生成正文 → 编辑正文并刷新 → 回退并刷新 → 撤销回退 → Guide 添加/删除 → 重新结算变量 → 导出纯对话 → 切换本局预设并继续游玩。
 
+## 改卡真实消耗
+
+`TAVERN_E2E_CARD_EDIT_SOURCE=/本地/人物卡.json TAVERN_E2E_TIMEOUT_MS=120000 node tests/e2e/gameplay.mjs --real-card-edit`
+复制指定人物卡到隔离 Profile，用 `~/.dsh-tavern` 已配置的真实模型在卡片工作台完成一次改卡任务，把步数、每步及合计 token（未缓存输入、缓存命中、输出）写入 `card-edit-usage.json`。可用 `TAVERN_E2E_CARD_EDIT_TASK`、`TAVERN_E2E_CARD_EDIT_MODEL`、`TAVERN_E2E_CARD_EDIT_EFFORT` 调整。会产生真实模型费用；步数随模型波动，对比时多跑几次。
+
+## 坏档自愈（#196）
+
+`TAVERN_E2E_HOME=$PWD/output/e2e-broken-home TAVERN_E2E_RESTORE_DATA=tests/fixtures/saves/issue-196-broken.tar.gz TAVERN_E2E_BROKEN_HEAL=send-now|send|regen node tests/e2e/gameplay.mjs --broken-save`
+用当前版本打开一份真实坏档快照：存档漏记了一轮，模型上下文里却有。验收打开即补记、立刻发送不卡住且顺序正确、重新生成与回退正常，最后存档与模型上下文一致。约 75 秒。
+
+快照由有缺陷的 v2.6 插件真实玩出：`TAVERN_E2E_HOME=<同一目录> TAVERN_E2E_KEEP=1 TAVERN_E2E_BROKEN_STOP=1 TAVERN_E2E_PLUGIN_SOURCE=<v2.6 检出>/tavern-plugin node tests/e2e/gameplay.mjs --broken-save`，再把该目录的 `profile-data` 打包。会话路径包含家目录，快照在本仓库的 `output/e2e-broken-home` 生成，恢复时必须用同一路径；换机器或仓库位置需按上面的命令重新生成快照。
+
 ## 运行
 
 安装项目依赖并准备 Chromium：

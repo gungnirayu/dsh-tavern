@@ -38,6 +38,7 @@ export function projectTavernHelperScripts(helperScripts, savedVariables) {
       content: str(source.content).replace(/^\s*```(?:javascript|js)?[^\S\r\n]*\r?\n([\s\S]*?)\r?\n```\s*$/i, '$1'),
       data: clone(initial),
       buttons: clone(Array.isArray(source.buttons) ? source.buttons : []),
+      buttonsEnabled: source.buttonsEnabled !== false,
       info: str(source.info)
     })
   }

@@ -13,7 +13,7 @@ const legacyPatch = await readFile(new URL('../config/legacy-profile-patch-v0.6.
 function sourceManifest() {
   return {
     dependencies: {
-      'dsh-web-mobile': '2.3.0',
+      'dsh-web-mobile': '2.4.1',
       'dsh-better-sidebar': '0.16.0',
       'dsh-tavern-plugin': 'link:./tavern-plugin',
       'dsh-tavern-remote': 'link:./tavern-plugin/packages/dsh-tavern-remote',
@@ -38,7 +38,7 @@ for (const recorded of [false, true]) {
     const next = mergeProfileManifest(options)
     assert.equal(next.dependencies[oldName], undefined)
     assert.equal(next.dsh.profile.bundles.includes(oldName), false)
-    assert.equal(next.dependencies['dsh-web-mobile'], '2.3.0')
+    assert.equal(next.dependencies['dsh-web-mobile'], '2.4.1')
     assert.equal(next.dsh.profile.bundles.filter(name => name === 'dsh-web-mobile').length, 1)
     assert.equal(next.dependencies['user-plugin'], 'link:/user/plugin')
     assert.ok(next.dsh.profile.bundles.includes('user-plugin'))

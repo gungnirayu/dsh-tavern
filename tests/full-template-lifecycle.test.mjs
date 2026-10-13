@@ -4,46 +4,6 @@ import { UpstreamTemplateRuntime } from './fixtures/upstream-template-runtime.mj
 
 const runtime = await UpstreamTemplateRuntime.create()
 
-test('上游设置与 Monaco 编辑器实际加载，保存/取消与条目保存使用同一实例', async () => {
-  // This panel test must initialize its own settings, independent of earlier lifecycle tests.
-  await runtime.panel({settings:{preload_worldinfo_enabled:false},worldBookEntries:[{uid:1301,comment:'编辑样例',content:'原文 <%= 1 %>'}]})
-  const page=runtime.page
-  const listeners=await page.evaluate(()=>window.testHost.eventSource.count())
-  await page.locator('#pt_code_editor').check()
-  // Upstream lazy loader registers APP_READY only after Monaco is ready.
-  await page.waitForFunction(count=>window.testHost.eventSource.count()>count, listeners, {timeout:20000})
-  await page.getByRole('button',{name:'展开编辑',exact:true}).click()
-  await page.getByRole('button',{name:'Monaco 编辑',exact:true}).waitFor({state:'visible',timeout:20000})
-  await page.getByRole('button',{name:'Monaco 编辑',exact:true}).click()
-  await page.locator('.monaco-editor').waitFor({state:'visible'})
-  await page.locator('.monaco-editor .view-lines').click()
-  await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.type('取消内容')
-  await page.getByRole('button',{name:'取消',exact:true}).click()
-  assert.equal(await page.getByRole('textbox',{name:'条目正文',exact:true}).inputValue(),'原文 <%= 1 %>')
-  await page.getByRole('button',{name:'Monaco 编辑',exact:true}).click()
-  await page.locator('.monaco-editor .view-lines').click()
-  await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.insertText('已保存的模板正文')
-  await page.getByRole('button',{name:'Save',exact:true}).click()
-  assert.equal(await page.getByRole('textbox',{name:'条目正文',exact:true}).inputValue(),'已保存的模板正文')
-  await page.getByRole('button',{name:'保存条目',exact:true}).click()
-  await page.getByRole('status').filter({hasText:'已保存'}).waitFor()
-})
-
-test('显示脚本在真正展示的 frame 执行一次，格式化镜像不执行脚本或事件属性', async () => {
-  const content='<p>正文</p><script>window.__visibleCount=(window.__visibleCount||0)+1</script><img src="data:image/png,broken" onerror="window.__imageFired=true">正文'
-  const result=await runtime.lifecycle({settings:{preload_worldinfo_enabled:false,raw_message_evaluation_enabled:true},transcript:[{role:'assistant',content}],worldBookEntries:[{uid:1401,comment:'render',constant:true,enabled:false,content:'@@render_before\n前缀'}]})
-  const page=runtime.page
-  await page.waitForFunction(()=>document.querySelector('#chat img')?.complete)
-  assert.equal(await page.evaluate(()=>window.__visibleCount),undefined)
-  assert.equal(await page.evaluate(()=>window.__imageFired),undefined)
-  const html=result.first.chat[0].template_display.html
-  assert.match(html,/onerror=/)
-  await page.evaluate(html=>{const frame=document.createElement('iframe');frame.id='visible-test';frame.srcdoc=html;document.body.append(frame)},html)
-  await page.waitForFunction(()=>document.querySelector('#visible-test')?.contentWindow.__imageFired===true)
-  assert.equal(await page.evaluate(()=>document.querySelector('#visible-test').contentWindow.__visibleCount),1)
-  await page.locator('#visible-test').evaluate(frame=>frame.remove())
-})
-
 test('新轮次、全局变量与设置变化保留旧展示；编辑只更新对应楼层，回退恢复快照', async () => {
   const source='当时的值 <%= getGlobalVar("hp") %>'
   const states=await runtime.history({globalVariables:{hp:7},settings:{preload_worldinfo_enabled:false,raw_message_evaluation_enabled:false},transcript:[{role:'assistant',content:source}]},[

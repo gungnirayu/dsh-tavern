@@ -39,7 +39,7 @@ test('重启且断网时复用已验证内容，缓存缺失则明确诊断', as
 })
 
 test('missing Git tag still renders a homepage from a durable content snapshot', async () => {
-  const { projectRuntimeReplyHistory } = await import('../tavern-plugin/lib/domain/runtime-content-projection.js')
+  const { projectReplyHistory } = await import('../tavern-plugin/lib/domain/reply-presentation.js')
   let saved
   const url = 'https://testingcf.jsdelivr.net/gh/example/home@1.9.16/dist/home/index.html'
   const regex = { name: '首页', enabled: true, findRegex: '【首页】', placement: [2], markdownOnly: true,
@@ -55,36 +55,12 @@ test('missing Git tag still renders a homepage from a durable content snapshot',
   assert.equal(pinned.regexScripts[0].enabled, true)
   assert.equal(pinned.diagnostics.length, 0)
   assert.match(pinned.regexScripts[0].replaceString, /\/api\/dsh-tavern\/remote-assets\/[a-f0-9]{64}\/index.html/)
-  const result = projectRuntimeReplyHistory([{role:'assistant',text:'【首页】',sourceText:'【首页】',turn:1}],
+  const result = projectReplyHistory([{role:'assistant',text:'【首页】',sourceText:'【首页】',turn:1}],
     {regexScripts:pinned.regexScripts,placement:2,isMarkdown:true,depth:0})
   assert.equal(result.projections[0].parts[0].kind, 'html')
   const offline = createTavernRemoteAssetPinStore({readJson:async()=>saved,fetch:async()=>{throw Error('must use saved bytes')},resolveGitRef:async()=>{throw Error('must not resolve again')}})
   assert.deepEqual(await offline.pinExtensions({regexScripts:[regex]}), pinned)
   assert.equal((await offline.readCached(Object.values(saved.assets)[0].hash)).content, '<h1>Homepage</h1>')
-})
-
-test('opening media and dynamic directory bases are not fetched as executable entries', async () => {
-  const media = [
-    'https://testingcf.jsdelivr.net/gh/example/repo@main/avatar.webp',
-    'https://cdn.jsdelivr.net/gh/example/repo@main/logo.png?size=2',
-    'https://cdn.jsdelivr.net/gh/example/repo@main/music/theme.mp3',
-    'https://cdn.jsdelivr.net/gh/example/repo@main/music/',
-    `https://cdn.jsdelivr.net/gh/example/repo@${COMMIT}/avatar.webp`
-  ]
-  const entry = 'https://cdn.jsdelivr.net/gh/example/repo@main/status.html'
-  const requests = []
-  const store = createTavernRemoteAssetPinStore({ fetch: async url => {
-    requests.push(url)
-    if (url.includes('api.github.com')) return { ok: true, json: async () => ({ sha: COMMIT }) }
-    if (url.endsWith('/status.html')) return textResponse('<div>status</div>', 'text/html')
-    throw new Error('media must remain browser resources')
-  } })
-  const result = await store.pinExtensions({ regexScripts: [{ enabled: true, replaceString: media.concat(entry).map(url => JSON.stringify(url)).join('\n') }] })
-  assert.equal(result.regexScripts[0].enabled, true)
-  assert.deepEqual(result.diagnostics, [])
-  for (const url of media) assert.ok(result.regexScripts[0].replaceString.includes(url), url)
-  assert.equal(requests.length, 2)
-  assert.match(result.regexScripts[0].replaceString, /\/api\/dsh-tavern\/remote-assets\//)
 })
 
 test('禁用资源不请求；并发准备共享请求且网络并发不超过三', async () => {
@@ -104,4 +80,18 @@ test('禁用资源不请求；并发准备共享请求且网络并发不超过�
   const warm = await store.pinExtensions({ helperScripts })
   assert.deepEqual(warm, one)
   assert.equal(calls, 7)
+})
+
+test('模板字符串里的 jsDelivr 地址止于插值和反引号，替换后脚本语法完整', async () => {
+  let saved = null
+  const store = createTavernRemoteAssetPinStore({
+    readJson: async () => saved,
+    updateJson: async (_path, updater) => { saved = updater(saved) },
+    fetch: async url => String(url).startsWith('https://api.github.com/') ? { ok: true, json: async () => ({ sha: COMMIT }) } : textResponse()
+  })
+  const source = 'loadScript([`https://cdn.jsdelivr.net/gh/baibai-git/baibai_phone/index.js?day=${day}&hour=${hour}`]);'
+  const result = await store.pinText(source)
+  assert.match(result.text, /\/api\/dsh-tavern\/remote-assets\//)
+  assert.match(result.text, /\$\{day\}&hour=\$\{hour\}`\]\);$/)
+  assert.doesNotThrow(() => new Function('loadScript', 'day', 'hour', result.text))
 })

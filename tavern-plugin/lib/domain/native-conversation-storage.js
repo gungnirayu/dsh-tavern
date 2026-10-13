@@ -155,7 +155,7 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   const page=await pages.readHistoryPage(id,{cursor:{snapshotId:view.snapshotCursor.snapshotId,before:end},limit})
   chat.messages=[]
   for(const row of page.messages)chat.messages.push(await t.get(row.message.runtimeRef))
-  return {chat,messageCount:view.messageCount,from,to:end-1,revision:view.state.chatRevision}
+  return {chat,messageCount:view.messageCount,from,to:end-1,revision:view.state.chatRevision,worldMessage:view.state.worldMessage??null}
  }
  async function readSlice(id,indices=[],fields,pinned){
   const view=pinned||await head(id)
@@ -175,11 +175,12 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   for(const position of indices)chat.messages.push(await t.get(references.get(position)))
   return {chat,messageCount:view.messageCount,denseMessages:true}
  }
- async function changeCoverage(id,revision){
+ // Revision-bounded change records; callers of rare operations may look further back.
+ async function changeCoverage(id,revision,limit=64){
   const view=await head(id)
   if(!view)return null
   const current=view.state.chatRevision
-  if(!Number.isSafeInteger(revision)||revision<1||revision>current||current-revision>64)return undefined
+  if(!Number.isSafeInteger(revision)||revision<1||revision>current||current-revision>limit)return undefined
   const keys=Array.from({length:current-revision},(_,i)=>'chat-change:'+(revision+i+1))
   const refs=await pages.readEntries(id,keys,{snapshotId:view.snapshotCursor.snapshotId})
   const indices=new Set();let tail=view.messageCount,layoutFrom=view.messageCount,layoutChanged=false
@@ -194,8 +195,8 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   for(let index=tail;index<view.messageCount;index++)indices.add(index)
   return {view,indices:[...indices].sort((a,b)=>a-b),baseRevision:revision,revision:current,layoutChanged,layoutFrom}
  }
- async function readChangedSlice(id,revision,fields,indicesOnly=false){
-  const coverage=await changeCoverage(id,revision)
+ async function readChangedSlice(id,revision,fields,indicesOnly=false,limit){
+  const coverage=await changeCoverage(id,revision,limit)
   if(!coverage)return coverage
   const {view,...changes}=coverage
   if(indicesOnly)return {indices:changes.indices,baseRevision:changes.baseRevision,revision:changes.revision}

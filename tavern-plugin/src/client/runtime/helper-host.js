@@ -73,6 +73,59 @@
             return function () { observer.disconnect(); text.remove(); native.hidden = false; };
         }
 
+        // SillyTavern scripts rewrite the displayed message (phone bubbles, inline
+        // widgets) through retrieveDisplayedMessage. React owns the native tree, so
+        // scripts get a static copy; once they change it, the copy replaces the
+        // native part. A new text rebuilds the copy and announces the render again.
+        const tavernRenderedAnnouncements = new Map();
+        function announceTavernMessageRendered(view, sessionId, messageId) {
+            const key = String(sessionId) + ":" + String(messageId);
+            view.clearTimeout(tavernRenderedAnnouncements.get(key));
+            tavernRenderedAnnouncements.set(key, view.setTimeout(function () {
+                tavernRenderedAnnouncements.delete(key);
+                view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-rendered", { detail: { sessionId: String(sessionId), messageId: Number(messageId) } }));
+            }, 80));
+        }
+        function mountTavernScriptLayer(options) {
+            const native = options.native, layer = options.layer;
+            const view = layer.ownerDocument.defaultView;
+            const Observer = options.MutationObserver || view.MutationObserver;
+            let takenOver = false, disposed = false;
+            layer.hidden = true;
+            native.hidden = false;
+            const layerObserver = new Observer(function () {
+                if (takenOver || disposed) return;
+                takenOver = true;
+                layer.hidden = false;
+                native.hidden = true;
+            });
+            function rebuild() {
+                if (takenOver || disposed) return;
+                layer.replaceChildren.apply(layer, Array.from(native.childNodes).map(function (node) { return node.cloneNode(true); }));
+                // Our own copy is not a script edit.
+                layerObserver.takeRecords();
+            }
+            const nativeObserver = new Observer(function () { rebuild(); });
+            rebuild();
+            layerObserver.observe(layer, { childList: true, subtree: true, characterData: true, attributes: true });
+            nativeObserver.observe(native, { childList: true, subtree: true, characterData: true });
+            announceTavernMessageRendered(view, options.sessionId, options.messageId);
+            return function () {
+                disposed = true;
+                layerObserver.disconnect();
+                nativeObserver.disconnect();
+                layer.replaceChildren();
+                layer.hidden = true;
+                native.hidden = false;
+            };
+        }
+        function tavernScriptLayers(document, sessionId, messageId) {
+            return Array.from(document.querySelectorAll("[data-dsh-script-layer]")).filter(function (node) {
+                return node.getAttribute("data-mesid") === String(messageId)
+                    && (!sessionId || node.getAttribute("data-session") === String(sessionId)) && node.isConnected;
+            });
+        }
+
 		function installTavernTrustedHostFacade(host, frameWindow, priority, names) {
 			// A visible mount root supports legacy host detection and panel mounting.
 			// Never fake send_textarea: scripts must reach the real composer.
@@ -83,6 +136,12 @@
                 // This compatibility mount is not another chat viewport. Legacy
                 // panel padding must not add a second, page-level scroll range.
                 if (chatRoot.style) chatRoot.style.setProperty('display', 'contents', 'important');
+                // display:contents has no box, but scripts measure #chat as the reading
+                // pane (clip windows, "is my slot visible"). A 0x0 rect hides them.
+                chatRoot.getBoundingClientRect = function () {
+                    const pane = host.document.querySelector('[data-conversation-scroll]');
+                    return (pane || host.document.documentElement).getBoundingClientRect();
+                };
 				chatRoot.tavernCompatibilityOwners = 0;
 				host.document.body.appendChild(chatRoot);
 			}
@@ -159,22 +218,45 @@
 		}
 
 		function releaseTavernHostJQueryHandlers(host, frameWindow) {
-			const jq = host.jQuery;
-			if (!jq || !jq._data || !jq.event || !frameWindow || !frameWindow.Function) return;
-			// Callback realm identifies the retiring script even on shared document
-			// targets. Never remove a whole namespace owned by another component.
-			const targets = [host, host.document].concat(Array.from(host.document.querySelectorAll('*')));
-			for (const target of targets) {
-				if (!jq.hasData(target)) continue;
-				const events = jq._data(target, 'events') || {};
-				for (const handlers of Object.values(events)) {
-					for (const entry of Array.from(handlers)) {
-						if (entry.handler instanceof frameWindow.Function) {
-							jq.event.remove(target, entry.origType + (entry.namespace ? '.' + entry.namespace : ''), entry.handler, entry.selector);
-						}
-					}
-				}
-			}
+            if (!host || !frameWindow || !frameWindow.Function) return;
+            // A trusted script can use either jQuery instance to bind live message
+            // nodes. Each instance owns a separate event cache, so inspect both.
+            const registries = Array.from(new Set([host.jQuery, frameWindow.jQuery])).filter(function (jq) {
+                return jq && typeof jq.hasData === "function" && typeof jq._data === "function" && typeof jq.event?.remove === "function";
+            });
+            if (!registries.length) return;
+            const targets = new Set();
+            function addDocument(owner, document) {
+                if (owner) targets.add(owner);
+                if (!document) return;
+                targets.add(document);
+                for (const node of document.querySelectorAll?.('*') || []) targets.add(node);
+            }
+            addDocument(host, host.document);
+            addDocument(frameWindow, frameWindow.document);
+            const sessionId = frameWindow.frameElement?.__dshTavernSessionId;
+            if (sessionId) for (const frame of host.document?.querySelectorAll?.('iframe.dsh-tavern-message-frame') || []) {
+                if (frame.__dshTavernSessionId !== sessionId) continue;
+                try {
+                    // Hidden replacement frames may already have handlers too.
+                    // Never enter another session or an opaque/cross-origin frame.
+                    const document = frame.contentDocument;
+                    if (document) addDocument(frame.contentWindow, document);
+                } catch (_) { /* Cross-origin documents cannot be inspected. */ }
+            }
+            // Callback realm identifies the retiring script even on shared DOM.
+            // Preserve other scripts' callbacks, including identical namespaces.
+            for (const jq of registries) for (const target of targets) {
+                if (!jq.hasData(target)) continue;
+                const events = jq._data(target, 'events') || {};
+                for (const handlers of Object.values(events)) {
+                    for (const entry of Array.from(handlers)) {
+                        if (entry.handler instanceof frameWindow.Function) {
+                            jq.event.remove(target, entry.origType + (entry.namespace ? '.' + entry.namespace : ''), entry.handler, entry.selector);
+                        }
+                    }
+                }
+            }
 		}
 
         // The parent sends the latest complete context after iframe load. Keep
@@ -209,6 +291,7 @@
 						name: String(script && script.name || ""),
 						info: String(script && script.info || ""),
 						buttons: Array.isArray(script && script.buttons) ? script.buttons : [],
+                        buttonsEnabled: !script || script.buttonsEnabled !== false,
 						system: String(script && script.system || "")
 					};
 				})
@@ -223,6 +306,14 @@
                 + 'createOrderedNumericIndex:' + createOrderedNumericIndex.toString() + ','
                 + 'createTurnFieldIndex:' + createTurnFieldIndex.toString() + ','
                 + 'applyVariableReceipt:' + applyTavernVariableReceipt.toString() + ','
+				+ 'createMessageReader:' + createTavernHelperMessageReader.toString() + ','
+                + 'installUtilities:' + installTavernHelperUtilities.toString() + ','
+                + 'installMacros:' + installTavernHelperMacroApi.toString() + ','
+                + 'installDisplay:' + installTavernHelperDisplayApi.toString() + ','
+                + 'installGeneration:' + installTavernHelperGenerationApi.toString() + ','
+                + 'installEventApi:' + installTavernHelperEventApi.toString() + ','
+                + 'createRegexEngine:' + createTavernRegexEngine.toString() + ','
+                + 'installRegexApi:' + installTavernHelperRegexApi.toString() + ','
 				+ 'createEvents:' + createTavernHelperEventBus.toString() + ','
 				+ 'createPopup:' + createTavernHelperPopup.toString() + ','
 				+ 'installCompatibility:' + installTavernCompatibilityDiagnostics.toString() + ','

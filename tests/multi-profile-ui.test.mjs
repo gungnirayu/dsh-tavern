@@ -18,32 +18,7 @@ function render(hasConfirmed, consent = true, activeId = 'a', conversationOnly =
   function nodes(value) { return value && typeof value === 'object' ? [value, ...(value.children || []).flat(Infinity).flatMap(nodes)] : [] }
   return { tree, calls, warnings, nodes: nodes(tree), button: text => nodes(tree).find(node => node.type === 'button' && node.children.includes(text)) }
 }
-test('game switching applies directly and explains when it takes effect', async () => {
-  const ui = render(true)
-  assert.equal(ui.nodes.find(n => n.props?.['aria-label'] === '本局长期偏好' && n.type === 'select').props.value, 'a')
-  assert.match(JSON.stringify(ui.tree), /本局实际内容/)
-  await ui.nodes.find(n => n.type === 'select').props.onChange({ target: { value: 'b' } })
-  assert.equal(ui.warnings.length, 0)
-  assert.match(JSON.stringify(ui.tree), /下一轮生效/)
-  assert.deepEqual(ui.calls[0].args, { sessionId: 'game', enabled: true, profileId: 'b' })
-  const cancelled = render(true, false)
-  await cancelled.nodes.find(n => n.type === 'select').props.onChange({ target: { value: 'b' } })
-  assert.equal(cancelled.calls.length, 1)
-  assert.equal(cancelled.warnings.length, 0)
-})
 
-test('library selection and new-game defaults use separate controls without changing the current game', async () => {
-  const ui = render(true, true, 'a', false)
-  assert.equal(ui.button('停用'), undefined)
-  ui.nodes.find(node => node.props?.['aria-label'] === '查看长期偏好').props.onChange({ target: { value: 'a' } })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(ui.calls[0].args.action, 'select')
-  assert.equal(ui.warnings.length, 0)
-  ui.nodes.find(node => node.props?.id === 'tavern-profile-default').props.onChange({ target: { value: '' } })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(ui.calls[1].args.action, 'default')
-  assert.equal(ui.calls[1].args.profileId, '')
-})
 test('updating a stale game uses its own profile even when browsing another one', async () => {
   const ui = render(true)
   assert.match(JSON.stringify(ui.tree), /这局仍使用修改前的内容/)

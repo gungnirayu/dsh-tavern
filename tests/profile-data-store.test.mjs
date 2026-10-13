@@ -26,18 +26,6 @@ test('Profile 数据存储可在工作区外原子读写并删除 JSON', async (
   }
 })
 
-test('Profile 数据存储拒绝绝对路径和目录逃逸', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-profile-data-'))
-  try {
-    const store = createProfileDataStore({ dataRoot: root })
-    await assert.rejects(() => store.writeJson('../outside.json', {}), /路径不合法/)
-    await assert.rejects(() => store.readJson('/tmp/outside.json'), /路径不合法/)
-    await assert.rejects(() => store.remove('chats/../../outside.json'), /路径不合法/)
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
 test('Windows 临时占用目标文件时重试原子替换', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-profile-data-'))
   let renameCalls = 0

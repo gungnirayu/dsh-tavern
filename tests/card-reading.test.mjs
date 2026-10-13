@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { cardFieldCatalog } from '../tavern-plugin/lib/domain/card-reading.js'
+import { readCardField } from '../tavern-plugin/lib/domain/card-reading.js'
 
-test('人物卡目录只报告字段长度，不泄露字段正文', () => {
-  const catalog = cardFieldCatalog({ name: '阿芙拉', description: '绝密人物设定', tags: ['佣兵'] })
-  assert.deepEqual(catalog.find((item) => item.field === 'description'), { field: 'description', chars: 6, empty: false })
-  assert.equal(JSON.stringify(catalog).includes('绝密人物设定'), false)
+test('人物卡字段读取按页返回正文，不泄露其他字段', () => {
+  const card = { name: '阿芙拉', description: '绝密人物设定', tags: ['佣兵'] }
+  assert.deepEqual(readCardField(card, { field: 'description', limit: 3 }), {
+    field: 'description', text: '绝密人', totalChars: 6, from: 1, to: 3, done: false
+  })
+  assert.deepEqual(readCardField(card, { field: 'description', offset: 4, limit: 3 }), {
+    field: 'description', text: '物设定', totalChars: 6, from: 4, to: 6, done: true
+  })
+  assert.equal(readCardField(card, { field: 'tags' }).text, JSON.stringify(card.tags, null, 2))
+  assert.throws(() => readCardField(card, { field: 'extensions' }), /不支持的人物卡字段/)
 })

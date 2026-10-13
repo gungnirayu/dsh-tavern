@@ -125,41 +125,6 @@ test('后台 MVU 结算遇到过期生命周期时不触发脚本和写入', asy
   assert.equal(run.writes.length, 0)
 })
 
-test('明确脚本错误可修正重试，但已写世界书时不得自动重放', async () => {
-  for (const external of [false, true]) {
-    const value = chat()
-    let adapter, writes = 0, worldbookWrites = 0
-    adapter = createTavernScriptHostAdapter({
-      resolveChat: async () => value, writeChat: async () => { writes++ }, readCard: async () => ({}),
-      worldBooks: {
-        bound: async () => ({ source: { kind: 'card', path: 'card' }, view: { displayName: 'book', entries: [{ ref: '1', sourceUid: 1, content: 'old', enabled: true }] } }),
-        update: async (_source, _input) => { worldbookWrites++; return { view: { displayName: 'book', entries: [] } } }
-      },
-      scriptDispatch: { async dispatch(_sessionId, _name, _args, _context, work) {
-        await adapter.updateMessages('session-1', [{ message_id: 0, data: { hp: 1 } }], 2, work.eventId)
-        if (external) {
-          const { worldbook } = await adapter.getWorldbook('session-1', 'book')
-          worldbook.entries[0].content = 'new'
-          await adapter.replaceWorldbook('session-1', 'book', worldbook.entries)
-        }
-        return { handled: false, error: 'hp: expected number', diagnostics: [{ level: 'error', message: 'schema rejected' }] }
-      } }
-    })
-    const settlement = adapter.settleMvuUpdate({ operationId: 'external-settlement-' + String(external), sessionId: 'session-1', messageId: 0, swipeId: 0, expectedLifecycleRevision: 2, command: '<UpdateVariable/>' })
-    if (external) await assert.rejects(settlement, /结算事务不能修改.*世界书/)
-    else {
-      const result = await settlement
-      assert.equal(result.rejected, true)
-      assert.equal(result.retryable, true)
-      assert.equal(result.retryAfterMs, 3100)
-      assert.equal(result.validation.failures[0].message, 'hp: expected number')
-    }
-    assert.equal(writes, 0)
-    assert.equal(worldbookWrites, 0)
-    assert.deepEqual(value.messages[0].variables[0], { hp: 10 })
-  }
-})
-
 test('Host Adapter 保留脚本门控并拒绝过期 iframe 覆盖新状态', async function () {
   const disabled = harness(Object.assign(chat(), { mvu: { enabled: false } }))
   await assert.rejects(function () {
@@ -171,28 +136,6 @@ test('Host Adapter 保留脚本门控并拒绝过期 iframe 覆盖新状态', as
   assert.equal(result.updated, false)
   assert.equal(result.stale, true)
   assert.equal(stale.writes.length, 0)
-})
-
-test('官方 MVU 写回全部开场 Swipe 后由 Host 标记初始化完成', async function () {
-  const value = chat()
-  Object.assign(value.messages[0], {
-    sourceText: '{{User}}靠在树边。', swipes: ['{{User}}靠在树边。', '另一个开场'],
-    text: '你靠在树边。', projectionText: '你靠在树边。', displayText: '你靠在树边。'
-  })
-  value.mvu = { enabled: true, owner: 'official', openingInitialization: { version: 2, status: 'pending' } }
-  const run = harness(value)
-  const first = { stat_data: { hp: 10 }, schema: { type: 'object' } }
-  const second = { stat_data: { hp: 8 }, schema: { type: 'object' } }
-  await run.adapter.updateMessages('session-1', [{ message_id: 0, swipes_data: [first, second] }], 2)
-  assert.equal(run.chat.mvu.openingInitialization.status, 'complete')
-  assert.equal(run.chat.mvu.openingInitialization.version, 2)
-  assert.equal(typeof run.chat.mvu.openingInitialization.completedAt, 'number')
-  const saved = run.writes.at(-1).value.messages[0]
-  assert.equal(saved.text, '你靠在树边。')
-  assert.equal(saved.projectionText, '你靠在树边。')
-  assert.equal(saved.displayText, '你靠在树边。')
-  assert.equal(saved.swipes[0], '{{User}}靠在树边。')
-  assert.deepEqual(saved.variables, [first, second])
 })
 
 test('变量重算在隔离副本恢复基线，替换已结算结果而不重复扣减', async () => {

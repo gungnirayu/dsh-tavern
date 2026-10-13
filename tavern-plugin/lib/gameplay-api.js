@@ -56,7 +56,7 @@ export function createGameplayApi(deps) {
     const chat = await chatForSession(args.sessionId)
     if (method === 'native') {
       const id = args.nativeSessionId || args.sessionId
-      if (id !== args.sessionId && !(await deps.requests(chat)).some(request => request.sessionId === id)) throw new Error('该 Agent 不属于本次测试')
+      if (id !== args.sessionId && !(await deps.requestIndex(chat)).some(request => request.sessionId === id)) throw new Error('该 Agent 不属于本次测试')
       return { events: await deps.native(id) }
     }
     if (method === 'state') return { chat, activity: (await dispatch('getSessionActivity', args)).activity }

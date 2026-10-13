@@ -1,0 +1,789 @@
+file,original_line,test_name,test_body_code_lines,selection_reason
+tests/agent-input-frame.test.mjs,19,Session Adapter 只在 step 1 追加一次 ForegroundFrame,13,执行路径重叠且边际覆盖较低
+tests/airline-mvu-example.test.mjs,8,航空 MVU 卡可导入导出，并与可读源保持一致,9,执行路径重叠且边际覆盖较低
+tests/android-install.test.mjs,94,Android 按钮通过本机入口打开，不再直接打开缺少 token 的 3088 裸地址,5,执行路径重叠且边际覆盖较低
+tests/android-install.test.mjs,491,DSHA 酒馆入口同时提供打开与更新修复操作,6,重复源码或文案断言
+tests/application-update-api.test.mjs,26,取消更新通过现有 POST RPC 返回后台取消状态,9,执行路径重叠且边际覆盖较低
+tests/application-update-api.test.mjs,36,取消更新沿用 RPC 错误响应，不虚报已取消,5,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,45,successful installer requires validated receipt; terminal status clears repair,13,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,80,wall-clock timeout applies even while updater and child are alive,7,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,101,late old-attempt writes cannot replace successor; manual receipt reconciles only fresh matching installation,21,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,139,status fencing distinguishes an absent previous attempt from an unconstrained write,7,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,147,profile receipt from same failed bootstrap cannot erase a later bootstrap failure,8,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,174,detached updater does not inherit a completed installation context from its service,13,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,188,late Windows helper failure cannot overwrite an adopted and completed attempt,21,执行路径重叠且边际覆盖较低
+tests/application-update-lifecycle.test.mjs,237,bootstrap installers defer their persistent service when called by the updater,6,重复源码或文案断言
+tests/application-updater.test.mjs,50,standard plugin installation delegates updates to DSH without fetching or rewriting package files,21,执行路径重叠且边际覆盖较低
+tests/application-updater.test.mjs,100,无 Git 的安装使用提交比较接口，校验比较方向并处理限流及错误响应,41,执行路径重叠且边际覆盖较低
+tests/application-updater.test.mjs,157,旧算法的更新提示失效，新算法已核验的提示跨重启保留，本地改变后失效,15,执行路径重叠且边际覆盖较低
+tests/application-updater.test.mjs,256,乱码更新错误替换为可执行的重新安装提示,4,执行路径重叠且边际覆盖较低
+tests/application-updater.test.mjs,261,更新任务正在运行时拒绝重复启动,23,执行路径重叠且边际覆盖较低
+tests/application-updater.test.mjs,367,旧更新器父进程消失不证明子进程退出，禁止直接重试,14,执行路径重叠且边际覆盖较低
+tests/assistant-visibility.test.mjs,79,真实核心可复现已显示块清空后撤回 chat 节点，与 React seed renderer 无关,1,执行路径重叠且边际覆盖较低
+tests/assistant-visibility.test.mjs,80,已物化 assistant 节点改为 hidden 后仍能继续处理后续事件,1,执行路径重叠且边际覆盖较低
+tests/auto-compaction-native.test.mjs,13,real DSH: isolated joint schedule preserves queued user input and fixed system,44,执行路径重叠且边际覆盖较低
+tests/auto-compaction-native.test.mjs,60,real preset: foreground and background resolve their own isolated compaction engines,46,执行路径重叠且边际覆盖较低
+tests/auto-compaction-native.test.mjs,140,real background loop stops after the native overflow retry budget,30,执行路径重叠且边际覆盖较低
+tests/auto-compaction-native.test.mjs,211,real foreground: native pressure keeps the priced recent tail instead of forcing zero retention,29,执行路径重叠且边际覆盖较低
+tests/auto-compaction-native.test.mjs,241,real background: unknown extra budget does not suppress native pressure and rewind guard precedes summary,28,执行路径重叠且边际覆盖较低
+tests/background-agent-lifecycle.test.mjs,49,同游戏任务串行、不同游戏可独立执行；失败后下一任务复用会话且不继承旧工具,24,执行路径重叠且边际覆盖较低
+tests/background-agent-runner.test.mjs,402,persistent background tools change with configuration without creating another agent,32,执行路径重叠且边际覆盖较低
+tests/background-compaction.test.mjs,5,"budget uses the current model, explicit output reservation and uncommitted task messages",30,执行路径重叠且边际覆盖较低
+tests/background-foreground-communication.test.mjs,8,本地世界书投影与后台结算完成后，前台只读取领域快照,47,执行路径重叠且边际覆盖较低
+tests/background-model-switch-native.test.mjs,7,原生后台 Agent 在任务边界切换模型，保留会话历史并清除旧推理强度和输出上限,42,执行路径重叠且边际覆盖较低
+tests/batch-chat-deletion.test.mjs,26,"preparation only stops work without deleting, invalid selection cannot delete anything",7,执行路径重叠且边际覆盖较低
+tests/body-editor.test.mjs,60,issue #72: bodyEdit remaps by turn when seq was renumbered,12,执行路径重叠且边际覆盖较低
+tests/body-regeneration-target.test.mjs,29,原生轮次匹配失败和成功有独立记录，诊断观察者异常不改变结果,12,执行路径重叠且边际覆盖较低
+tests/body-regeneration-target.test.mjs,42,大量历史仅记录有限结构尾部，不收集内容或任意属性,10,执行路径重叠且边际覆盖较低
+tests/candidate-generation.test.mjs,202,剧本候选可按数字自由读取远处剧本并直接定位游标,38,执行路径重叠且边际覆盖较低
+tests/candidate-question.test.mjs,17,行动列表用收起/展开文字按钮，点收起后列表消失,11,执行路径重叠且边际覆盖较低
+tests/candidate-question.test.mjs,28,连续添加人物行为和场景变化保留草稿及完整候选列表,11,执行路径重叠且边际覆盖较低
+tests/candidate-question.test.mjs,40,保存设置立即通知已挂载的候选列表，旧读取结果不会覆盖新设置,18,执行路径重叠且边际覆盖较低
+tests/candidate-script-context.test.mjs,22,不可用或被修改的投影发送全文，无工具和小正文不优化,12,执行路径重叠且边际覆盖较低
+tests/candidate-worldbook-preparation.test.mjs,36,partial template diagnostics are not retained as a reusable success,4,执行路径重叠且边际覆盖较低
+tests/card-agent-autonomy.test.mjs,15,卡片 system 与任务技能独立保留,4,重复源码或文案断言
+tests/card-agent-autonomy.test.mjs,20,任务提示继承用户已有授权，不强制重复确认或禁止适合任务的整体读取,6,重复源码或文案断言
+tests/card-agent-autonomy.test.mjs,27,MVU 转换 Skill 说明专用工具、来源保护和清理边界,8,重复源码或文案断言
+tests/card-agent-autonomy.test.mjs,37,剧本任务不把现有界面路径描述成 Agent 的能力禁令,3,重复源码或文案断言
+tests/card-agent-preferences.test.mjs,27,所有卡片入口以默认偏好建立 system 快照，管理工具仍指向正在编辑的条目,25,执行路径重叠且边际覆盖较低
+tests/card-agent-preferences.test.mjs,54,卡片 Agent system：保留卡片人设，人物卡与常驻世界书作为参考资料附在说明之后,16,执行路径重叠且边际覆盖较低
+tests/card-agent-preferences.test.mjs,71,重新进入卡片会话保留原偏好；默认关闭或仅有草案时不注入,16,执行路径重叠且边际覆盖较低
+tests/card-agent-preferences.test.mjs,88,旧卡片会话只补入一次，空快照也冻结关闭状态；失败不污染 Chat,30,执行路径重叠且边际覆盖较低
+tests/card-agent-preferences.test.mjs,174,真实卡片 Agent 请求：绑定人物卡时 system 附带人物卡与常驻世界书参考，不进入消息,30,执行路径重叠且边际覆盖较低
+tests/card-batch-deletion.test.mjs,5,空选择不删除；服务端未确认删除时不报告成功,5,执行路径重叠且边际覆盖较低
+tests/card-batch-deletion.test.mjs,32,删除人物卡时只询问该卡的游玩记录，卡片工作台对话不计入,8,执行路径重叠且边际覆盖较低
+tests/card-batch-deletion.test.mjs,41,没有游玩记录时不追问；选择保留时不删除记录,7,执行路径重叠且边际覆盖较低
+tests/card-batch-deletion.test.mjs,49,只删除已成功删除的人物卡的游玩记录，归档失败的记录保留,9,执行路径重叠且边际覆盖较低
+tests/card-batch-deletion.test.mjs,59,批量删除只追问一次，并按卡列出游玩记录数,9,执行路径重叠且边际覆盖较低
+tests/card-batch-import.test.mjs,16,"multiple cards continue after failure, report file name, refresh once and stay in library",11,执行路径重叠且边际覆盖较低
+tests/card-copy-tool.test.mjs,5,"copy tool declares outputs, checks workbench access and returns image status",17,执行路径重叠且边际覆盖较低
+tests/card-deletion.test.mjs,7,删除人物卡只清理人物卡文件和绑定，不触碰已有对话,17,执行路径重叠且边际覆盖较低
+tests/card-file-tools-native.test.mjs,7,0.1.5 native file tools and explicit legacy editor read and edit the same card,19,执行路径重叠且边际覆盖较低
+tests/card-library-refresh.test.mjs,20,focus 与 visibilitychange 合并为一次激活刷新,17,执行路径重叠且边际覆盖较低
+tests/card-list-failure-isolation.test.mjs,26,opening a session skips the unrelated card catalog but updates session history,11,执行路径重叠且边际覆盖较低
+tests/card-list-order.test.mjs,6,人物卡按导入时间倒序排列且不修改原数组,9,执行路径重叠且边际覆盖较低
+tests/card-memory.test.mjs,53,"play mode has no memory reads, writes or injections, including direct tool calls",11,执行路径重叠且边际覆盖较低
+tests/card-memory.test.mjs,65,the memory panel can view and edit memory from a play conversation,8,执行路径重叠且边际覆盖较低
+tests/card-memory.test.mjs,74,changed preferences append after the query without modifying any previous request prefix,17,执行路径重叠且边际覆盖较低
+tests/card-opening-previews.test.mjs,7,预览保留完整界面及 MVU 脚本，不提前初始化游戏或改写资源,26,执行路径重叠且边际覆盖较低
+tests/card-openings.test.mjs,11,创建会话时按稳定编号解析用户选中的开场白,5,执行路径重叠且边际覆盖较低
+tests/card-organization.test.mjs,18,收藏置顶，其余保持原顺序；分组不移动卡片，重启后仍保留,14,执行路径重叠且边际覆盖较低
+tests/card-preparation.test.mjs,14,旧版 DSH 扁平人物卡导出为 SillyTavern 可导入的 V3,23,执行路径重叠且边际覆盖较低
+tests/card-preparation.test.mjs,40,raw 扩展按 JSON Pointer 分段读取并做最小修改,30,执行路径重叠且边际覆盖较低
+tests/card-preparation.test.mjs,145,卡片工作台草稿的 player 不是人物卡字段，保存时校验玩家与角色视角,21,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,39,DSH 主题文字颜色同步到已就绪 iframe，不替换文档；离开后停止监听,28,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,68,多个消息 iframe 共用一个宿主主题监听，最后一个离开时断开,13,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,82,卡片 iframe 不改写卡片字号,4,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,170,temporarily rejected script ownership retries promptly instead of waiting for the heartbeat,14,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,327,SSE 重连会立即向重启后的 Host 重新登记脚本执行器,10,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,397,消息 iframe 生命周期忽略旧触摸转发消息，不再改动宿主滚动位置,19,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,420,"replacement retains visible page, ignores superseded pending readiness, and carries measured height into the swap",20,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,463,same template in another session gets a new page and rejects old writes; pending RPC response cannot reach a retired page,21,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,586,sandbox initialization failure remains observable; a new script document can become ready,15,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,632,脚本依赖导入失败立即结束初始化等待并保留原始错误,14,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,720,MVU initialization timeout is removed with its old sandbox and cannot poison the next chat,13,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,734,加载诊断经认证沙箱归属到当前会话，限量且不影响运行状态,25,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,807,正式卡片页面追加消息走当前 Session 与生命周期校验,11,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,819,queued prompt operations batch in order and refresh once; reads remain barriers,22,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,865,沙箱失联后关闭事件，排队写入不能落地,21,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,907,最新楼层转为历史后，多轮状态广播不重建其 iframe 或更新上下文,14,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,947,持续确认状态的慢脚本跨越原总时限，完成后立即返回并确认回执,22,执行路径重叠且边际覆盖较低
+tests/card-runtime-lifecycle.test.mjs,1040,"touch relay is authenticated, scoped to frame ancestors and retired on disposal",21,执行路径重叠且边际覆盖较低
+tests/card-summary-cache.test.mjs,8,"summary reuse tracks external edits, replacements, deletion and repair without caching failures",29,执行路径重叠且边际覆盖较低
+tests/card-system-prompt.test.mjs,62,旧会话缺少系统提示时追加补入，不重写背景；空字段无需补入,9,执行路径重叠且边际覆盖较低
+tests/card-system-prompt.test.mjs,72,回退或压缩掉更新后重新追加；被改写或外部插件的记录不能抑制更新,18,执行路径重叠且边际覆盖较低
+tests/card-system-prompt.test.mjs,107,真实 DSH 请求：动态宏变化只追加新版本，系统与此前请求消息逐字保持,34,执行路径重叠且边际覆盖较低
+tests/card-to-mvu-skill.test.mjs,28,人物设计是现有后台 Agent 按需加载的内置 Skill,26,执行路径重叠且边际覆盖较低
+tests/cdn-upgrade.test.mjs,23,CDN 下载过滤器允许运行文件并排除文档,6,执行路径重叠且边际覆盖较低
+tests/character-design-document.test.mjs,27,人物档案先索引、后完整读取，并在同名保存时更新而非重复创建,27,执行路径重叠且边际覆盖较低
+tests/character-design-document.test.mjs,77,当前后台 Agent 保存人物后立即独立落盘，无需人物设计任务或结算回执,21,执行路径重叠且边际覆盖较低
+tests/chat-header-write.test.mjs,66,"missing change coverage falls back to current history, not an old revision merge",11,执行路径重叠且边际覆盖较低
+tests/chat-header-write.test.mjs,78,foreground preparation keeps its detached history without another timeline copy,17,执行路径重叠且边际覆盖较低
+tests/chat-history-import-service.test.mjs,105,"bad-save rescue uses stored text without source Session or template execution, creates no old checkpoints",27,执行路径重叠且边际覆盖较低
+tests/chat-history-rescue.test.mjs,11,"new rounds remain editable, rescued historical forks are blocked",7,执行路径重叠且边际覆盖较低
+tests/chat-history-rescue.test.mjs,18,MVU rescue refuses absent or invalid selected snapshots instead of silently resetting state,6,执行路径重叠且边际覆盖较低
+tests/chat-journal-cache.test.mjs,30,alternating chats reuse materializations and keep separate revision deltas,13,执行路径重叠且边际覆盖较低
+tests/chat-journal-cache.test.mjs,87,cold journal projections do not clone the full historical archive during replay,9,执行路径重叠且边际覆盖较低
+tests/chat-journal-store.test.mjs,113,首次保存写 snapshot，后续保存只追加 journal,17,执行路径重叠且边际覆盖较低
+tests/chat-journal-store.test.mjs,133,重新创建 Store 后从 snapshot 与 journal 重放当前 Chat,14,执行路径重叠且边际覆盖较低
+tests/chat-journal-store.test.mjs,164,达到 frame 阈值后生成新 snapshot 并封存 journal,13,执行路径重叠且边际覆盖较低
+tests/chat-journal-store.test.mjs,180,可以按 storage revision 读取历史 Chat,12,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,148,清理显示记录与结算合并后不会复活旧记录,11,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,205,结算收尾与下一轮开始各改时间线不同条目时合并，时间戳取较新值,14,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,252,domain mutation 总是在锁内基于最新聊天执行,8,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,261,诊断性写入可以保留业务 updatedAt,8,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,272,删除字段与修改其他字段可按任意保存顺序合并，删除不会复活,18,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,291,双方删除同一个字段视为一致结果，同时保留各自的其他修改,12,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,319,两个写入者删除不同字段时都生效，不产生 undefined 字段,11,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,364,保存合并同步嵌套字段和删除，同时保留草稿已有对象引用,12,执行路径重叠且边际覆盖较低
+tests/chat-persistence.test.mjs,377,保存等待期间的新编辑不被合并结果覆盖,12,执行路径重叠且边际覆盖较低
+tests/compaction-boundaries-native.test.mjs,115,fixed system background alone exceeds the summary window and cannot be removed by compaction,8,执行路径重叠且边际覆盖较低
+tests/compaction-boundaries-native.test.mjs,124,one oversized latest round is retained by pressure; forced compaction can also exceed the summary window,7,执行路径重叠且边际覆盖较低
+tests/compaction-boundaries-native.test.mjs,157,successful summaries cannot lower pressure below an oversized fixed prefix; attempts remain bounded,11,执行路径重叠且边际覆盖较低
+tests/compatibility-retirement.test.mjs,10,实验分支公开兼容会话并声明兼容能力可用,8,执行路径重叠且边际覆盖较低
+tests/confirm-dialog.test.mjs,66,session change between confirmation and async continuation invalidates approval,3,执行路径重叠且边际覆盖较低
+tests/conversation-fork-targets.test.mjs,10,每个已完成轮次指向最后显示的那条回复（含轮次结束后写入的回复投影）,5,执行路径重叠且边际覆盖较低
+tests/conversation-fork-targets.test.mjs,16,失败或未完成的轮次没有分叉目标，之后的轮次照常,7,执行路径重叠且边际覆盖较低
+tests/conversation-fork-targets.test.mjs,31,插件消息和缺少会话时不产生目标,4,执行路径重叠且边际覆盖较低
+tests/conversation-guides.test.mjs,36,capacity is checked inside the serialized mutation,7,执行路径重叠且边际覆盖较低
+tests/conversation-host-adapter.test.mjs,46,alpha.2 shared startup adapter creates a fresh Session and selects through Remote,16,执行路径重叠且边际覆盖较低
+tests/conversation-host-adapter.test.mjs,63,conversation host delegates a game fork to the native DSH Session fork,10,执行路径重叠且边际覆盖较低
+tests/conversation-initialization-native.test.mjs,7,V3 opening reserves the native system head before story seeds,14,执行路径重叠且边际覆盖较低
+tests/conversation-initialization-native.test.mjs,36,oversized import enters native pressure compaction only after subsequent context growth,17,执行路径重叠且边际覆盖较低
+tests/conversation-initialization-native.test.mjs,111,native partial event logs survive disk reload and Session end-seed markers at every append boundary,20,执行路径重叠且边际覆盖较低
+tests/conversation-initialization.test.mjs,9,带卡的卡片任务（含修改人物卡）沿用卡片 Agent 人设，并冻结与前台相同的人物卡快照,20,执行路径重叠且边际覆盖较低
+tests/conversation-initialization.test.mjs,60,没有确认画像时，即使旧数据保存了开启标记，也不会注入,4,执行路径重叠且边际覆盖较低
+tests/conversation-initialization.test.mjs,152,prepared MVU initialization preserves every opening and never marks partial data complete,14,执行路径重叠且边际覆盖较低
+tests/conversation-lifecycle.test.mjs,60,游戏准备只解析 Workspace，认领后才创建 Session,7,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,18,"cold tail reads only its pages, returns detached current state, and never hydrates history",17,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,36,append and settlement edit publish together; old cursor stays on its snapshot,19,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,65,failed publication leaves old head valid and retry can use orphaned immutable blocks,8,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,96,historical state reads are independent of message bodies,8,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,134,state-only writes do not read or rewrite historical pages,6,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,151,keyed receipts use snapshot indexes and never read message pages,16,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,168,failed publication hides receipts and state together,7,执行路径重叠且边际覆盖较低
+tests/conversation-page-store.test.mjs,176,small immutable blocks survive reader calls while head publication remains fresh,13,执行路径重叠且边际覆盖较低
+tests/conversation-record-packs.test.mjs,28,a large scalar is stored alone and pack sizes stay bounded,12,执行路径重叠且边际覆盖较低
+tests/conversation-settings-ui.test.mjs,7,本局设置保存本局模型与开关，切换模型丢弃旧档位响应,53,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,20,"foreground, submitted update, prepared effect and receipt survive fresh readers without duplicate append",18,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,51,"duplicate ids with different inputs fail, while an old duplicate can be read after later rounds",10,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,62,unrelated metadata revision does not invalidate a prepared settlement,11,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,74,new foreground and changed body both fence off old prepared effects,14,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,101,twenty thousand historical messages stay untouched by foreground and settlement,10,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,161,domain rejects legacy shadows and malformed input without a write,10,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,172,"incremental calculation, durable preparation and wire replay retain derived effects across restart",32,执行路径重叠且边际覆盖较低
+tests/conversation-state.test.mjs,205,"scalar settlement leaves large unrelated variables out of calculation, head and wire payload",17,执行路径重叠且边际覆盖较低
+tests/conversation-text-export.test.mjs,18,卡片工作台同样只导出正文，并过滤内部消息、空消息与非法文件名字符,17,执行路径重叠且边际覆盖较低
+tests/conversation-writing-skills.test.mjs,4,全局与本局 Skill 面板分别保存，失败不改变开关显示,29,执行路径重叠且边际覆盖较低
+tests/coordination-event-publisher.test.mjs,59,服务器只轮询小版本文件，版本不变时不重读完整对话,25,执行路径重叠且边际覆盖较低
+tests/coordination-event-stream.test.mjs,28,SSE 断线时保留最后快照，重连后的最新快照直接校准状态,16,执行路径重叠且边际覆盖较低
+tests/cordis-inspect-native.test.mjs,11,真实 preset 共存及重新挂载：检查服务唯一，工具和 Tavern Skill 保留,127,执行路径重叠且边际覆盖较低
+tests/crypto-digest.test.mjs,13,"SHA-256 matches Node for empty, Unicode, padding boundaries and large inputs",6,执行路径重叠且边际覆盖较低
+tests/crypto-digest.test.mjs,19,"digest respects view offsets, ArrayBuffers and rejects unsupported input",8,执行路径重叠且边际覆盖较低
+tests/crypto-digest.test.mjs,27,native crypto and partial native subtle objects are preserved,9,执行路径重叠且边际覆盖较低
+tests/diagnostic-chat-read.test.mjs,46,deferred MVU retries read flags without cloning saved submissions or variables,33,执行路径重叠且边际覆盖较低
+tests/diagnostic-chat-read.test.mjs,80,skill visibility and compaction polling preserve settings without cloning full history,46,执行路径重叠且边际覆盖较低
+tests/display-runtime-capture.test.mjs,88,legacy inferred turns and MVU-only reports preserve diagnostic content,16,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,48,slow but steady transfer outlives the stall window,8,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,58,stalled transfer fails over to the next source with a Chinese reason,10,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,69,checksum and size mismatches are retried and finally reported,12,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,103,"deadline is an upper bound across attempts, not per request",7,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,111,downloadFile publishes only complete verified files,10,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,161,runtime download stops at the stage budget and reports the fallback,6,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,168,runtime download rejects unsafe manifest entries before writing,6,执行路径重叠且边际覆盖较低
+tests/download.test.mjs,175,runtime download refuses a manifest that is not the requested target commit,9,执行路径重叠且边际覆盖较低
+tests/dsh-compatibility.test.mjs,11,Tavern pins dsh-tools to the adapted host release and reuses host packages,11,重复源码或文案断言
+tests/dsh-version-policy.test.mjs,12,README、安装提示和独立版本查询使用同一适配版本,10,重复源码或文案断言
+tests/dsh-version-policy.test.mjs,37,两平台都在下载源码后读取适配版本，DSH 下载交给共享安装模块,5,重复源码或文案断言
+tests/durable-task-mailbox.test.mjs,154,durable result can project completion without waiting for a second write,9,执行路径重叠且边际覆盖较低
+tests/extract-flow.test.mjs,21,开场白创建失败时在选择弹窗内持续显示具体阶段和错误,16,重复源码或文案断言
+tests/extract-flow.test.mjs,48,人物卡目录只读取卡片名称和剧本绑定，不加载或切分完整剧本,12,执行路径重叠且边际覆盖较低
+tests/extract-flow.test.mjs,62,人物卡 Helper 的世界书写入按资源串行，避免生命周期事件并发覆盖,5,执行路径重叠且边际覆盖较低
+tests/extract-flow.test.mjs,68,隔离 Helper iframe 可以只读加载已锁定的本机远程资源,10,重复源码或文案断言
+tests/extract-flow.test.mjs,79,HTTP RPC 在启动恢复前注册，并等待运行时完成初始化,16,执行路径重叠且边际覆盖较低
+tests/file-resources.test.mjs,72,人物卡绑定资料只保存路径引用，重命名任一端都会保持绑定,21,执行路径重叠且边际覆盖较低
+tests/file-resources.test.mjs,114,多世界书有序绑定支持复用、重复校验及重命名删除同步,23,执行路径重叠且边际覆盖较低
+tests/foreground-frame-retirement.test.mjs,17,生产手动压缩入口在摘要模型读取之前清理闲置会话的全部指引,16,执行路径重叠且边际覆盖较低
+tests/foreground-orchestration-strategies.test.mjs,100,DeepSeek thinking 续传为旧 Session 的 reasoning 补齐可回放元数据,31,执行路径重叠且边际覆盖较低
+tests/foreground-orchestration-strategies.test.mjs,224,未登记的卡片工作台请求也剔除空的固定前缀，避免严格渠道报 user message must have content,12,执行路径重叠且边际覆盖较低
+tests/frame-activation.test.mjs,6,实际消息组件离开视区或卸载时取消启动，开场 eager 不入队,48,执行路径重叠且边际覆盖较低
+tests/frame-error-diagnostics.test.mjs,9,卡片捕获跨 iframe 的 MVU 异常后，诊断仍保留错误与原始堆栈,38,执行路径重叠且边际覆盖较低
+tests/frame-fullscreen.test.mjs,7,拒绝全屏时保留原 iframe 并提供可退出的大屏，移除面板时清理,28,执行路径重叠且边际覆盖较低
+tests/frame-lifecycle.test.mjs,8,opening sender checks ownership again before dispatch and retries rejected work,19,执行路径重叠且边际覆盖较低
+tests/frame-measure-visibility.test.mjs,51,时钟换字与 transform 动画不触发整页测高；文字撑高仍会上报,29,执行路径重叠且边际覆盖较低
+tests/frame-root-removal.test.mjs,73,jsdom: a queued height report safely skips a removed root,14,执行路径重叠且边际覆盖较低
+tests/frame-sizing.test.mjs,10,explicit sizing validates numeric declarations and leaves absent/invalid cards on the legacy path,7,执行路径重叠且边际覆盖较低
+tests/frame-sizing.test.mjs,18,"real iframe sizing: constrained viewport, percentage roots, capped content, resizing and retained input",96,执行路径重叠且边际覆盖较低
+tests/frame-touch-scroll.test.mjs,17,blocked native pan consumes inner 10px and relays only remaining 90px,1,执行路径重叠且边际覆盖较低
+tests/frame-variable-storage.test.mjs,43,消息 iframe 导入角色预设后同步读到新列表，保存接口可等待且不污染消息变量,9,执行路径重叠且边际覆盖较低
+tests/frame-worldbook-facade.test.mjs,18,正式消息首页通过 TavernHelper 获取核心列表，读写仍走宿主 RPC,15,执行路径重叠且边际覆盖较低
+tests/frame-worldbook-facade.test.mjs,34,自定义开局页面追加玩家消息后才能触发生成，并传播追加失败,18,执行路径重叠且边际覆盖较低
+tests/full-prompt-template-state.test.mjs,167,unchanged reads and current variable patches bypass complete chat read/update,29,执行路径重叠且边际覆盖较低
+tests/full-prompt-template-sync.test.mjs,6,1800 条长历史只传变化楼层，删除和环境变化与全量结果一致,23,执行路径重叠且边际覆盖较低
+tests/full-template-command-registration.test.mjs,6,原生命令声明自由输入并将参数原样交给所属模板实例,12,执行路径重叠且边际覆盖较低
+tests/full-template-lifecycle.test.mjs,7,上游设置与 Monaco 编辑器实际加载，保存/取消与条目保存使用同一实例,22,执行路径重叠且边际覆盖较低
+tests/full-template-lifecycle.test.mjs,32,显示脚本在真正展示的 frame 执行一次，格式化镜像不执行脚本或事件属性,14,执行路径重叠且边际覆盖较低
+tests/guide-library.test.mjs,6,guide library saves the complete game bundle independently and survives reopening,18,执行路径重叠且边际覆盖较低
+tests/helper-background-model.test.mjs,18,"completion fetch routes messages to host, returns JSON/SSE, and leaves asset fetch alone",19,执行路径重叠且边际覆盖较低
+tests/helper-background-model.test.mjs,37,legacy channel connection is automatic while stored settings and feature switches survive,23,执行路径重叠且边际覆盖较低
+tests/helper-background-model.test.mjs,82,MVU 宿主管理连接的随机头部读值与实际请求一致，并保留原连接偏好,14,执行路径重叠且边际覆盖较低
+tests/helper-background-model.test.mjs,97,宿主后台已结算 MVU 时，卡内 MVU 看到“随AI输出”，不再自行额外模型解析；保存时保留用户原设置,14,执行路径重叠且边际覆盖较低
+tests/helper-chat-data.test.mjs,60,追加新消息不会让旧楼层存档写错位置，刷新保留脏数据和稳定引用,18,执行路径重叠且边际覆盖较低
+tests/helper-chat-data.test.mjs,79,保存期间新编辑与排队保存都保留，返回前必须等待宿主落盘,14,执行路径重叠且边际覆盖较低
+tests/helper-chat-data.test.mjs,94,旧正文、变量、身份、重排或删除请求明确失败，不保存旁边的插件修改,18,执行路径重叠且边际覆盖较低
+tests/helper-chat-data.test.mjs,168,保存失败会 reject 并保留待保存数据，不虚报成功,12,执行路径重叠且边际覆盖较低
+tests/helper-chat-data.test.mjs,257,prepared opening prompt persists as metadata across reopen without creating a message,9,执行路径重叠且边际覆盖较低
+tests/helper-compatibility-modules.test.mjs,41,生产事件模块保留脚本身份、失败进度和once递归保护,21,执行路径重叠且边际覆盖较低
+tests/helper-context-refresh.test.mjs,107,loading iframe defers updates without advancing its baseline and receives only the latest state on ready,33,执行路径重叠且边际覆盖较低
+tests/helper-display-api.test.mjs,19,display formatter renders Markdown/raw HTML after regexes with selected floor depth and macros,10,执行路径重叠且边际覆盖较低
+tests/helper-display-api.test.mjs,29,refresh updates real selected DOM without saving messages or replaying scripts; emits completion,15,执行路径重叠且边际覆盖较低
+tests/helper-display-api.test.mjs,44,shipped offline Markdown bundle is pinned and provides real parsing,6,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,38,event installer serializes without closures and supplies namespace accessors and constants,20,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,77,once listeners are removed before recursion or overlapping emissions,16,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,94,removal during emission skips removed entries and old handles cannot remove new registrations,12,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,107,local removal and clear APIs handle event aliases and prototype-looking custom names,21,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,160,waiting rejects registration failures instead of hanging,7,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,189,global waiting stays local to its installed target,13,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,203,"shared utility installation preserves real script ownership, stop handles and per-script clearing",18,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,222,global waiting rechecks readiness after registration and cleans up on getter errors,13,执行路径重叠且边际覆盖较低
+tests/helper-event-api.test.mjs,251,invalid and read-only global names fail explicitly without prototype changes,10,执行路径重叠且边际覆盖较低
+tests/helper-generation-api.test.mjs,22,non-streaming jobs get generated IDs and completion; duplicate IDs reject without RPC,11,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,19,人物卡原样 generateRaw 参数独立生成，不隐式注入历史或修改输入,10,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,48,"generate sends the real preset, card, activated worldbook, bounded history and input without mutating them",11,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,90,generation consumes actual inspected preset and embedded/native worldbook schemas,23,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,114,"generate retains greeting scan metadata, prompt regexes and author-note worldbook anchors",25,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,207,"helper tasks reject duplicate IDs, isolate sessions and stop all only within a session",14,执行路径重叠且边际覆盖较低
+tests/helper-generation.test.mjs,222,helper tasks can stop before preparation and dispose settles all queued generations,10,执行路径重叠且边际覆盖较低
+tests/helper-history-access.test.mjs,17,history grants cannot be widened or reused on another host,10,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,8,createChatMessages 追加楼层并等待宿主确认后更新同步上下文,31,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,42,宿主派发也遵循 first/once 顺序并返回完成回执,12,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,107,generateRaw 返回独立 RPC 文本，不创建聊天消息,13,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,121,旧聊天 MVU 清理提示静默拒绝，不弹窗、不修改或清理历史变量,13,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,135,mvu-work 事件在 setTimeout 延迟写入时仍保留结算身份,18,执行路径重叠且边际覆盖较低
+tests/helper-host-api.test.mjs,178,事件清理接口仅清理当前脚本，支持别名、重复清理与重新注册,27,执行路径重叠且边际覆盖较低
+tests/helper-jquery-cleanup.test.mjs,35,retiring callbacks are cleaned from both jQuery registries in same-session live and pending message DOM,22,执行路径重叠且边际覆盖较低
+tests/helper-jquery-cleanup.test.mjs,59,cleanup still inspects retiring jQuery when the host has none and skips opaque documents,13,执行路径重叠且边际覆盖较低
+tests/helper-jquery-cleanup.test.mjs,73,missing session identity never scans message documents,8,执行路径重叠且边际覆盖较低
+tests/helper-local-variables.test.mjs,38,local callback writes finish before the host event receipt,16,执行路径重叠且边际覆盖较低
+tests/helper-local-variables.test.mjs,69,local scalar conversions and JSON array appends match supported ST operations,15,执行路径重叠且边际覆盖较低
+tests/helper-macro-api.test.mjs,7,read-only macros expose useful identity and nested variable results without evaluating writes,15,执行路径重叠且边际覆盖较低
+tests/helper-missing-capabilities.test.mjs,14,辅助空实现继续运行、核心占位明确失败；原有缺失函数保留 fallback,28,执行路径重叠且边际覆盖较低
+tests/helper-module-errors-ui.test.mjs,17,详情拒绝非数组和超量资源，普通脚本执行错误不出现网络重试提示,12,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,18,脚本宿主的固定运行时依赖全部使用随包本地资源,9,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,71,卡片 import 原文进入页面模块，支持具名、动态、重导出且不改字符串和注释,21,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,93,模块等待 bootstrap 与前一个脚本完成，官方核心就绪后才开始配套脚本,17,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,111,官方核心执行失败停止配套脚本，不能部分初始化后继续写入,8,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,120,模块加载、执行和插入失败均清理监听并继续下一脚本,17,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,158,离线仅在模块下载错误时提示检查网络，执行错误保持原义,14,执行路径重叠且边际覆盖较低
+tests/helper-module-loading.test.mjs,208,Blob loader preserves Unicode and script-closing text,8,执行路径重叠且边际覆盖较低
+tests/helper-public-api.test.mjs,22,"message worldbook names follow lightweight initial descriptors, deltas and write replies",19,执行路径重叠且边际覆盖较低
+tests/helper-public-api.test.mjs,63,getAllVariables respects script vs message scope and precedence,7,执行路径重叠且边际覆盖较低
+tests/helper-public-api.test.mjs,71,"utility aliases preserve values, this and original sync/async errors",17,执行路径重叠且边际覆盖较低
+tests/helper-public-api.test.mjs,89,retrieveDisplayedMessage accesses live same-session trusted message DOM without copying it,21,执行路径重叠且边际覆盖较低
+tests/helper-public-api.test.mjs,122,enabled script button discovery preserves group visibility and script-specific event IDs,21,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,18,"/pass returns text, supports /return, escaping and bounded pipe substitution",11,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,30,/findentry searches the current book with exact priority and field aliases,20,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,51,read-only pipelines validate every command and option before dispatch,17,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,102,script slash bridge returns strings and submission objects and rejects unknown methods,16,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,138,script slash waits for preceding writes and always responds to executor rejection,13,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,166,"message frames preserve string slash results, refresh context and explicitly reject unknown methods",12,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,179,"live frame context patches refresh worldbook, names and global/character variables",9,执行路径重叠且边际覆盖较低
+tests/helper-slash-compatibility.test.mjs,232,retiring a script runtime stops only its tracked active generation IDs,11,执行路径重叠且边际覆盖较低
+tests/helper-worldbook-api.test.mjs,94,悬浮角色库在已有聊天快照中切换 enabled 和写回视觉内容，重新连接后读取持久化结果,20,执行路径重叠且边际覆盖较低
+tests/history-card-groups.test.mjs,7,删除人物卡后仍按存档路径保留历史，旧存档无路径时不误合并,11,执行路径重叠且边际覆盖较低
+tests/history-recall.test.mjs,54,历史正文修改或剧情分支回退后允许重新召回,9,执行路径重叠且边际覆盖较低
+tests/history-viewport-cost.test.mjs,8,fully expanded history append and removal have bounded index visits and notifications,21,执行路径重叠且边际覆盖较低
+tests/history-viewport-cost.test.mjs,31,"paging, duplicate mounts, holes, session changes and earlier controls retain semantics",22,执行路径重叠且边际覆盖较低
+tests/history-viewport.test.mjs,13,real React loads older pages on upward input without remounting retained frames,61,执行路径重叠且边际覆盖较低
+tests/host-projection-replay-native.test.mjs,37,"cold replay equals native folds, including replacements; live definitions and inputs remain isolated",37,执行路径重叠且边际覆盖较低
+tests/host-projection-replay-native.test.mjs,100,"ten-thousand-round cold fold delegates only a bounded suffix, preserving every output row",29,执行路径重叠且边际覆盖较低
+tests/host-projection-replay-native.test.mjs,132,installation is reference counted and leaves unknown projection versions native,16,执行路径重叠且边际覆盖较低
+tests/host-session-patch.test.mjs,18,未握手时拒绝编辑、回退和重新生成,15,执行路径重叠且边际覆盖较低
+tests/host-subprocess-patch.test.mjs,89,unknown DSH versions are left unchanged,10,执行路径重叠且边际覆盖较低
+tests/immersive-header.test.mjs,22,全屏时折叠顶栏，退出仍走同一颗按钮,20,执行路径重叠且边际覆盖较低
+tests/immersive-header.test.mjs,43,全屏请求失败时仍折叠顶栏，并可退出,20,执行路径重叠且边际覆盖较低
+tests/immersive-header.test.mjs,80,已完成的原生全屏在卸载时退出，其他元素的全屏保持不变,15,执行路径重叠且边际覆盖较低
+tests/immersive-header.test.mjs,96,挂载全屏按钮时立即同步已有原生全屏，第一次点击即可退出,18,执行路径重叠且边际覆盖较低
+tests/immersive-header.test.mjs,115,桌面和窄屏折叠顶部栏后，同一全屏按钮仍可点击退出,25,执行路径重叠且边际覆盖较低
+tests/immutable-json-projection.test.mjs,5,对象缓存保持原 JSON 规范化及嵌套属性顺序，不以无序相等复用,11,执行路径重叠且边际覆盖较低
+tests/immutable-json-projection.test.mjs,17,对象缓存按容量和源数据加投影的体积淘汰，失败不复用旧投影,15,执行路径重叠且边际覆盖较低
+tests/import-context-preparation.test.mjs,27,only oversized imports trim the middle to below 80 percent while preserving head and recent complete rounds,14,执行路径重叠且边际覆盖较低
+tests/import-context-preparation.test.mjs,41,native Surface shrinks durably but history_recall still searches and reads excluded rounds,18,执行路径重叠且边际覆盖较低
+tests/import-context-preparation.test.mjs,89,normal sessions bypass preparation and a native reply can roll back across the preparation marker,10,执行路径重叠且边际覆盖较低
+tests/incremental-json-state.test.mjs,11,"JSON tree preserves objects, arrays, key order, escapes and hostile keys",12,执行路径重叠且边际覆盖较低
+tests/incremental-json-state.test.mjs,48,"sequential changes, nested replacements and bucket growth preserve prior snapshots",10,执行路径重叠且边际覆盖较低
+tests/inline-fragment.test.mjs,16,trusted reply fragments share host styles and hydration without a frame,20,执行路径重叠且边际覆盖较低
+tests/inline-fragment.test.mjs,37,"untrusted fragments, previews, active HTML and full documents retain iframe rendering",13,执行路径重叠且边际覆盖较低
+tests/inline-fragment.test.mjs,51,trusted fragments zoom with the DSH font preference without touching card DOM,29,执行路径重叠且边际覆盖较低
+tests/inline-fragment.test.mjs,81,story iframes zoom from their slot so card text and viewport scale together,23,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,171,大凉入局按钮的带空格管道发送开局消息,27,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,252,普通正则 HTML iframe 忽略已移除的手动样式配置，保留内置兼容样式,15,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,351,官方 MVU owner 作为共享沙箱首个系统模块本地加载,43,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,449,官方 MVU 与人物卡脚本共用沙箱时仍先提供全局 Zod 与 YAML,18,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1667,官方 MVU 下载前提供可写 bootstrap，waitGlobalInitialized 仍等真正模块,26,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1694,frame setinput updates the owning session draft without submitting,7,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1701,trusted parent toastr survives a card forwarding its local toastr to parent,9,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1786,deferred Helper iframe keeps large context out of executable HTML,7,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1864,historical revision mismatch cannot install wrong variables,6,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1949,module loader preserves card self-checks and message text,9,执行路径重叠且边际覆盖较低
+tests/inline-message-renderer.test.mjs,1959,legacy chat mount accepts panel padding without creating its own layout box,14,执行路径重叠且边际覆盖较低
+tests/input-field-sync-cost.test.mjs,20,"mutable inputs are reread; replacements, removals and new parents keep delta semantics",14,执行路径重叠且边际覆盖较低
+tests/input-field-sync-cost.test.mjs,35,persistent field batches apply the last set after removals,7,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,46,"supervised commands preserve output, cwd and exit status",9,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,56,POSIX cleanup verifies zombie-only or vanished groups after EPERM,17,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,76,POSIX EPERM with a live writer remains unsafe and reports its cleanup failure,33,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,112,"supervised invocation preserves Unicode, empty arguments, spaces and quotes",7,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,120,nonzero exit and missing command are safely rejected,13,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,215,nested stage timeout does not kill its enclosing installation supervisor,12,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,228,unverifiable process registry fails closed with durable cleanup metadata,18,执行路径重叠且边际覆盖较低
+tests/installation-process.test.mjs,342,standalone CLI retains shared ownership when cleanup is unverifiable,12,执行路径重叠且边际覆盖较低
+tests/installation-state.test.mjs,29,durable installation ownership spans process lifetimes and all same-home entrants,10,执行路径重叠且边际覆盖较低
+tests/installation-state.test.mjs,58,reservation is adopted only once and fences delayed reservation callbacks,13,执行路径重叠且边际覆盖较低
+tests/installation-state.test.mjs,90,"unsafe nested cleanup retains the lock, including through later ordinary updates",12,执行路径重叠且边际覆盖较低
+tests/installation-state.test.mjs,118,"incomplete, malformed and ancient locks stay conservative and preserve user data",14,执行路径重叠且边际覆盖较低
+tests/interaction-diagnostics.test.mjs,22,"records obstruction and delayed focus without content, then disposes listeners",12,执行路径重叠且边际覆盖较低
+tests/json-mutation.test.mjs,6,shared journal changes match replay without copying or mutating untouched rows,15,执行路径重叠且边际覆盖较低
+tests/json-mutation.test.mjs,22,shared batch matches detached application through overlapping mutations,19,执行路径重叠且边际覆盖较低
+tests/launcher.test.mjs,24,Windows UI 更新隐藏 PowerShell 窗口并保持 UTF-8 输出,4,重复源码或文案断言
+tests/launcher.test.mjs,29,Tavern profile installs Better Sidebar as its right-panel foundation,5,重复源码或文案断言
+tests/launcher.test.mjs,35,Tavern profile also installs the pinned mobile adaptation plugin,9,重复源码或文案断言
+tests/launcher.test.mjs,45,Tavern profile does not auto-install Better Sidebar peer dependencies over DSH built-ins,3,重复源码或文案断言
+tests/launcher.test.mjs,76,一键更新在依赖检查前复用 Tavern 托管运行时,10,重复源码或文案断言
+tests/launcher.test.mjs,88,一键安装固定经过验证的 pnpm 主版本并可从不兼容版本恢复,8,重复源码或文案断言
+tests/launcher.test.mjs,97,Desktop 安装复用内置运行时，不启动独立 3081 服务,9,重复源码或文案断言
+tests/launcher.test.mjs,125,一键安装直接启动 Tavern，不通过包管理器托管后台进程,6,重复源码或文案断言
+tests/launcher.test.mjs,133,升级后用户数据固定在 Profile 目录，并在安装时迁移旧源码数据,6,重复源码或文案断言
+tests/legacy-compatible-storage.test.mjs,30,automatic legacy JSON migration keeps every field and the original file; restart uses active data,14,执行路径重叠且边际覆盖较低
+tests/legacy-compatible-storage.test.mjs,77,source edits during conversion are detected and the newest legacy state remains authoritative,10,执行路径重叠且边际覆盖较低
+tests/legacy-compatible-storage.test.mjs,119,migration shares the write lock with existing store instances,12,执行路径重叠且边际覆盖较低
+tests/legacy-compatible-storage.test.mjs,154,deleting a migrated archive removes compatibility blocks and legacy sources,7,执行路径重叠且边际覆盖较低
+tests/legacy-compatible-storage.test.mjs,170,"legacy splice, escaped paths and sparse array writes retain JSON persistence semantics",13,执行路径重叠且边际覆盖较低
+tests/legacy-composer.test.mjs,28,"preparation composer owns parent controls, submits once and ignores detached controls",13,执行路径重叠且边际覆盖较低
+tests/legacy-composer.test.mjs,63,parent and top DOM composer APIs submit exact text to their own sandbox,23,执行路径重叠且边际覆盖较低
+tests/legacy-composer.test.mjs,87,jQuery composer selection and parent-document find use the local controls,16,执行路径重叠且边际覆盖较低
+tests/legacy-composer.test.mjs,104,legacy layout anchors track the conversation viewport below native navigation,21,执行路径重叠且边际覆盖较低
+tests/legacy-conversation-mapping.test.mjs,27,"old Chat round-trips exactly including property order, MVU delivery and unknown fields",19,执行路径重叠且边际覆盖较低
+tests/legacy-conversation-mapping.test.mjs,47,shared historical states are stored once and cold tail reads no legacy detail records,15,执行路径重叠且边际覆盖较低
+tests/legacy-conversation-mapping.test.mjs,63,"absent fields, nulls, hostile property names and empty histories retain their meaning",12,执行路径重叠且边际覆盖较低
+tests/legacy-conversation-mapping.test.mjs,84,an import cannot overwrite an existing target and exports pin their snapshot,8,执行路径重叠且边际覆盖较低
+tests/legacy-conversation-mapping.test.mjs,106,source mutations during asynchronous import cannot change the captured snapshot,8,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,13,issue #84: 大体量事件编码成多帧后仍可完整解压,13,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,138,issue #71: 含 fixedSystemText 的真实旧档清理后可被宿主打开并落盘,41,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,205,issue #72 A: fold keeps tavern-body-edit id on the target assistant,18,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,224,issue #72 B: compaction shadowedSeqs with missing seqs soft-remap instead of refuse,18,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,243,issue #72 C: sanitize still writes cleaned events when host open fails,16,执行路径重叠且边际覆盖较低
+tests/legacy-session-migration.test.mjs,304,issue #73: chunk-swarm assistant replaces are dropped so open can finish,16,执行路径重叠且边际覆盖较低
+tests/legacy-status-dependency-cost.test.mjs,41,shared legacy parts refresh every owner only when the last removal disappears,20,执行路径重叠且边际覆盖较低
+tests/legacy-template-display-repair.test.mjs,16,repairs provable legacy Markdown damage without replaying historical templates or mutating the snapshot,17,执行路径重叠且边际覆盖较低
+tests/live-tavern-view.test.mjs,84,候选 Agent 长时间生成时状态查询只在内部重试，不产生超时错误,37,执行路径重叠且边际覆盖较低
+tests/live-tavern-view.test.mjs,148,逐层挂载历史消息共享已有视图，不为每层重新请求,15,执行路径重叠且边际覆盖较低
+tests/live-tavern-view.test.mjs,164,历史消息 hook 首次挂载不强制刷新，后续修订仍刷新,23,执行路径重叠且边际覆盖较低
+tests/live-tavern-view.test.mjs,208,脚本会话在 messagesPending 期间不同步 execution,6,重复源码或文案断言
+tests/manual-character-design.test.mjs,27,重复触发被拒绝，未保存档案时报错，服务重启后不会一直显示运行中,10,执行路径重叠且边际覆盖较低
+tests/manual-site.test.mjs,25,安装页提供与完整安装说明一致的可复制命令、当前适配版本和各平台步骤,12,重复源码或文案断言
+tests/manual-site.test.mjs,38,Android 公开安装命令固定引导脚本版本，避免 jsDelivr main 缓存倒退,8,重复源码或文案断言
+tests/manual-site.test.mjs,47,Android 公开安装命令不依赖 DSHA rc1 未提供的 curl,6,重复源码或文案断言
+tests/manual-site.test.mjs,61,文档只采用独立样例截图，不复用旧图片或加载远程脚本,14,重复源码或文案断言
+tests/manual-site.test.mjs,114,Android 公开安装入口不再标为实验性，并保留平台要求,10,重复源码或文案断言
+tests/manual-site.test.mjs,125,所有静态资源、文章与页内锚点存在，支持 GitHub Pages 子目录,10,重复源码或文案断言
+tests/manual-site.test.mjs,136,深链接、旧入口、非法和不存在的地址都有确定结果,9,重复源码或文案断言
+tests/manual-site.test.mjs,146,关闭 JavaScript 后所有正文仍可顺序阅读,6,重复源码或文案断言
+tests/mobile-plugin.test.mjs,9,真实 DSH 可挂载并卸载新版移动端插件，不启动服务或请求模型,9,执行路径重叠且边际覆盖较低
+tests/model-request-log.test.mjs,14,逐次保存前后台真实请求，并可按游玩轮次完整读取,52,执行路径重叠且边际覆盖较低
+tests/model-request-log.test.mjs,113,兼容旧日志及未完成请求，失败结果可重试保存,21,执行路径重叠且边际覆盖较低
+tests/multi-profile-ui.test.mjs,21,game switching applies directly and explains when it takes effect,13,执行路径重叠且边际覆盖较低
+tests/multi-profile-ui.test.mjs,35,library selection and new-game defaults use separate controls without changing the current game,12,执行路径重叠且边际覆盖较低
+tests/multi-worldbook-runtime.test.mjs,8,普通开场的真实 startChat 入口也建立多书快照，并复用交互草稿,23,执行路径重叠且边际覆盖较低
+tests/mvu-asset-route.test.mjs,32,MVU readiness errors use 503 while existing RPC error envelope stays unchanged,9,执行路径重叠且边际覆盖较低
+tests/mvu-asset-route.test.mjs,42,RPC keeps malformed JSON rejection and scene-image byte limits before dispatch,14,执行路径重叠且边际覆盖较低
+tests/mvu-asset-route.test.mjs,57,保存生图配置接受最多 2 MiB 的工作流请求，超过上限在 dispatch 前拒绝,23,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,6,深模块强制一次工具调用并以官方 Runtime 的实际差异生成回执,41,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,50,MVU 后台拒绝人物设计调用，仅完成姿势和变量结算,28,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,88,深模块逐项核验提交结果并把人物卡脚本联动与失败操作分开记录,59,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,149,深模块把有效空 Patch 记录为 unchanged，把漏调用工具记录为失败,26,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,177,变量结算 Frame 明确隔离用户输入、旧轮正文和隐藏思考,23,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,202,空 operations 是有效的明确结算结果，旧 analysis 输入被兼容忽略,7,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,210,发给官方 MVU 前把 DSH 绝对变量路径转为 stat_data 内的相对路径,13,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,225,工具拒绝任意 JavaScript、非法路径和无效 delta,11,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,237,关闭姿势和设计后直接结算 MVU，关闭的工具不能写入状态,23,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,261,旧配置开启台账时仍不注入台账任务或工具，变量无需等待台账,21,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,283,independent posture and variable tools can finish in one response in either order,25,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,329,本轮 Helper 建角要求交给结算，后续回合不重放初始化,17,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,347,JSON wire values reach runtime decoded; malformed submissions never dispatch,37,执行路径重叠且边际覆盖较低
+tests/mvu-background-settlement.test.mjs,401,model timeout after a rejected patch remains an actionable task error,13,执行路径重叠且边际覆盖较低
+tests/mvu-conversion.test.mjs,204,非目标格式正则保留，不因包含标签而被误判为旧状态栏,9,执行路径重叠且边际覆盖较低
+tests/mvu-conversion.test.mjs,269,工具固化原渐变、图标、details：映射变量，更新和回退不重建皮肤,20,执行路径重叠且边际覆盖较低
+tests/mvu-diagnostics.test.mjs,55,真实日志 RPC 保留加载字段；诊断写盘失败不向运行路径抛错,19,执行路径重叠且边际覆盖较低
+tests/mvu-diagnostics.test.mjs,118,真实 iframe bootstrap 捕获 console.warn 和 toastr，带事件编号并限制洪泛,36,执行路径重叠且边际覆盖较低
+tests/mvu-drafts.test.mjs,50,规则和单开场修改保留美化，新增字段后重新要求补齐所有开场,12,执行路径重叠且边际覆盖较低
+tests/mvu-drafts.test.mjs,182,字段移动同步全部开场与组件路径，碰撞保持草稿不变，可提交,16,执行路径重叠且边际覆盖较低
+tests/mvu-drafts.test.mjs,228,数组作为完整字段允许各开场不同长度，不把首个开场下标当成必填字段,14,执行路径重叠且边际覆盖较低
+tests/mvu-drafts.test.mjs,375,工具入口自动注入会话及调用标识，输入省略 draft，输出仅有短编号,16,执行路径重叠且边际覆盖较低
+tests/mvu-effect-copy.test.mjs,5,invalid later effect path leaves draft unchanged,8,执行路径重叠且边际覆盖较低
+tests/mvu-initialization-trace.test.mjs,23,production timing aggregates repeated writes and exposes stalled work without changing completion,21,执行路径重叠且边际覆盖较低
+tests/mvu-load-recovery.test.mjs,50,"HTML, JSON disguised as JavaScript, and oversized error bodies are never evaluated",16,执行路径重叠且边际覆盖较低
+tests/mvu-native-lazy-transaction.test.mjs,18,"native reader pins old revisions, loads points, and retains local edits through full materialization",18,执行路径重叠且边际覆盖较低
+tests/mvu-native-lazy-transaction.test.mjs,36,old native pages without MVU flags remain searchable and changed flags are persisted,10,执行路径重叠且边际覆盖较低
+tests/mvu-native-lazy-transaction.test.mjs,111,a write waiting for an old floor cannot mutate after its transaction finishes,18,执行路径重叠且边际覆盖较低
+tests/mvu-prompt-projection.test.mjs,17,不按字段名误删扁平变量，不删除 stat_data 内同名游戏字段，显式结构优先,9,执行路径重叠且边际覆盖较低
+tests/mvu-prompt-projection.test.mjs,27,失败重试反馈同样移除展示副本，不改变运行时输入、原始回执和保存结果,36,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,11,启动扫描会接续已持久化且运行时就绪的 MVU 结算,13,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,27,瞬时读取失败会自行退避重试，不依赖新的浏览器就绪事件,25,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,54,重复唤醒合并为一次结算接续,18,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,74,未就绪时只保留持久事实，后续就绪唤醒再接续,17,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,108,读取旧状态期间到达的持久待办唤醒不会被吞掉,26,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,135,dispose during a pending read prevents resume and retry,13,执行路径重叠且边际覆盖较低
+tests/mvu-settlement-reconciler.test.mjs,165,startup scans coalesce and do not wake sessions after disposal,7,执行路径重叠且边际覆盖较低
+tests/mvu-upstream-cost.test.mjs,72,"turn mapping falls back for structural changes, and variable-only projections stay immutable",10,执行路径重叠且边际覆盖较低
+tests/mvu-upstream-cost.test.mjs,87,journal display input carries layout evidence and detaches only accessed floors,17,执行路径重叠且边际覆盖较低
+tests/native-conversation-migration.test.mjs,45,failed verification never publishes native head; retry succeeds,12,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,24,"one variable transaction persists final roots, not twenty intermediate worlds",10,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,170,cold Helper projections read only requested page rows and preserve all historical API fields,22,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,203,cold native delta eligibility checks never hydrate a Chat that has no cached change coverage,13,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,286,native scene polling does not materialize historical variables or display diagnostics,8,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,295,native opening window reads only tail pages and pins later paging to the same revision,20,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,316,session summary reads share a bounded immutable-revision cache without exposing mutable rows,22,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,339,native display capture reads only target diagnostics at absolute coordinates,10,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,350,cold native settlement checkpoint reads only its target floor and preserves operation guards,17,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,368,cold candidate task state reads no history pages and stays detached across revisions,23,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,392,opening eligibility skips materialization when the entire conversation fits in the window,9,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,417,candidate metadata patch canonicalizes optional undefined leaves,6,执行路径重叠且边际覆盖较低
+tests/native-conversation-storage.test.mjs,424,unchanged card blocks survive task revisions without sharing writable projections,17,执行路径重叠且边际覆盖较低
+tests/native-prose-renderer.test.mjs,7,正式消息 renderer 使用原生 Markdown、完整标签参数，并只为 HTML 创建 iframe,87,执行路径重叠且边际覆盖较低
+tests/native-scene-index.test.mjs,16,cold scene lookup preserves legacy keys and bounds history I/O,14,执行路径重叠且边际覆盖较低
+tests/native-scene-index.test.mjs,45,old native heads without the index use full compatibility reads and acquire it on write,9,执行路径重叠且边际覆盖较低
+tests/native-scene-index.test.mjs,55,append resumes persisted prefix state without reading old bodies; variable patch keeps its root,15,执行路径重叠且边际覆盖较低
+tests/native-scene-index.test.mjs,105,older scene indexes without display metadata retain display compatibility,11,执行路径重叠且边际覆盖较低
+tests/native-scene-index.test.mjs,117,display metadata left by an older writer falls back until a body edit rebuilds it,18,执行路径重叠且边际覆盖较低
+tests/opening-document-replacement.test.mjs,50,开局 document.open 清掉卸载监听后，移除准备页不能继续提供旧 MVU,42,执行路径重叠且边际覆盖较低
+tests/opening-performance.test.mjs,8,"opening timings retain running and failed stages without private error text, bounded and detached",20,执行路径重叠且边际覆盖较低
+tests/opening-performance.test.mjs,36,browser opening request metadata survives server export filtering,7,执行路径重叠且边际覆盖较低
+tests/opening-picker-loading.test.mjs,30,shows pending picker before RPC completes and does not request initial openings twice,25,执行路径重叠且边际覆盖较低
+tests/opening-picker-loading.test.mjs,55,failed preparation returns to card selection without allowing an empty start,10,执行路径重叠且边际覆盖较低
+tests/opening-preparation.test.mjs,50,原样宿主调用：更新世界书、保存 swipe、重新加载，实际进入准备草稿,29,执行路径重叠且边际覆盖较低
+tests/opening-preparation.test.mjs,80,准备页运行时变量和插件设置均隔离保存,18,执行路径重叠且边际覆盖较低
+tests/opening-preparation.test.mjs,99,native swipe.to selects a preview and rejects historical message targets,18,执行路径重叠且边际覆盖较低
+tests/opening-preparation.test.mjs,140,MVU 开局保留完整模板设置，卡脚本可按读取的基线保存修改,16,执行路径重叠且边际覆盖较低
+tests/opening-preparation.test.mjs,157,"opening generate reads the edited draft worldbook, selected greeting, actual card and source preset without writes",23,执行路径重叠且边际覆盖较低
+tests/opening-preview.test.mjs,20,纯文本开场白转义后保持换行，不会被当作 HTML,5,执行路径重叠且边际覆盖较低
+tests/opening-retention.test.mjs,27,隐藏期间续期不重建界面，卸载后停止；失败不会重复刷屏,17,执行路径重叠且边际覆盖较低
+tests/opening-slash.test.mjs,8,opening slash bridge submits the untouched command and exposes it on TavernHelper,12,执行路径重叠且边际覆盖较低
+tests/opening-slash.test.mjs,53,"browser wizard replaces its body, submits through the real frame host, and starts once",48,执行路径重叠且边际覆盖较低
+tests/opening-transport.test.mjs,7,production opening RPC defers payload only when the caller opts in,24,执行路径重叠且边际覆盖较低
+tests/ordered-numeric-index.test.mjs,5,"compressed numeric index preserves order, rank, deletion, diff and old roots",30,执行路径重叠且边际覆盖较低
+tests/ordered-position-sync-cost.test.mjs,23,membership edits include shifted positions even when the total length is unchanged,11,执行路径重叠且边际覆盖较低
+tests/ordered-position-sync-cost.test.mjs,50,position changes exactly cover deterministic mixed membership edits,16,执行路径重叠且边际覆盖较低
+tests/panel-registry.test.mjs,11,手动固定多个页面保持节点身份，取消固定和卸载都回到各自原消息,15,执行路径重叠且边际覆盖较低
+tests/persistent-status-view.test.mjs,10,声明状态栏的卡保留开局页，正文推进后使用声明模板而非 MVU 开局页,16,执行路径重叠且边际覆盖较低
+tests/persistent-status-view.test.mjs,27,状态模板复用编译，但旧消息来源、最新轮次、规则和身份变化仍生效,28,执行路径重叠且边际覆盖较低
+tests/persistent-status-view.test.mjs,56,旧数值来源只在原文唯一声明时迁移，未知 HTML 不被误删,12,执行路径重叠且边际覆盖较低
+tests/phone-chat.test.mjs,30,手机私聊使用后台模型并独立持久化，不修改正文和状态,27,执行路径重叠且边际覆盖较低
+tests/play-card-snapshot.test.mjs,48,failed plan is retryable and does not publish or mutate a new chat,10,执行路径重叠且边际覆盖较低
+tests/play-card-snapshot.test.mjs,93,未确认画像或快照不一致时拒绝切换，不误删人物卡背景,6,执行路径重叠且边际覆盖较低
+tests/play-card-snapshot.test.mjs,144,世界书绑定改变也提示更新，确认版本后应用且不修改剧情和变量,24,执行路径重叠且边际覆盖较低
+tests/play-chrome-layout.test.mjs,12,没有键盘时，行动卡贴在输入条上沿,5,执行路径重叠且边际覆盖较低
+tests/play-chrome-layout.test.mjs,18,键盘不缩小布局视口时，行动卡底边含键盘高度，高度只占可视区剩余,7,执行路径重叠且边际覆盖较低
+tests/play-controls-chat-snapshot.test.mjs,36,停止后的半截回复不能继承上一轮生图操作和错误,8,执行路径重叠且边际覆盖较低
+tests/plugin-dependencies.test.mjs,83,CLI npm/pnpm 包目录及符号链接按当前 dsh 定位，不受 Desktop 环境变量影响,22,执行路径重叠且边际覆盖较低
+tests/pnpm-install-exit.test.mjs,10,all bootstrap installers suppress pnpm version checks and PowerShell restores its caller,8,重复源码或文案断言
+tests/pocket-opt-in.test.mjs,4,disabled Pocket omits its pnpm patch without weakening other patch validation,7,执行路径重叠且边际覆盖较低
+tests/polish-removal.test.mjs,13,正文直接生成成稿，不再进入第二轮精修,20,执行路径重叠且边际覆盖较低
+tests/portable-fs.test.mjs,8,非 ASCII 路径：递归复制并删除目录树,15,执行路径重叠且边际覆盖较低
+tests/portable-fs.test.mjs,24,符号链接：默认按链接复制，dereference 复制目标；删除不跟随链接,13,执行路径重叠且边际覆盖较低
+tests/preset-conversion-preview.test.mjs,6,按 prompt_order 把全部条目转换为前中后三段，保留开关并忽略 DSH 原生材料 marker 与顶层参数,53,执行路径重叠且边际覆盖较低
+tests/preset-drag.test.mjs,16,busy and unrelated drags do not write preset data,10,执行路径重叠且边际覆盖较低
+tests/preset-editor.test.mjs,41,预设编辑器拒绝根节点删除和不存在的父路径,6,执行路径重叠且边际覆盖较低
+tests/preset-reading.test.mjs,6,按 SillyTavern prompt_order 还原条目顺序和启用状态,36,执行路径重叠且边际覆盖较低
+tests/product-site.test.mjs,21,目录链接及直接访问锚点会展开对应功能,12,执行路径重叠且边际覆盖较低
+tests/profile-data-store.test.mjs,29,Profile 数据存储拒绝绝对路径和目录逃逸,11,执行路径重叠且边际覆盖较低
+tests/projection-render-cost.test.mjs,34,"projection versions, duplicate turns, maximum and old views retain existing semantics",13,执行路径重叠且边际覆盖较低
+tests/projection-render-cost.test.mjs,48,story turn reverse index keeps first-match ordering and mutable unregistered fallback,15,执行路径重叠且边际覆盖较低
+tests/prompt-streamlining.test.mjs,37,卡片 Agent 以极简模式工具为底座，游玩 Agent 保留 Skill 但不暴露文件编辑工具,33,重复源码或文案断言
+tests/prune-installed-files.test.mjs,16,更新只删除上一版安装、新版已不包含的文件；首次安装不删任何东西，用户数据不受影响,17,执行路径重叠且边际覆盖较低
+tests/public-demo.test.mjs,8,阿芙拉公开演示以展示正则美化开场，同时保持 Session 原文,16,执行路径重叠且边际覆盖较低
+tests/regeneration-abort-safety.test.mjs,90,missing turn/end still cannot absorb the next normal input,6,执行路径重叠且边际覆盖较低
+tests/regeneration-mapping-sync.test.mjs,36,mapping parent replacement and removal preserve wire semantics,11,执行路径重叠且边际覆盖较低
+tests/remote-document-loader.test.mjs,10,body.load 整页保留脚本顺序、清除顶层缩进、保留正文换行及回调,33,执行路径重叠且边际覆盖较低
+tests/reply-presentation.test.mjs,23,没有正则时三层回复保持原文，HTML 只影响展示分类,12,执行路径重叠且边际覆盖较低
+tests/reply-presentation.test.mjs,64,整页美化继续整体隔离，不把外来脚本和样式注入宿主,5,执行路径重叠且边际覆盖较低
+tests/reply-presentation.test.mjs,70,任意无属性正文协议标签保留 Markdown 段落，不依赖卡片标签白名单,16,执行路径重叠且边际覆盖较低
+tests/reply-presentation.test.mjs,87,正则与身份参数变化使缓存失效，返回结果修改不污染缓存,16,执行路径重叠且边际覆盖较低
+tests/reply-projection-update-cost.test.mjs,51,persistent status declarations still remove captured panels and track the current target,12,执行路径重叠且边际覆盖较低
+tests/request-performance-client.test.mjs,6,HTTP RPC 拒因保留结构化错误码，兼容旧服务端的纯文本错误,13,执行路径重叠且边际覆盖较低
+tests/request-performance-client.test.mjs,20,视图 HTTP 请求全部阻塞时，领取、续租和回执仍经独立控制通道完成,39,执行路径重叠且边际覆盖较低
+tests/resource-save-summary.test.mjs,6,save summaries use existing bounded export and cannot affect writes,14,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,94,更多菜单收起回退和压缩，并可再次关闭,14,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,126,待接续或运行中的结算只允许重新生成取消旧结算，其他轮次操作保持禁用,15,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,142,实际回退组件在请求被拒后解除忙碌并刷新，下一次点击重新提交,13,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,156,脚本联动警告保留成功回退投影，不显示为回退失败,8,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,165,回退到开场白后仍可撤销，运行期间禁用,14,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,181,不可回退时展示原因，仍允许独立的正文重新生成,12,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,194,失败尾部显示一键重放，点击直接重发而不是打开意见面板,17,执行路径重叠且边际覆盖较低
+tests/rollback-action.test.mjs,213,提交失败重放走 replayTurn，刷新视图与回合投影并清空面板,28,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,10,回退识别正则替换后的可见助手节点，并同时覆盖本轮用户输入与输出,34,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,47,只有开场白而没有用户输入时不存在可回退轮次,10,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,89,连续回退时跳过上一轮回退留下的助手墓碑，继续定位更早一轮,45,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,167,重新生成正文完整遮蔽旧正文、失败回合残留和合成输入,33,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,203,失败的正文回合从模型消息面移除本轮全部残留节点,37,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,266,旧 snapshot 不冒充用户输入，清理失败轮次后仍能定位上一完整正文,6,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,289,压缩摘要不能冒充已经压缩掉的玩家输入,7,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,297,失败清理不消费已提交正文或仍在运行的输入,12,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,310,摘要之前的输入不能跨越压缩点配对，摘要之后完整的新轮仍可回退,10,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,321,历史替换按来源归属；缺失来源或新追加跨越正文仍拒绝清理,21,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,343,失败尾部可重放出原始用户输入，即使清理墓碑已替换掉原生节点,11,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,385,没有用户输入的失败回合不提供重放,8,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,394,失败清理仅豁免可证明替换历史系统槽位的更新,18,执行路径重叠且边际覆盖较低
+tests/rollback-surface.test.mjs,413,纯图片失败回合可重放完整附件,11,执行路径重叠且边际覆盖较低
+tests/rollback-turn-projection.test.mjs,89,alpha 上一轮尾部未挂载时，仍按明确轮次边界保留上一轮,7,执行路径重叠且边际覆盖较低
+tests/rollback-turn-projection.test.mjs,165,撤销隐藏保留宿主原有显示样式和其他隐藏行,10,执行路径重叠且边际覆盖较低
+tests/rollback-turn-projection.test.mjs,207,被替换的合成轮即使没有尾部，也按明确轮次隐藏,7,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,194,生成中误点回退不写入，完成后再次点击能正常回退,12,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,207,变量结算失败后仍可显式回退已提交正文，不连带回退上一轮 checkpoint,38,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,264,回退提交后脚本通知失败不会伪装成回退失败,8,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,273,读取 checkpoint 期间重新开始生成时，提交前再次拒绝回退,8,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,293,读取 checkpoint 时聊天变化不会被旧回退覆盖,13,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,307,存储拒绝回退时不修改消息面，并释放回退锁,12,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,406,当前正文尚在后台结算时，重新生成先取消旧结算再替换正文,14,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,494,回退中断前台并重新读取结束后的聊天，不等待后台退出,11,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,506,后台历史快照缺失时仍回退正文，保留当前状态并提示,8,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,515,历史后台 pending 标记不会永久锁住连续回退,6,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,522,读取历史期间后台更新变量不阻塞正文回退,10,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,565,真实重新生成与后台调度联动：连续三次只创建一个后台，撤回内容不进入下一请求,67,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,656,首次回复停止后也可清除，不要求已存在完整用户与正文配对,14,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,758,回退目标轮次已变化时拒绝删除,7,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,781,失败后成功再回退：先清理失败残留，下一次才回退保留正文,21,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,803,压缩移除原生配对后，回退返回可理解提示且不修改存档,7,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,811,缺失失败清理标记时仍可清理尾部中断，保留上一轮剧情,11,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,984,失败尾部重放：移除被中断的回复后原样重发本轮输入，不回退已完成剧情,18,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1009,失败清理钩子缺失时，重放先补清被中断的回复再重发,14,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1027,重放失败回合会拒绝在宿主机会话补丁尚未握手时执行,9,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1037,重放只在失败仍拥有尾部时可用，且生成中或已完成回合都拒绝,19,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1106,committed projection flush failure retains intent and retry never appends a second replacement,13,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1120,generation starting during diagnostics is rejected again before changing Chat,8,执行路径重叠且边际覆盖较低
+tests/round-history.test.mjs,1146,重新生成携带玩家原始图片，提交后仍保留图片,8,执行路径重叠且边际覆盖较低
+tests/runtime-content-projection.test.mjs,6,进入 Agent 的聊天消息统一解析宏并且不修改权威宏状态,11,执行路径重叠且边际覆盖较低
+tests/runtime-package.test.mjs,17,安装配置忽略缺失的默认 pnpmfile，避免 Desktop 自带 pnpm 11.8 中断,3,执行路径重叠且边际覆盖较低
+tests/runtime-preset-lifecycle.test.mjs,15,最终请求把前后投影到 messages 绝对边界，并清除旧 Session 残留,29,执行路径重叠且边际覆盖较低
+tests/runtime-preset-lifecycle.test.mjs,63,角色归一化不合并或破坏 DSH 工具消息,22,执行路径重叠且边际覆盖较低
+tests/runtime-preset-lifecycle.test.mjs,110,关闭或未组装附加指令时不注入、不从历史中删除相同文字,9,执行路径重叠且边际覆盖较低
+tests/scene-cancellation-watch.test.mjs,6,取消轮询读取失败后继续，确认取消或失去归属才中止,17,执行路径重叠且边际覆盖较低
+tests/scene-illustration.test.mjs,151,provider reports explicit rejection separately from ambiguous transport and response failures,12,执行路径重叠且边际覆盖较低
+tests/scene-illustration.test.mjs,300,ComfyUI retry after restart or attachment failure queries the saved job without another generation,37,执行路径重叠且边际覆盖较低
+tests/scene-illustration.test.mjs,402,failed outbox write keeps received bytes in the live host and never resubmits generation,15,执行路径重叠且边际覆盖较低
+tests/scene-illustration.test.mjs,637,"image-only adjustment uses just old plan plus instruction, persists through provider failure, and does not change canonical plans",45,执行路径重叠且边际覆盖较低
+tests/scene-image-channels.test.mjs,55,empty base64 does not hide a usable image URL,12,执行路径重叠且边际覆盖较低
+tests/scene-image-comfy.test.mjs,28,ComfyUI supports explicit maintainer mapping and prunes unrelated output branches,11,执行路径重叠且边际覆盖较低
+tests/scene-image-comfy.test.mjs,53,"ComfyUI persists before POST, polls only its ID and authenticates same-origin /view",24,执行路径重叠且边际覆盖较低
+tests/scene-image-connection.test.mjs,33,NovelAI selector exposes all locally supported versions without network discovery,7,重复源码或文案断言
+tests/scene-image-controls.test.mjs,9,one repaint entry opens optional feedback; blank repaints and feedback adjusts without replacing old images,47,执行路径重叠且边际覆盖较低
+tests/scene-image-controls.test.mjs,57,"image action is hidden until explicitly enabled, including loading and legacy settings",39,执行路径重叠且边际覆盖较低
+tests/scene-image-controls.test.mjs,152,"uncertain purchase requires user confirmation, while original provider task queries do not",14,执行路径重叠且边际覆盖较低
+tests/scene-image-controls.test.mjs,167,"reference chooser never preselects a group member, freezes consent and permits per-person revocation while disabled",61,执行路径重叠且边际覆盖较低
+tests/scene-image-conversation-switch.test.mjs,5,本局生图开关独立于全局 API 配置，关闭仍可读已有图片,24,执行路径重叠且边际覆盖较低
+tests/scene-image-credentials.test.mjs,31,same read-only key migrates and repeated saves reuse it without writes or network,11,执行路径重叠且边际覆盖较低
+tests/scene-image-credentials.test.mjs,60,writable keys can be replaced; empty input preserves the existing key,7,执行路径重叠且边际覆盖较低
+tests/scene-image-diagnostics.test.mjs,14,generation request diagnostics retain bounded AggregateError cause codes,15,执行路径重叠且边际覆盖较低
+tests/scene-image-diagnostics.test.mjs,30,attempt journal replaces snapshots without losing older attempts or stage events and survives a new reader,15,执行路径重叠且边际覆盖较低
+tests/scene-image-diagnostics.test.mjs,58,"legacy logs remain readable when migration publication fails, then migrate without losing history",24,执行路径重叠且边际覆盖较低
+tests/scene-image-interaction-diagnostics.test.mjs,5,生图前置日志只保存固定字段，与生成详情隔离且导出可读,22,执行路径重叠且边际覆盖较低
+tests/scene-image-module.test.mjs,105,legacy Tavern-only config migrates on save without losing key or calling an API,18,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,17,多人图只绑定明确选择的人物，保留来源位置提示且重画仍跳过文字模型,35,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,105,原生 DSH 仅接收已就绪可视变量，引用衣着片段并跨重启复用，不写前台,39,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,146,日志 ZIP 连接真实生图子 Session 与成功失败诊断，不导出密钥或图片字节,32,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,179,原生 DSH 生图 Agent 按需读历史设定、引用片段，前台不注入且重画不重读,31,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,211,非恒定世界书归档跨重启按正文读取，真实 DSH 生图请求不借用后来编辑的内容,28,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,240,九渠道正在等待 HTTP 时均可取消；关开关后仍可取消，重启不重发,36,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,337,真实 DSH 确认工具收到生图服务拒绝详情，不谎报图片完成也不自动重发,23,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,361,真实 DSH 原始 JSON 错误返回准确位置，修正后拆分提交只生成一次图片,20,执行路径重叠且边际覆盖较低
+tests/scene-image-native.test.mjs,382,真实 DSH 子 Agent 调用生图工具，HTTP 返回图经宿主校验落盘，前台不新增消息,69,执行路径重叠且边际覆盖较低
+tests/scene-image-provider-errors.test.mjs,19,"malformed, HTML and oversized error bodies remain bounded, never mask the HTTP status",10,执行路径重叠且边际覆盖较低
+tests/scene-image-unified-native.test.mjs,13,慢速生图不阻塞状态和关闭设置，关闭后仍可取消且不重发,26,执行路径重叠且边际覆盖较低
+tests/scene-image-unified-native.test.mjs,73,生图读取参考、提交方案、调整图片的 Schema 在真实模型边界均有效,30,执行路径重叠且边际覆盖较低
+tests/scene-plan-draft.test.mjs,5,按调用 id 取回 DSH 原始参数，不读取上次调用或历史任务,7,执行路径重叠且边际覆盖较低
+tests/scene-plan.test.mjs,54,persisted legacy identities and evidence remain readable and unchanged across channel conversion,28,执行路径重叠且边际覆盖较低
+tests/scene-prefix-hash.test.mjs,5,persisted SHA prefixes preserve Node scene hashes across UTF-8 and block boundaries,9,执行路径重叠且边际覆盖较低
+tests/scene-references.test.mjs,8,"bounded named lookup reads only eligible frozen sections, with stable provenance",18,执行路径重叠且边际覆盖较低
+tests/scene-state.test.mjs,32,state is bound to selected body and readiness; missing old state never uses future variables,19,执行路径重叠且边际覆盖较低
+tests/scoped-view-refresh-cost.test.mjs,48,overlapping dependencies notify once and unsubscribe removes path entries,17,执行路径重叠且边际覆盖较低
+tests/scoped-view-refresh-cost.test.mjs,66,overlapping selections preserve immutable parents and root selection returns full snapshot,8,执行路径重叠且边际覆盖较低
+tests/scoped-view-refresh-cost.test.mjs,100,shared replacement routing preserves missing versus undefined and mutable compatibility,12,执行路径重叠且边际覆盖较低
+tests/scoped-view-refresh-cost.test.mjs,233,deferred retained frames read Helper context at activation,11,执行路径重叠且边际覆盖较低
+tests/scoped-view-refresh-cost.test.mjs,267,receipt component renews busy dependencies when ownership and pending status change,16,执行路径重叠且边际覆盖较低
+tests/script-continuity.test.mjs,39,剧本回合准备不移动游标，正文提交后自动前进一块,41,执行路径重叠且边际覆盖较低
+tests/script-continuity.test.mjs,102,末块正文提交后自动进入结束位置，不再重复注入末块,24,执行路径重叠且边际覆盖较低
+tests/script-navigation-ui.test.mjs,7,"browse, paging and explicit idle-only cursor action remain separate",71,执行路径重叠且边际覆盖较低
+tests/script-session-owner.test.mjs,121,viewing a child and returning keeps one game executor; events complete while its header is unmounted,26,执行路径重叠且边际覆盖较低
+tests/script-session-owner.test.mjs,169,"transition blocks view replacement, missing runtime clears it, malformed parent cycles fail closed",15,执行路径重叠且边际覆盖较低
+tests/script-session-owner.test.mjs,185,production feature owns lifetime independently of header mount/unmount,16,执行路径重叠且边际覆盖较低
+tests/script-session-owner.test.mjs,202,foreground generation retains Helper execution until fresh idle confirmation,15,执行路径重叠且边际覆盖较低
+tests/server-template-native.test.mjs,14,"server engine uses real journal, delta snapshots, persistent variable writes and external changes",36,执行路径重叠且边际覆盖较低
+tests/server-template-native.test.mjs,51,native window engine persists an old-floor variable edit without a full Chat read,32,执行路径重叠且边际覆盖较低
+tests/server-template-runtime.test.mjs,32,sessions isolate globals and serialize foreground/background operations,5,执行路径重叠且边际覆盖较低
+tests/server-template-runtime.test.mjs,82,template workers have a configurable heap budget above the former 256 MB ceiling,5,执行路径重叠且边际覆盖较低
+tests/server-template-runtime.test.mjs,88,large template allocations fit the default heap budget,5,执行路径重叠且边际覆盖较低
+tests/server-template-runtime.test.mjs,149,bounded formatting mirror preserves full historical data and template input rendering,8,执行路径重叠且边际覆盖较低
+tests/server-template-runtime.test.mjs,158,actual isolated template engine keeps logical floors and reads old content through its scoped pipe,13,执行路径重叠且边际覆盖较低
+tests/session-events-native.test.mjs,6,host boundary preserves synthetic assistant messages and user replacement,12,执行路径重叠且边际覆盖较低
+tests/session-events.test.mjs,5,old hosts and unavailable sessions retain their existing read semantics,6,执行路径重叠且边际覆盖较低
+tests/session-list-recovery.test.mjs,17,Session 列表首次刷新被中止后重试并打开原 Session,34,执行路径重叠且边际覆盖较低
+tests/session-refresh-controller.test.mjs,51,terminal error discards pre-failure queued notifications,6,执行路径重叠且边际覆盖较低
+tests/session-resource-access.test.mjs,22,script startup and card metadata stay light; legacy complete card APIs load once and isolate mutations,18,执行路径重叠且边际覆盖较低
+tests/session-resource-access.test.mjs,55,an old worldbook download cannot overwrite a newly installed context,12,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,16,React卸载不释放页面，离开后新建其他资源不能延后原截止时间,5,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,22,到期回调重新检查刚开始的脚本任务，不用上次空闲快照回收它,8,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,33,后台手机脚本延迟查询仍能绑定事件和设置样式，不操作前台同名按钮,34,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,69,切走后异步创建或重新插入的卡片悬浮窗保持隔离，返回保留事件与状态,30,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,102,explicitly created host nodes are parked before observer delivery and on delayed mount,22,执行路径重叠且边际覆盖较低
+tests/session-resource-retention.test.mjs,188,外部 import 模块同样使用所属会话的宿主 DOM，不绕过浮窗隔离,24,执行路径重叠且边际覆盖较低
+tests/session-rpc-freshness.test.mjs,37,real RPC does not hide a current request failure behind an older cached success,7,执行路径重叠且边际覆盖较低
+tests/session-stable-prefix.test.mjs,17,前台确认更新后同版本复用背景，重开 Session 后仍复用,20,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,42,live A to B to A without cache eviction gives each subscribed lifetime fresh ownership,11,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,63,live retry-not-before survives invalidations after timeout,9,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,96,coordination reconnect cached snapshot is followed by a fresh HTTP baseline,10,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,116,coordination stopped connections cannot change re-subscribed session or another session,12,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,128,coordination local accepted replacement revokes pending HTTP,6,执行路径重叠且边际覆盖较低
+tests/session-sync-races.test.mjs,160,unsubscribed optimistic busy does not block the next lifetime idle snapshot,9,执行路径重叠且边际覆盖较低
+tests/session-turn-result.test.mjs,6,rc.1 snapshot-only Session returns the foreground result for the requested turn,7,执行路径重叠且边际覆盖较低
+tests/session-variable-directory.test.mjs,29,directory stays small for large states and skips editing sessions,10,执行路径重叠且边际覆盖较低
+tests/session-view-reader.test.mjs,73,narrow variable slices retain routing fields and legacy adoption fallback,15,执行路径重叠且边际覆盖较低
+tests/session-view-sync.test.mjs,76,LRU eviction and A to B to A reentry retain outstanding request freshness,14,执行路径重叠且边际覆盖较低
+tests/settlement-input.test.mjs,8,retry input preserves absolute target and neighboring helper rows without full reads,7,执行路径重叠且边际覆盖较低
+tests/settlement-jobs.test.mjs,6,same-chat callers share execution; normal completion publishes once,7,执行路径重叠且边际覆盖较低
+tests/settlement-jobs.test.mjs,31,disposal before the execution microtask never enters run,6,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,92,首次结算失败后编辑正文并重试，变量提交到编辑后的版本且释放后台状态,21,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,114,普通卡忽略旧人物设计开关，只执行姿势结算,14,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,131,普通卡姿势未提交时 Round 失败，人物设计不能替代姿势结算,9,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,143,人物设计工具失败不阻止当前后台 Agent 继续提交姿势,14,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,239,已安全挂起且保存了提交的任务仍等待执行器，不误报中断,16,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,256,执行中断即使留有旧提交也不会在浏览器就绪时自动重放,13,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,270,MVU 已加载失败直接结束，不永久等待或重开模型,22,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,293,MVU 执行超时保留已提交正文 checkpoint，仍能重试结算,13,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,308,普通卡全部自动任务关闭时不请求模型，仍完成原生结算,8,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,317,旧设置只开人物设计时不再自动请求后台模型,9,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,327,MVU 变量关闭后跳过本轮且不留待重放，姿势仍可独立结算,19,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,347,MVU 三项全关不会发起任何后台模型请求,9,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,373,已有游戏读取本局联网开关，忽略全局变化,15,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,390,成功后带意见重新结算：复用原始快照，只更新变量，失败保留上次结果,38,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,511,用户停止持久任务后不自动接续,14,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,526,手动重新投递保留待提交操作与投递记录，不重新生成变量计划,17,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,612,等待执行器的任务可从正式停止入口取消，重连不重启,12,执行路径重叠且边际覆盖较低
+tests/settlement-restart-recovery.test.mjs,625,正式结算入口将当前正文之前的建角 Helper 消息交给 MVU,16,执行路径重叠且边际覆盖较低
+tests/sidebar-session-refresh.test.mjs,9,opening the card picker reloads cards created outside this browser,18,执行路径重叠且边际覆盖较低
+tests/sidebar-start.test.mjs,6,开始页注册到原生 guide chain 并通过当前标签导航,16,执行路径重叠且边际覆盖较低
+tests/sidebar-start.test.mjs,23,Guide 库显示在偏好分组，点击打开独立库标签,14,执行路径重叠且边际覆盖较低
+tests/silly-template-persistence.test.mjs,9,silly 模式在正文请求前持久化模板变量到当前消息槽位,20,执行路径重叠且边际覆盖较低
+tests/sillytavern-compatibility.test.mjs,34,绝对深度条目插入聊天历史且正则只投影真实聊天消息,14,执行路径重叠且边际覆盖较低
+tests/skill-catalog-session-scope.test.mjs,46,preset changes replace cold cache identity and installation can be disposed,10,执行路径重叠且边际覆盖较低
+tests/skin-material.test.mjs,6,glass is off by default and explicit existing material choices survive,16,执行路径重叠且边际覆盖较低
+tests/staged-app-install.test.mjs,38,全新安装：暂存后切换，提交后不留下暂存或旧目录,13,执行路径重叠且边际覆盖较低
+tests/staged-app-install.test.mjs,63,升级：只搬运用户文件，旧依赖与已退役的发布文件不带入新版本,18,执行路径重叠且边际覆盖较低
+tests/staged-app-install.test.mjs,106,未切换就失败：丢弃暂存目录，正在运行的版本不受影响,11,执行路径重叠且边际覆盖较低
+tests/status-bar-placement.test.mjs,7,状态栏位置按本局保存，不改变剧情、变量或提示词缓存基准,13,执行路径重叠且边际覆盖较低
+tests/status-match-update-cost.test.mjs,39,legacy source dependencies are rechecked even when projection identity is unchanged,13,执行路径重叠且边际覆盖较低
+tests/status-panel-loading.test.mjs,13,initial status loading and reconnect render without dereferencing a missing view,6,执行路径重叠且边际覆盖较低
+tests/status-refresh-fallback.test.mjs,78,a status performing Helper writes is not automatically replayed,8,执行路径重叠且边际覆盖较低
+tests/story-compaction.test.mjs,6,只有剧情和剧本游玩会话使用剧情压缩,6,执行路径重叠且边际覆盖较低
+tests/story-ledger.test.mjs,52,普通卡结算忽略旧的自动台账开关，只提交姿势并保留已有台账,41,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,56,正文提交建立 checkpoint，revision 单调增加并清除旧候选,17,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,75,前台正文独立提交 checkpoint，后台结算失败也不阻塞下一轮,26,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,147,多轮在同一毫秒完成时，结算状态仍只更新 roundOperationId 绑定的正文,26,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,270,关联 Round 已失效时先拒绝结算，再执行 apply,24,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,297,世界书不创建 Agent operation，候选与状态结算共用后台 participant,22,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,321,后台 participant 在正常推进时复用，回退后仍使用同一 Session 并请求 Surface 回退,21,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,346,后台 Session 压缩后发生正文回退时重建 Session，不复用可能含废弃剧情的摘要,18,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,367,连续正文替代始终回退同一个后台 Session 的有效 checkpoint,19,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,390,旧对话可惰性迁移，现有候选 Session 成为后台 participant,10,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,402,上一版 timeline 的 candidate participant 自动迁移为 background,18,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,439,正文替代失败不会清空待回退的后台 checkpoint,16,执行路径重叠且边际覆盖较低
+tests/story-timeline.test.mjs,479,导入后的旧快照没有后台身份，反复回退仍复用已创建的后台,13,执行路径重叠且边际覆盖较低
+tests/subagent-catalog-sync.test.mjs,5,新增运行中的代理后刷新已打开目录，目录更新不会形成刷新循环,12,执行路径重叠且边际覆盖较低
+tests/subagent-catalog-sync.test.mjs,18,首次看到目录时若缺少已知子代理则补刷一次,6,执行路径重叠且边际覆盖较低
+tests/subagent-catalog-sync.test.mjs,25,卡片工作台（含子代理）跑完一轮时通知资源库刷新，游玩对话不触发,16,执行路径重叠且边际覆盖较低
+tests/superseded-turn-errors.test.mjs,76,宿主提供独立错误投影，前端按 Session 隔离并只观察对话滚动区,14,重复源码或文案断言
+tests/surface-recovery.test.mjs,50,失败重试按钮和执行入口都拒绝不安全范围,10,执行路径重叠且边际覆盖较低
+tests/system-append.test.mjs,35,真实 DSH complete system 在后台各任务中保留最新附加指令,18,执行路径重叠且边际覆盖较低
+tests/system-append.test.mjs,54,附加指令默认开启，明确关闭的选择与用户覆盖继续保留,21,执行路径重叠且边际覆盖较低
+tests/task-state-reader.test.mjs,24,legacy foreground migration retains full story fallback in both reader routes,7,执行路径重叠且边际覆盖较低
+tests/tavern-client-assets.test.mjs,6,Web 宿主直接注入完整内置样式，重复加载与升级复用同一个节点,28,执行路径重叠且边际覆盖较低
+tests/tavern-conversation-registry.test.mjs,77,"background config resolves aliases, repairs missing links and adopts legacy games once",38,执行路径重叠且边际覆盖较低
+tests/tavern-coordination-event.test.mjs,16,协调事件把人物卡投影修订交给实时视图刷新入口,12,执行路径重叠且边际覆盖较低
+tests/tavern-extension-settings.test.mjs,36,共享设置引用、排队保存和写入期间新编辑，在宿主往返后保持一致,28,执行路径重叠且边际覆盖较低
+tests/tavern-helper-context.test.mjs,59,冷启动只对窗口外楼层出骨架，补水后与全量投影一致,27,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,17,手机脚本可读取全局与人物卡正则，并按旧 scope/enable_state 过滤,11,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,30,手机脚本导入并更新全局正则后等待宿主持久化,22,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,54,手机脚本读取并更新人物卡变量,16,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,74,CHAT_CHANGED 自动开启局部正则读取宿主实际启用状态，不触发多余保存或重载,28,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,103,legacy self checks can read empty global regexes and v2 character script paths,7,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-api.test.mjs,111,legacy wrapped script exports expose names and effective enabled state to card readers,10,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,23,"serialized Helper formatter synchronously uses ordered global, preset and bound-card rules",10,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,44,"formatter honors DSH display and prompt targeting, both targets, disabled flags and rule order",18,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,76,identity macros are replaced after regex formatting with character override and dollar signs intact,9,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,108,invalid regex produces a warning and later valid rules still run,8,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,131,formatter reads replacement context and in-place rule updates on every call,8,执行路径重叠且边际覆盖较低
+tests/tavern-helper-regex-formatting.test.mjs,140,empty contexts still substitute identity macros without fabricating character permission,7,执行路径重叠且边际覆盖较低
+tests/tavern-helper-scripts.test.mjs,34,unwraps a complete JavaScript fence without changing template literals or source card,9,执行路径重叠且边际覆盖较低
+tests/tavern-helper-worldbook.test.mjs,21,世界书位置与角色编号遵循 Tavern Helper 上游定义,17,执行路径重叠且边际覆盖较低
+tests/tavern-helper-worldbook.test.mjs,39,人物卡脚本按 uid 更新条目并生成明确的增删操作,16,执行路径重叠且边际覆盖较低
+tests/tavern-prompt-template-runtime.test.mjs,8,真实请求处理保留工具与推理块，并处理独立 system 和正文模板,11,执行路径重叠且边际覆盖较低
+tests/tavern-remote-assets.test.mjs,66,opening media and dynamic directory bases are not fetched as executable entries,23,执行路径重叠且边际覆盖较低
+tests/tavern-remote-transport.test.mjs,16,Tavern notifications use one DSH Remote stream instead of a private EventSource route,9,重复源码或文案断言
+tests/tavern-remote-transport.test.mjs,358,运行时控制使用一次性 Remote stream，传递取消且不自动重放失败请求,33,执行路径重叠且边际覆盖较低
+tests/tavern-retry-limiter.test.mjs,48,非 Tavern 会话和不可重试错误继续交给 DSH,11,执行路径重叠且边际覆盖较低
+tests/tavern-script-dispatch.test.mjs,13,默认执行租约允许短暂断线，持续确认可续租,3,执行路径重叠且边际覆盖较低
+tests/tavern-script-host-adapter.test.mjs,128,明确脚本错误可修正重试，但已写世界书时不得自动重放,34,执行路径重叠且边际覆盖较低
+tests/tavern-script-host-adapter.test.mjs,176,官方 MVU 写回全部开场 Swipe 后由 Host 标记初始化完成,21,执行路径重叠且边际覆盖较低
+tests/tavern-script-prompts.test.mjs,14,脚本扫描触发原生世界书，正文进入实际 Frame，不修改世界书和旧消息,23,执行路径重叠且边际覆盖较低
+tests/tavern-settings.test.mjs,58,旧 play-mode 覆盖保留在数据中，但不再出现在可用提示词列表,9,执行路径重叠且边际覆盖较低
+tests/tavern-settings.test.mjs,68,新游戏前后台默认模型分别保存、清除且不触碰旧全局模型版本,14,执行路径重叠且边际覆盖较低
+tests/tavern-static-resource-cache.test.mjs,24,静态资源首次下载后持久复用且保持二进制内容,19,执行路径重叠且边际覆盖较低
+tests/tavern-swipe-regeneration.test.mjs,7,重新生成正文只保留唯一新正文和对应变量快照,27,执行路径重叠且边际覆盖较低
+tests/tavern-swipe-regeneration.test.mjs,36,没有 MVU 的重新生成也只保留唯一正文,8,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-native.test.mjs,59,适配不放过真实模型回复缺步骤或其他预设历史,12,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-native.test.mjs,72,原生手动压缩可处理种子和后台替换，压缩后仍能计量并保留原事件,30,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-native.test.mjs,147,standard 标识的酒馆旧会话仍可计量正文替换，不改历史,12,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-native.test.mjs,161,带明确来源的正文替换不依赖预设名，保持 assistant 角色,9,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-native.test.mjs,201,多次编辑产生非递增 Surface 序号后，替换历史仍可原生计量,27,执行路径重叠且边际覆盖较低
+tests/tavern-token-meter-performance.test.mjs,40,普通模型回复不扫描历史，也不绕过宿主验证,7,执行路径重叠且边际覆盖较低
+tests/template-history-performance.test.mjs,5,大量已归档消息不反复扫描活动历史，并保持别名及重复文本的匹配顺序,17,执行路径重叠且边际覆盖较低
+tests/template-history-window.test.mjs,5,"template window reads recent rows locally, old rows on demand and saves only loaded edits",13,执行路径重叠且边际覆盖较低
+tests/template-history-window.test.mjs,20,paged template connection saves an explicitly loaded historical row at its absolute index,23,执行路径重叠且边际覆盖较低
+tests/template-history-window.test.mjs,56,explicit full snapshot replaces a paged template array without fetching old rows again,12,执行路径重叠且边际覆盖较低
+tests/template-html-fence-boundaries.test.mjs,9,template synchronization preserves a fenced card document after narrative protocol tags,26,执行路径重叠且边际覆盖较低
+tests/template-projection-freshness.test.mjs,73,批次下一条可见另一存储实例提交的共享变量，无需会话通知,6,执行路径重叠且边际覆盖较低
+tests/template-projection-freshness.test.mjs,80,人物卡投影命中后，批次下一条仍可见外部文件的嵌套变更和删除,8,执行路径重叠且边际覆盖较低
+tests/template-state-patch.test.mjs,6,局部回执支持数组增删和字段移除，保留未变化历史引用且不修改基线,11,执行路径重叠且边际覆盖较低
+tests/template-window-reader.test.mjs,11,short native histories retain template cursors instead of full windows on every refresh,16,执行路径重叠且边际覆盖较低
+tests/template-window-reader.test.mjs,38,large character template projection remains cached and observes edits,15,执行路径重叠且边际覆盖较低
+tests/text-resource-file.test.mjs,8,"text import preserves UTF-8, BOM UTF-16 and GBK/GB18030 Chinese",7,执行路径重叠且边际覆盖较低
+tests/timeline-read-cost.test.mjs,21,ordinary timeline inspect does not clone checkpoint payloads,4,执行路径重叠且边际覆盖较低
+tests/timeline-read-cost.test.mjs,45,journal delta retains revision-bound detached checkpoints and full reads stay cloneable,16,执行路径重叠且边际覆盖较低
+tests/timeline-read-cost.test.mjs,70,display header does not copy unused undo history,12,执行路径重叠且边际覆盖较低
+tests/timeline-read-cost.test.mjs,104,lazy header records preserve JSON key order and special own keys after edits,10,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,47,同一会话容器重复挂载只保留一个错误控件，旧实例不能重新插入,17,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,65,失败尾部错误行提供一键重放，按轮次匹配而不是所有错误行,21,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,89,服务商内容审核拦截时说明不是酒馆故障，原始错误保留,8,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,98,只把开头就是拒绝语的回复标为模型拒绝，剧情里的类似台词不受影响,8,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,107,内容审核拦截的失败尾部：主推撤回输入，重放降级；连续拦截改为主推回退上一轮,22,执行路径重叠且边际覆盖较低
+tests/turn-error-controls.test.mjs,130,已清除或已被后续轮次取代的失败默认收起，可临时查看,9,执行路径重叠且边际覆盖较低
+tests/turn-error-observer.test.mjs,9,流式正文不重扫历史，结构变化合并到一帧，卸载取消待处理工作,16,执行路径重叠且边际覆盖较低
+tests/turn-field-merge-cost.test.mjs,31,turn field replacement and legacy noncanonical keys retain normal object behavior,10,执行路径重叠且边际覆盖较低
+tests/turn-orchestration.test.mjs,165,生图世界书版本冻结在生成前，不进入正文 Frame 文本，提交时不借用后来版本,24,执行路径重叠且边际覆盖较低
+tests/turn-orchestration.test.mjs,239,人物卡 promptOnly 正则写入 Session，但展示投影仍保留原始状态块,20,执行路径重叠且边际覆盖较低
+tests/turn-orchestration.test.mjs,272,正文替代先回到 checkpoint 再提交，剧本游标不会推进两次,13,执行路径重叠且边际覆盖较低
+tests/turn-orchestration.test.mjs,300,空白卡片工作台确认完整设定后直接创建并绑定正式人物卡,18,执行路径重叠且边际覆盖较低
+tests/turn-orchestration.test.mjs,359,repair workbench reaches tools and completes even when its card cannot parse,10,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,17,空响应与非 JSON 返回明确错误，认证错误不作为暂时故障重试,9,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,82,修复操作有独立确认文案，重复点击仅确认和启动一次,22,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,105,关闭确认框不启动更新，并解除重复点击保护,8,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,114,取消请求发出后保持忙碌，重复点击不重放取消或启动,13,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,128,动作前开始的旧状态轮询不会覆盖取消结果,11,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,140,检查请求只提交一次，完成后丢弃旧轮询失败,15,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,189,侧栏区分修复与新构建，并保留一般更新按钮,9,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,199,真实按钮仅对可取消运行显示取消，正在取消与 blocked 均不可重试,14,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,214,卡住的旧更新明确显示后台原因，不建议同时重装,6,执行路径重叠且边际覆盖较低
+tests/update-status-client.test.mjs,248,挂起状态请求超时后可以再次轮询，不重放动作,14,执行路径重叠且边际覆盖较低
+tests/user-extensions-native.test.mjs,11,真实 DSH 加载用户工具：首次调用、更新后冷启动、无效清单保留,61,执行路径重叠且边际覆盖较低
+tests/user-preference-profile.test.mjs,45,legacy literal newline escapes render and inject as real line breaks,11,执行路径重叠且边际覆盖较低
+tests/user-preference-profile.test.mjs,57,legacy profile migrates without losing confirmation; named profiles keep independent drafts and defaults,22,执行路径重叠且边际覆盖较低
+tests/user-preference-profile.test.mjs,93,create from guide saves a complete independent preference without changing the default,15,执行路径重叠且边际覆盖较低
+tests/user-profile-refresh.test.mjs,8,"refresh bursts stay serial, coalesce to one follow-up, and unchanged payload skips rendering",13,执行路径重叠且边际覆盖较低
+tests/view-delta.test.mjs,10,changing long history reuses unchanged Helper variables without full reads,28,执行路径重叠且边际覆盖较低
+tests/web-feature-modules.test.mjs,16,游玩控制不注册或覆盖原生子代理目录，也不显示后台身份栏,22,执行路径重叠且边际覆盖较低
+tests/workspace-instruction-presentation-native.test.mjs,9,"native DSH discovers instructions, loads a real Skill and executes an editing tool after presentation filtering",48,执行路径重叠且边际覆盖较低
+tests/worldbook-filter-context.test.mjs,19,"unchanged bodies are referenced; changed bodies and refs are resent, without modifying history",13,执行路径重叠且边际覆盖较低
+tests/worldbook-filter-context.test.mjs,33,missing or altered projection evidence falls back to full bodies,10,执行路径重叠且边际覆盖较低
+tests/worldbook-library-refresh.test.mjs,24,世界书库刷新进行中时把多次通知合并为一次补充刷新,28,执行路径重叠且边际覆盖较低
+tests/worldbook-library-refresh.test.mjs,56,世界书库只按导入时间最新、最旧排序，旧排序方式回落为最新,14,执行路径重叠且边际覆盖较低
+tests/worldbook-library-refresh.test.mjs,72,世界书库搜索按书名或所属人物卡忽略大小写匹配,12,执行路径重叠且边际覆盖较低
+tests/worldbook-library.test.mjs,123,添加保留自带书，按绑定顺序合并，移除单书不影响其他绑定，导出包含全部内容,18,执行路径重叠且边际覆盖较低
+tests/worldbook-library.test.mjs,225,全局开关保留旧对话世界书快照，变更提示和重新加载使用最新合并内容,19,执行路径重叠且边际覆盖较低
+tests/worldbook-library.test.mjs,245,世界书目录行可由宿主按文件版本缓存，结果与直接解析一致,13,执行路径重叠且边际覆盖较低
+tests/worldbook-read-handoff.test.mjs,9,only successful full reads from the committed turn are handed off; latest read wins,18,执行路径重叠且边际覆盖较低
+tests/worldbook-recall.test.mjs,35,预算内实际注入的条目进入十轮冷却，未入选条目下一轮仍可竞争,17,执行路径重叠且边际覆盖较低
+tests/worldbook-recall.test.mjs,73,原生世界书把 EJS 控制器移出稳定前缀，并可按最新 MVU 变量读取停用资料条目,32,执行路径重叠且边际覆盖较低
+tests/worldbook-recall.test.mjs,108,批量与逐条投影逐字一致：准备事件、随机、失败隔离、激活来源和宏顺序,45,执行路径重叠且边际覆盖较低
+tests/worldbook-recall.test.mjs,154,批量结果缺失或执行失败不回退重跑，纯文本不派发模板作业,15,执行路径重叠且边际覆盖较低
+tests/worldbook-snapshot.test.mjs,18,前台快照独立于短期指引，清理指引后仍保留；下一轮同值不重发,18,执行路径重叠且边际覆盖较低
+tests/worldbook-snapshot.test.mjs,40,真实 Agent 请求中，同值省略、新值只追加且保留此前完整请求前缀,27,执行路径重叠且边际覆盖较低
+tests/worldbook-st-activation.test.mjs,38,正式前台投影：蓝灯标签包住绿灯角色，系统前缀无重复，同一轮重试无重复冷却,19,执行路径重叠且边际覆盖较低
+tests/writing-skill-cache-native.test.mjs,14,writing skill switches append effective policy without changing cached messages or tools,100,执行路径重叠且边际覆盖较低

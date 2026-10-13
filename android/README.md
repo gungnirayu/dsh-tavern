@@ -11,7 +11,7 @@
 
 入口插件来自社区提供的 `dsh-android-plugins.tar.gz`，依照随附 MIT License 合并；为适配本项目，修正了包入口、版本范围、端口、进程生命周期和安装方式。
 
-DSHA 不自动安装 `dsh-pocket`；它与 Desktop 的插件选择独立。移动端界面由 Tavern Profile 的 `dsh-web-mobile` 提供，当前锁定 `2.3.0`；更新时会迁移 Tavern 管理的旧包名 `@dsh-external/dsh-mobile-nav`。旧的 `dsh-client-ui-mobile-adapt` 已移除，避免两个 UI 适配插件同时运行。
+DSHA 不自动安装 `dsh-pocket`；它与 Desktop 的插件选择独立。移动端界面由 Tavern Profile 的 `dsh-web-mobile` 提供，当前锁定 `2.4.1`；更新时会迁移 Tavern 管理的旧包名 `@dsh-external/dsh-mobile-nav`。旧的 `dsh-client-ui-mobile-adapt` 已移除，避免两个 UI 适配插件同时运行。
 
 这些组件不进入桌面端、命令行版的默认依赖。用户只运行 [`setup.sh`](./setup.sh)；它负责首次下载或安全更新，再调用内部的 [`install.sh`](./install.sh) 完成 Android 部署。
 
@@ -19,6 +19,6 @@ DSHA 不自动安装 `dsh-pocket`；它与 Desktop 的插件选择独立。移�
 
 ### 慢设备启动等待
 
-Android 默认最多等待 120 秒，服务就绪后立即继续。可在运行安装、更新或启动命令前设置 `DSH_TAVERN_START_TIMEOUT=180` 调整等待上限（单位：秒）；命令行版默认仍为 30 秒。
+Android 默认最多等待 120 秒，服务就绪后立即继续。可在运行安装、更新或启动命令前设置 `DSH_TAVERN_START_TIMEOUT=180` 调整等待上限（单位：秒）；命令行版默认同为 120 秒。
 
 启动超时会先结束本次启动的进程，再返回失败。安装回滚若发现服务仍在运行或 PID 记录无法核实，会保留当前源码与旧版备份并报错，避免运行中的进程因源码被移走而出现模块缺失。此机制不跳过正常源码更新。

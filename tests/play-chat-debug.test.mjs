@@ -34,10 +34,10 @@ test('只允许把同一人物卡的游玩轮次挂载到卡片工作台', () =>
   assert.throws(() => createPlayChatDebugReference(editor, Object.assign({}, source, { mode: 'card' }), 2), /游玩模式/)
 })
 
-test('未挂载记录、错误轮次和跨人物卡读取会被拒绝', () => {
+test('未关联记录、错误轮次和跨人物卡读取会被拒绝', () => {
   const { source, editor } = chats()
   const ref = createPlayChatDebugReference(editor, source, 2)
-  assert.throws(() => readPlayChatDebugTurn(editor, source, null, { turn: 2 }), /尚未挂载/)
+  assert.throws(() => readPlayChatDebugTurn(editor, source, null, { turn: 2 }), /未关联到当前对话/)
   assert.throws(() => readPlayChatDebugTurn(editor, source, ref, { turn: 9 }), /不存在第 9 轮/)
   assert.throws(() => readPlayChatDebugTurn(Object.assign({}, editor, { cardPath: 'cards/另一张.json' }), source, ref, { turn: 2 }), /人物卡不一致/)
 })

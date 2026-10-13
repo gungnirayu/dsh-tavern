@@ -214,17 +214,3 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
 }
 
 export const projectReplyHistory = createReplyHistoryProjector()
-
-/**
- * Transitional old-shape adapter. New callers should use projectReplyLayers().
- * presentationHtml stays empty because HTML now remains inside displayText.
- */
-export function projectReplyPresentation(value, options = {}) {
-  const layers = projectReplyLayers(value, options)
-  return Object.assign({}, layers, {
-    bodyText: layers.sessionText,
-    presentationHtml: '',
-    regexApplied: layers.applied.display.length > 0,
-    appliedRegexes: layers.applied.display
-  })
-}

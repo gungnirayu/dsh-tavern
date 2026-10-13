@@ -3,7 +3,7 @@
             React.useEffect(function () { let active = true; rpc("getTavernSettings").then(function (result) { if (active) setPolicy(result.settings.contextCompaction || { mode: "manual", rounds: 20, percent: 80 }); }, function (error) { if (active) setNotice(error.message); }); return function () { active = false; }; }, []);
             async function save() {
                 setBusy(true); setNotice("");
-                try { const result = await rpc("updateTavernSettings", { patch: { contextCompaction: { mode: policy.mode, rounds: Number(policy.rounds), percent: Number(policy.percent) } } }); setPolicy(result.settings.contextCompaction); setNotice("已保存，下一个安全边界生效"); }
+                try { const result = await rpc("updateTavernSettings", { patch: { contextCompaction: { mode: policy.mode, rounds: Number(policy.rounds), percent: Number(policy.percent), retainRounds: Number(policy.retainRounds ?? 10) } } }); setPolicy(result.settings.contextCompaction); setNotice("已保存，下一个安全边界生效"); }
                 catch (error) { setNotice(String(error.message || error)); } finally { setBusy(false); }
             }
             return React.createElement("div", { className: "dsh-tavern-settings-group dsh-tavern-compaction-settings" },
@@ -11,7 +11,8 @@
                 React.createElement("p", { className: "dsh-tavern-settings-desc" }, "默认手动，也可按轮数或占用比例自动压缩前后台。所有模式都保留接近容量或请求超限时的自动保护，不会删除原始剧情记录。"),
                 policy ? React.createElement("label", { className: "dsh-tavern-compaction-field" }, "压缩模式", React.createElement("select", { className: "dsh-tavern-settings-select", value: policy.mode, disabled: busy, onChange: function (e) { setPolicy(Object.assign({}, policy, { mode: e.target.value })); } }, [["manual", "手动压缩（默认）"], ["rounds", "每 N 轮自动压缩"], ["percent", "上下文达到 X% 自动压缩"]].map(function (item) { return React.createElement("option", { key: item[0], value: item[0] }, item[1]); }))) : null,
                 policy && policy.mode !== "manual" ? React.createElement("label", { className: "dsh-tavern-compaction-field" }, policy.mode === "rounds" ? "剧情轮数（1–1000）" : "上下文占用百分比（10–95，估算）", React.createElement("input", { className: "dsh-tavern-settings-select", type: "number", min: policy.mode === "rounds" ? 1 : 10, max: policy.mode === "rounds" ? 1000 : 95, step: 1, value: policy[policy.mode], disabled: busy, onChange: function (e) { setPolicy(Object.assign({}, policy, { [policy.mode]: e.target.value })); } })) : null,
-                React.createElement("p", { className: "dsh-tavern-settings-desc" }, "重写同一轮、工具调用和生图不计轮数。模型窗口未知时百分比模式会提示；可改用轮数模式。"),
+                policy ? React.createElement("label", { className: "dsh-tavern-compaction-field" }, "压缩后保留最近几轮原文（0–100）", React.createElement("input", { className: "dsh-tavern-settings-select", type: "number", min: 0, max: 100, step: 1, value: policy.retainRounds ?? 10, disabled: busy, onChange: function (e) { setPolicy(Object.assign({}, policy, { retainRounds: e.target.value })); } })) : null,
+                React.createElement("p", { className: "dsh-tavern-settings-desc" }, "重写同一轮、工具调用和生图不计轮数。模型窗口未知时百分比模式会提示；可改用轮数模式。保留轮数越少，压缩后上下文越短，但最近的细节只剩摘要；默认 10 轮，0 表示全部压缩。这几轮原文太长时会按模型窗口少留一些；上下文超限时的自动保护不保留原文。"),
                 React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || !policy, onClick: save }, busy ? "保存中…" : "保存压缩设置"),
                 notice ? React.createElement("p", { role: "status", className: "dsh-tavern-settings-desc" }, notice) : null);
         }
@@ -99,7 +100,8 @@
             const efforts = reasoning.key === key ? reasoning.value?.efforts || [] : [];
             const known = !selection || props.catalog.some(group => group.provider === selection.provider && group.models.some(model => model.id === selection.model));
             return h("div", { className: "dsh-tavern-model-row" },
-                h("span", { className: "dsh-tavern-model-row-label" }, props.title || props.label),
+                h("div", { className: "dsh-tavern-model-row-label" }, props.title || props.label,
+                    props.description ? h("span", { className: "dsh-tavern-settings-desc" }, props.description) : null),
                 h("div", { className: "dsh-tavern-model-row-controls" },
                 h("select", { className: "dsh-tavern-settings-select", "aria-label": props.label, value: key, disabled: props.disabled,
                     onChange: event => props.onChange(event.target.value ? JSON.parse(event.target.value) : null) },
@@ -160,6 +162,8 @@
                     try { window.localStorage.setItem(key, String(Date.now())); } catch (_) {}
                 },
                 start() {
+                    // Hidden is the default; keep process details out of view until the setting loads.
+                    if (value === null) document.documentElement.classList.add("dsh-tavern-hide-process");
                     refresh();
                     const onStorage = event => { if (event.key === key) refresh(); };
                     window.addEventListener("focus", refresh);
@@ -187,7 +191,7 @@
         }
 
         function useCandidatePreferences() {
-            const [mode, setMode] = React.useState("after-fill");
+            const [mode, setMode] = React.useState("after-send");
             React.useEffect(function () {
                 let active = true;
                 let changed = false;
@@ -232,5 +236,5 @@
         const { TavernSettingsSection } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")),
             TavernDefaultModelSetting, TavernConversationWritingSkills, DisplayPreferencesSettings,
-            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, SceneImageSettings
+            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings
         });

@@ -5,6 +5,8 @@ import { restoredSurfaceSeqs } from './surface-restoration.js'
 import { sessionEvents, surfaceReplacementRange } from './session-events.js'
 import { createSurfaceOwnership, planSurfaceRecovery, planSurfaceRange, SurfaceRecoveryError, OWNED } from './surface-recovery.js'
 import { randomUUID } from 'node:crypto'
+import { inputKind, isTurnInput, isNewTurnInput, isNewPlayerInput } from './session-turn-input.js'
+import { resolveRoundAnchor } from './round-anchor.js'
 
 function object(value) {
   return value !== null && typeof value === 'object' ? value : null
@@ -33,10 +35,7 @@ function contentText(value) {
 // Native user messages and legacy replay attempts qualify; regeneration inputs
 // do not — they carry synthetic guidance text and belong to regenerate recovery.
 function isReplayableInputSource(source) {
-  const value = object(source)
-  if (!value) return false
-  if (value.kind === 'user') return true
-  return value.kind === 'plugin' && value.plugin === 'dsh-tavern-replay'
+  return ['player', 'replay'].includes(inputKind({ source: object(source) }))
 }
 
 // The host chat UI turns a user/message into an input row only when its source
@@ -63,7 +62,7 @@ function modelSourceOf(event) {
 function isForegroundContext(event) {
   const source = event?.type === 'user/message' && event.data?.source
   return source?.kind === 'plugin' && source.plugin === 'dsh-tavern' &&
-    ['foreground-frame', 'worldbook-snapshot', 'snapshot'].includes(source.form)
+    ['foreground-frame', 'worldbook-snapshot', 'snapshot', 'variable-changes'].includes(source.form)
 }
 
 function isRollbackUserTombstone(event) {
@@ -262,7 +261,8 @@ export function replayableFailedTurn(input) {
     if (!event || event.type !== 'user/message') continue
     const seq = Number(event.seq)
     if (!Number.isSafeInteger(seq) || seq <= startSeq || seq >= endSeq) continue
-    if (!isReplayableInputSource(event.data && event.data.source)) continue
+    // A template edit of an earlier input can land inside this turn; it is not its input.
+    if (!isReplayableInputSource(event.data && event.data.source) || !isNewTurnInput(event)) continue
     const userText = contentText(event.data)
     const attachments = inputAttachments(event.data?.content)
     if (userText === '' && !attachments.length) continue
@@ -275,10 +275,16 @@ export function locateRollbackSurface(input) {
   const events = Array.isArray(input && input.events) ? input.events : []
   const nodes = Array.isArray(input && input.nodes) ? input.nodes : []
   let userIndex = -1
-  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+  // An anchored round says where its input is; no scan, no guess (round-anchor.js).
+  const anchored = resolveRoundAnchor({ events, nodes }, input && input.anchor)
+  const anchoredInput = anchored && anchored.input !== null ? eventAt(events, anchored.input) : null
+  if (anchoredInput?.type === 'user/message' && isTurnInput(anchoredInput.data)) userIndex = nodes.indexOf(anchored.input)
+  for (let index = nodes.length - 1; userIndex < 0 && index >= 0; index -= 1) {
     const event = eventAt(events, nodes[index])
     if (event?.type === 'user/message' && event.data?.source?.kind === 'plugin' && ['compact', 'dsh-compaction-basic'].includes(event.data.source.plugin)) return null
-    if (event && event.type === 'user/message' && !isForegroundContext(event) && !isRollbackUserTombstone(event)) {
+    // The round starts at its input: messages other plugins or card scripts add
+    // around it belong to the round and go with it, never stand in for it.
+    if (event && event.type === 'user/message' && (isTurnInput(event.data) || event.data?.source?.kind !== 'plugin') && !isRollbackUserTombstone(event)) {
       userIndex = index
       break
     }
@@ -328,6 +334,27 @@ export function locateRollbackSurface(input) {
   })
 }
 
+/**
+ * Rounds the save already rolled back but the model still sees (the native
+ * shadow was lost before it was saved): shadow them again, newest first, the
+ * same way a rollback does. Stops at the first round that is not one of them.
+ */
+export function reshadowRolledBackRounds(session, turns) {
+  const done = []
+  for (;;) {
+    let target
+    try { target = locateRollbackSurface({ events: sessionEvents(session), nodes: session.surface?.nodes || [] }) }
+    catch (error) { if (error instanceof SurfaceRecoveryError) break; throw error }
+    if (!target || !turns.has(target.turn) || done.includes(target.turn)) break
+    replaceSessionSurface(session, 'assistant/message', {
+      turn: target.turn, step: target.step,
+      message: { id: 'tavern-rollback-repair:' + target.turn + ':' + target.assistantSeq, role: 'assistant', content: [], source: target.source }
+    }, { start: target.userSeq, end: target.endSeq, sourceEventSeqs: [...target.shadowedSeqs] })
+    done.push(target.turn)
+  }
+  return done
+}
+
 export function planRegenerationSurface(input) {
   const events = Array.isArray(input && input.events) ? input.events : []
   const nodes = Array.isArray(input && input.nodes) ? input.nodes : []
@@ -352,16 +379,48 @@ export function planRegenerationSurface(input) {
 
   const failed = turnIntervals(events).filter(interval => interval.failed && interval.end < eventStart)
   const residue = ownership.classify(event => failed.some(interval => event.seq > interval.start && event.seq < interval.end))
-  const range = planSurfaceRange({ nodes, start: oldAssistantSeq, end: finalAssistantSeq,
-    accepts: seq => seq === oldAssistantSeq || attempt(seq) === OWNED || residue(seq) === OWNED ||
-      isRollbackUserTombstone(ownership.eventAt(seq)) || isRollbackAssistantTombstone(ownership.eventAt(seq), events),
-    message: '重新生成消息归属不一致，无法安全清理' })
+  const accepts = seq => seq === oldAssistantSeq || attempt(seq) === OWNED || residue(seq) === OWNED ||
+    isRollbackUserTombstone(ownership.eventAt(seq)) || isRollbackAssistantTombstone(ownership.eventAt(seq), events)
+  const between = nodes.slice(oldAssistantIndex, nodes.indexOf(finalAssistantSeq) + 1).map(Number)
+  // Messages written between the old reply and this attempt by something else
+  // (a card script's chat message, a context refresh) are not ours to remove.
+  // Leave them where they are and replace our own runs around them; refusing
+  // would make this round impossible to regenerate for good. Story replies of
+  // another round are never stepped over.
+  const foreign = between.filter(seq => !accepts(seq))
+  const story = foreign.find(seq => ownership.eventAt(seq)?.type === 'assistant/message' && modelSourceOf(ownership.eventAt(seq)) !== null)
+  if (story !== undefined) throw new SurfaceRecoveryError('重新生成消息归属不一致，无法安全清理', story)
+  const runs = []
+  for (const seq of between) {
+    if (foreign.includes(seq)) { if (runs.at(-1)?.length) runs.push([]); continue }
+    if (!runs.length) runs.push([])
+    runs.at(-1).push(seq)
+  }
+  const [main, ...rest] = runs.filter(run => run.length).map(run => planSurfaceRange({ nodes, start: run[0], end: run.at(-1), accepts, message: '重新生成消息归属不一致，无法安全清理' }))
   // Replacing a saved round is never allowed to consume or precede newer story.
   if (nodes.slice(nodes.indexOf(finalAssistantSeq) + 1).some(seq =>
     !isRollbackUserTombstone(ownership.eventAt(seq)) && !isRollbackAssistantTombstone(ownership.eventAt(seq), events))) {
     throw new SurfaceRecoveryError('重新生成后已有新的消息，无法安全清理')
   }
-  return Object.freeze({ ...range, finalAssistantSeq })
+  return Object.freeze({ ...main, finalAssistantSeq, cleanups: Object.freeze(rest) })
+}
+
+/** The committed body replaces the old reply; later runs of the attempt become empty markers. */
+export function regenerationProjection(replacement, data, operationId) {
+  return {
+    data,
+    range: { start: replacement.start, end: replacement.end, sourceEventSeqs: [...replacement.shadowedSeqs] },
+    cleanups: (replacement.cleanups || []).map((run, index) => ({
+      data: { id: 'tavern-regen-cleanup:' + operationId + ':' + index, role: 'user', content: [], source: { kind: 'plugin', plugin: 'dsh-tavern-regeneration-abort' } },
+      range: { start: run.start, end: run.end, sourceEventSeqs: [...run.shadowedSeqs] }
+    }))
+  }
+}
+
+/** Idempotent: each replacement reuses its id and sources, so a retry after a crash writes nothing twice. */
+export function applyRegenerationProjection(session, projection) {
+  replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
+  for (const cleanup of projection.cleanups || []) replaceSessionSurface(session, 'user/message', cleanup.data, cleanup.range)
 }
 
 function turnIntervals(events) {
@@ -382,7 +441,7 @@ function regenerationAttemptEnd(events, eventStart) {
   let started = false
   for (const event of events) {
     if (!event || event.seq < eventStart) continue
-    if (event.type === 'turn/end' || (event.type === 'user/message' && event.data?.source?.kind === 'user')) return event.seq
+    if (event.type === 'turn/end' || isNewPlayerInput(event)) return event.seq
     if (event.type === 'turn/start') {
       if (started) return event.seq
       started = true
@@ -512,9 +571,9 @@ function planRollbackAvailability(chat, { events = [], nodes = [] } = {}) {
   const unclearedTurns = unclearedFailedTail(chat, events, nodes)
   const failedTurns = [...new Set([...pendingFailedSurfaceTurns({ events, nodes, suppressed: chat.suppressedDshTurns || [] }), ...unclearedTurns])].sort((a, b) => a - b)
   if (failedTurns.length) return { canRollback: true, canClearIncompleteReply: true, failedTurns, unclearedTurns, target: null, reason: '' }
-  const target = locateRollbackSurface({ events, nodes })
   const messages = Array.isArray(chat.messages) ? chat.messages : []
   const latest = messages.findLast(message => message?.role === 'assistant' && message.greeting !== true)
+  const target = locateRollbackSurface({ events, nodes, anchor: latest?.nativeAnchor })
   if (isRescuedHistoryMessage(chat, latest)) return { canRollback: false, canClearIncompleteReply: false, failedTurns, target: null, reason: '存档救援导入的历史不可回退，请发送新消息继续' }
   const turn = Number(latest?.turn)
   const matches = target && (!(turn > 0) || target.turn === turn || target.turn === Number(chat.regeneratedDshTurns?.[String(turn)]))
@@ -535,9 +594,11 @@ export function rollbackAvailability(chat, input = {}) {
   }
 }
 
-export function failedTurnReplayAvailability({ events = [], nodes = [] } = {}) {
+export function failedTurnReplayAvailability({ events = [], nodes = [], cleared = [] } = {}) {
   const target = replayableFailedTurn({ events })
   if (!target) return { target: null, reason: '当前没有可重新生成的失败回合' }
+  // The player already cleared this failure (withdrew or dropped it); replaying would resurrect it.
+  if (cleared.map(Number).includes(target.turn)) return { target: null, reason: '这次失败已清除，请重新发送' }
   try {
     planFailedTurnSurface({ events, nodes, turn: target.turn })
     return { target, reason: '' }

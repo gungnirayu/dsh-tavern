@@ -54,3 +54,61 @@ test('Foreground Turn 完成后立即排队待处理的后台结算', async () =
   await new Promise(function (resolve) { setImmediate(resolve) })
   assert.deepEqual(queued, ['chat-1'])
 })
+
+test('发送前与回复后只读表头：完整读取仅留给开场预扫描', async () => {
+  const header = { id: 'chat-2', mode: 'story', timeline: {} }
+  const calls = []
+  const deferred = []
+  const handoff = createForegroundHandoff({
+    store: {
+      async chatForSession() { calls.push('full'); return { ...header, messages: [{ role: 'assistant', greeting: true }] } },
+      async stateForSession() { calls.push('state'); return header },
+      async openingStateForSession() { calls.push('opening'); return { chat: header, messageCount: calls.includes('greeting') ? 1 : 9, firstGreeting: true } }
+    },
+    tasks: { activity() { return { phase: 'pending', busy: true, role: 'settlement' } } },
+    async queueBackground(chatId) { calls.push('queue:' + chatId) },
+    async prepareOpeningWorldBook() { calls.push('opening-worldbook') },
+    turns: { async finalize() {}, async discard() {}, async prepare() { calls.push('prepare') } },
+    defer(run) { deferred.push(run) }
+  })
+  await handoff.prepare({ sessionId: 's', turn: 5, userText: '继续' })
+  assert.deepEqual(calls, ['opening', 'queue:chat-2', 'prepare'])
+  handoff.end({ sessionId: 's', turn: 5, reason: 'completed' })
+  deferred[0]()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls.slice(3), ['state', 'queue:chat-2'])
+  calls.length = 0; calls.push('greeting')
+  await handoff.prepare({ sessionId: 's', turn: 2, userText: '继续' })
+  assert.deepEqual(calls.slice(1), ['opening', 'queue:chat-2', 'full', 'opening-worldbook', 'prepare'])
+})
+
+test('发送前等插件任务跑完：结算之后的插件任务不让下一轮插队', async () => {
+  const order = []
+  let release
+  const handoff = createForegroundHandoff({
+    store: { async chatForSession() { return { id: 'chat-3', mode: 'story', messages: [] } } },
+    tasks: { activity() { return { phase: 'running', busy: true, role: 'plugin-task' } } },
+    async queueBackground() { assert.fail('插件任务不是结算') },
+    waitBackground: chatId => new Promise(resolve => { order.push('wait:' + chatId); release = resolve }),
+    turns: { async finalize() {}, async discard() {}, async prepare() { order.push('prepare') } }
+  })
+  const prepared = handoff.prepare({ sessionId: 'session-3', turn: 2, userText: '继续' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(order, ['wait:chat-3'])
+  release()
+  await prepared
+  assert.deepEqual(order, ['wait:chat-3', 'prepare'])
+})
+
+test('发送前先清掉遗留的失败回合，再准备本轮（#193）', async () => {
+  const order = []
+  const handoff = createForegroundHandoff({
+    store: { async chatForSession() { return { id: 'chat-4', mode: 'story', messages: [] } } },
+    tasks: { activity() { return { phase: 'idle', busy: false, role: '' } } },
+    async queueBackground() {},
+    clearFailedTurns: async sessionId => { order.push('clear:' + sessionId) },
+    turns: { async finalize() {}, async discard() {}, async prepare() { order.push('prepare') } }
+  })
+  await handoff.prepare({ sessionId: 'session-4', turn: 3, userText: '教室写字' })
+  assert.deepEqual(order, ['clear:session-4', 'prepare'])
+})

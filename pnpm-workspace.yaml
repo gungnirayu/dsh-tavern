@@ -3,6 +3,8 @@ packages:
 
 nodeLinker: hoisted
 autoInstallPeers: false
+# 分阶段安装会把 node_modules 随目录改名，pnpm 据旧绝对路径判定需重建；安装器无人应答，不能询问。
+confirmModulesPurge: false
 # Desktop 2.0.13 自带 pnpm 11.8.0。经 Electron 加载时，缺失的默认 .pnpmfile.mjs 会让安装失败。
 ignorePnpmfile: true
 allowBuilds:
@@ -15,3 +17,4 @@ minimumReleaseAgeExclude:
 patchedDependencies:
   dsh-better-sidebar@0.19.1: patches/dsh-better-sidebar@0.19.1.patch
   dsh-pocket@2.10.6: patches/dsh-pocket@2.10.6.patch
+  dsh-web-mobile@2.4.1: patches/dsh-web-mobile@2.4.1.patch

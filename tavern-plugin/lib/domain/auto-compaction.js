@@ -1,4 +1,5 @@
 import { compactionFailureMessage } from './compaction-failure.js'
+import { RETAINED_STORY_ROUNDS } from './story-compaction.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -7,10 +8,13 @@ const CAPACITY_WARNING = '无法取得当前模型上下文容量，自动压缩
 export function compactionPolicy(value = {}) {
   const mode = value.mode ?? 'manual'
   const rounds = value.rounds ?? 20, percent = value.percent ?? 80
+  // Story rounds kept verbatim after the summary (no settings UI; 0 restores DSH's behavior).
+  const retainRounds = value.retainRounds ?? RETAINED_STORY_ROUNDS
   if (!['manual', 'rounds', 'percent'].includes(mode)) throw new Error('请选择有效的上下文压缩模式')
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > 1000) throw new Error('自动压缩轮数须为 1–1000 的整数')
   if (!Number.isInteger(percent) || percent < 10 || percent > 95) throw new Error('自动压缩比例须为 10–95 的整数')
-  return { mode, rounds, percent, revision: value.revision || 0 }
+  if (!Number.isInteger(retainRounds) || retainRounds < 0 || retainRounds > 100) throw new Error('压缩保留轮数须为 0–100 的整数')
+  return { mode, rounds, percent, retainRounds, revision: value.revision || 0 }
 }
 export function storyRoundKeys(chat) {
   return [...new Set((chat.messages || []).filter(m => m.role === 'assistant' && !m.greeting && Number.isSafeInteger(m.turn)).map(m => String(m.turn)))]

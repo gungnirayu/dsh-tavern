@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value)
 }
@@ -43,7 +45,18 @@ export function forkConversationChat(source, options = {}) {
   chat.nativeOpeningAppended = true
   chat.nativeCommits = {}
   // The host forks the native event history with its original turn numbers.
-  // Keep its rollback/regeneration projection alongside the copied game state.
+  // Keep its rollback/regeneration projection alongside the copied game state,
+  // but only up to the fork point: the fork numbers its next native turns from
+  // there, and a hidden-turn entry left above it would hide a new reply.
+  const lastNativeTurn = Number(options.lastNativeTurn)
+  if (Number.isSafeInteger(lastNativeTurn) && lastNativeTurn >= 0) {
+    const kept = turn => Number(turn) <= lastNativeTurn
+    if (Array.isArray(chat.suppressedDshTurns)) chat.suppressedDshTurns = chat.suppressedDshTurns.filter(kept)
+    if (Array.isArray(chat.hiddenDshErrorTurns)) chat.hiddenDshErrorTurns = chat.hiddenDshErrorTurns.filter(kept)
+    if (chat.regeneratedDshTurns && typeof chat.regeneratedDshTurns === 'object') {
+      chat.regeneratedDshTurns = Object.fromEntries(Object.entries(chat.regeneratedDshTurns).filter(([from, to]) => kept(from) && kept(to)))
+    }
+  }
   chat.candidates = null
   chat.candidateAgent = null
   chat.foregroundError = null
@@ -72,9 +85,12 @@ export function forkConversationChat(source, options = {}) {
 export function assertConversationForkable(chat, options = {}) {
   if (!chat) throw new Error('找不到要分叉的对话')
   if (!['story', 'script'].includes(str(chat.mode) || 'story')) throw new Error('只有游玩对话可以分叉')
-  if (options.agentRunning === true || chat.regenInProgress === true) throw new Error('当前正文仍在生成，请等待完成后再分叉')
+  // A historical snapshot may have been saved while the source was regenerating a later
+  // turn (its pre-regeneration checkpoint). Its content up to the fork turn is settled; only
+  // the live source's in-flight work blocks forking.
+  if (options.historical !== true && (options.agentRunning === true || chat.regenInProgress === true)) throw new Error('当前正文仍在生成，请等待完成后再分叉')
   const timeline = object(chat.timeline)
-  const unfinished = Object.values(object(timeline.operations)).find(function (operation) {
+  const unfinished = options.historical === true ? undefined : Object.values(object(timeline.operations)).find(function (operation) {
     return operation && (operation.status === 'running' || (operation.kind === 'body' && operation.status === 'completed' &&
       ['pending', 'running'].includes(str(object(operation.background).phase))))
   })

@@ -85,14 +85,13 @@ test('移动端实际样式：顶栏、键盘、候选、面板、编辑器与�
     await page.setViewportSize({ width: 390, height: 844 }); await settle()
   })
 
-  await t.test('候选列表可以选择、追加、独立滚动，并在点击当次聚焦自由输入', async () => {
+  await t.test('候选列表点选即追加、独立滚动，并在点击输入框时收起', async () => {
     await page.locator('.dsh-tavern-question-option').first().click()
-    await page.getByRole('button', { name: '追加到输入框', exact: true }).click()
     assert.match(await page.getByRole('textbox', { name: '消息' }).inputValue(), /候选 1/)
     assert.equal(await page.locator('.dsh-tavern-question-option').count(), 12)
     await page.locator('.dsh-tavern-question-body').evaluate(el => { el.scrollTop = el.scrollHeight })
     assert.ok(await page.locator('.dsh-tavern-question-body').evaluate(el => el.scrollTop > 0))
-    await page.getByRole('button', { name: '✎ 自由行动（直接在下方输入）', exact: true }).click()
+    await page.getByRole('textbox', { name: '消息' }).click()
     assert.equal(await page.getByRole('textbox', { name: '消息' }).evaluate(el => el === document.activeElement), true)
     assert.equal(await page.locator('.dsh-tavern-question-option').count(), 0)
     await page.getByRole('button', { name: '展开行动列表', exact: true }).press('Enter')

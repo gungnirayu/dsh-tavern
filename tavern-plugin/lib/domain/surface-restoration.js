@@ -62,6 +62,6 @@ export function canUndoRollback(chat, session) {
   return Boolean(saved?.version === 1 && saved.ready === true && session
     && saved.branchId === chat.timeline?.branchId && saved.revision === chat.timeline?.revision
     && saved.lifecycleRevision === Number(chat.tavernHelperLifecycleRevision || 0)
-    && saved.storageRevision === Number(chat._storageRevision || 0)
+    && saved.storageRevision === Number(chat._storageRevision ?? chat.windowRevision ?? 0)
     && unchangedSinceRollback(session, saved.foreground.afterCount))
 }

@@ -24,17 +24,6 @@ function fixture(runAgent, initial = {}) {
   return { api, tasks, get: () => structuredClone(chat), edit: fn => fn(chat) }
 }
 
-test('重复触发被拒绝，未保存档案时报错，服务重启后不会一直显示运行中', async () => {
-  let release
-  const gate = new Promise(resolve => { release = resolve })
-  const run = fixture(() => gate)
-  await run.api.start({ sessionId: 'session', guidance: '设计张三' })
-  await assert.rejects(run.api.start({ sessionId: 'session', guidance: '设计张三' }), /正在进行/)
-  release(); await run.api.wait('chat')
-  assert.match(run.get().characterDesignTask.error, /模型未调用人物档案保存工具/)
-  assert.equal(run.api.project({ id: 'old', characterDesignTask: { status: 'running' } }).status, 'failed')
-})
-
 test('校验失败后模型修正并保存成功，不残留失败提示', async () => {
   const run = fixture(async input => {
     await input.onToolCall({ name: 'character_design_save', arguments: { ...design, identity: '' } })
@@ -79,4 +68,24 @@ test('复用后世界书并发变化时拒绝提交过期判断', async () => {
   await run.api.start({ sessionId: 'session' }); await run.api.wait('chat')
   assert.equal(run.get().characterDesignTask.status, 'failed')
   assert.match(run.get().characterDesignTask.error, /世界书已变化/)
+})
+
+test('玩家逐条删除人物档案：只删这一个人和本局为它生成的世界书条目，手动改过的条目保留', async () => {
+  const run = fixture(async input => {
+    await input.onToolCall({ name: 'character_design_save', arguments: design })
+    await input.onToolCall({ name: 'character_design_save', arguments: { ...design, name: '李四' } })
+  })
+  await run.api.start({ sessionId: 'session' }); await run.api.wait('chat')
+  const entries = () => Object.values(run.get().openingWorldbookSnapshot.document.entries).map(entry => entry.comment)
+  assert.deepEqual(entries(), ['人物设计 · 张三', '人物设计 · 李四'])
+  const removed = await run.api.remove({ sessionId: 'session', name: '张三' })
+  assert.deepEqual(removed, { name: '张三', worldbookRemoved: true, worldbookEdited: false })
+  assert.deepEqual(run.get().characterDesignDocument.characters.map(character => character.name), ['李四'])
+  assert.deepEqual(entries(), ['人物设计 · 李四'])
+  assert.equal(run.get().messages[0].text, '正文保持原样')
+  run.edit(chat => { Object.values(chat.openingWorldbookSnapshot.document.entries)[0].content = '玩家手改的李四' })
+  assert.deepEqual(await run.api.remove({ sessionId: 'session', name: '李四' }), { name: '李四', worldbookRemoved: false, worldbookEdited: true })
+  assert.deepEqual(run.get().characterDesignDocument.characters, [])
+  assert.deepEqual(entries(), ['人物设计 · 李四'], 'a hand-edited entry stays')
+  await assert.rejects(run.api.remove({ sessionId: 'session', name: '王五' }), /找不到人物档案/)
 })

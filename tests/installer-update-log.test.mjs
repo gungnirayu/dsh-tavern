@@ -28,7 +28,7 @@ test('安装长输出保留最早错误和末尾结果，先脱敏再截取',asy
  try{
   const text='EARLY_GIT_ERROR\n'+('noise\n'.repeat(3000))+'password='+('secret'.repeat(3000))+'\nFINAL_RESULT\n'
   await writeFile(path.join(root,'install.sh'),"#!/bin/sh\ncat <<'OUTPUT'\n"+text+'OUTPUT\n')
-  await updateApplication({host:'cli',sourceRoot:root,statusFile:path.join(root,'status.json'),delay:0,log(){}})
+  await assert.rejects(updateApplication({host:'cli',sourceRoot:root,dshHome:root,statusFile:path.join(root,'status.json'),delay:0,log(){}}), /未确认配置验证和安装完成/)
   const output=readUpdateDiagnostics(root).records.find(r=>r.event==='installer.output')
   assert.match(output.outputHead,/EARLY_GIT_ERROR/);assert.match(output.output,/FINAL_RESULT/)
   assert.ok(output.omittedCharacters>0);assert.doesNotMatch(JSON.stringify(output),/secret/)
@@ -60,4 +60,16 @@ test('独立安装清理临时目录时不会吞掉未定义变量的失败退�
   assert.match(result.stderr, /DSH_TEST_UNSET_VALUE/)
   await assert.rejects(readFile(temporary), { code: 'ENOENT' })
  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('更新失败摘要取输出末尾的真实错误，跳过下载进度和 PowerShell 错误记录模板', async () => {
+  const { installerFailureTail } = await import('../bin/application-update.mjs')
+  const progress = Array.from({ length: 900 }, (_, i) => `DSH_STATUS 下载代码（cdn.jsdelivr.net）：${i}/949 文件，复用 ${i}，已下载 0.2 MB`).join('\n')
+  const output = progress + '\nDone in 2.1s using pnpm v11.25.0\nDSH_STATUS 本地处理：正在切换到新版本，保留用户数据…\n' +
+    "EBUSY: resource busy or locked, rename 'E:\\DSH\\apps\\dsh-tavern' -> 'E:\\DSH\\apps\\dsh-tavern.previous'\n安装未完成，正在恢复原版本……\n安装失败：切换新版本失败，已恢复原版本。\n" +
+    '所在位置 C:\\Temp\\dsh-tavern-update.ps1:1185 字符:\n 3\n+   throw ("安装失败：" + $InstallFailure.Exception.Message)\n+   ~~~~~\n    + CategoryInfo          : OperationStopped: (x:String) [], RuntimeException\n    + FullyQualifiedErrorId : x\n'
+  const tail = installerFailureTail(output)
+  assert.match(tail, /EBUSY: resource busy or locked/)
+  assert.doesNotMatch(tail, /DSH_STATUS|CategoryInfo|所在位置|~~~~/)
+  assert.equal(tail.split('\n').at(-1), '安装失败：切换新版本失败，已恢复原版本。')
 })

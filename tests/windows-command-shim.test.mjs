@@ -90,3 +90,16 @@ test('Windows npm entry preserves private prefixes with spaces and shell charact
   assert.equal(actual.status, 0, actual.stderr)
   assert.deepEqual(JSON.parse(actual.stdout), args)
 })
+
+test('npm entry follows a pnpm env shim whose package is outside its node_modules ancestry', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'tavern-pnpm-env-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const pnpmHome = path.join(root, 'pnpm home')
+  const pkg = path.join(pnpmHome, 'nodejs', '24.12.0', 'node_modules', 'npm')
+  await mkdir(path.join(pkg, 'bin'), { recursive: true })
+  await writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: 'npm', bin: { npm: './bin/npm-cli.js' } }))
+  await writeFile(path.join(pkg, 'bin', 'npm-cli.js'), '')
+  await writeFile(path.join(pnpmHome, 'npm.cmd'), '@SETLOCAL\r\n@SET "_prog=%~dp0\\node.exe"\r\n"%_prog%"  "%~dp0\\nodejs\\24.12.0\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n')
+  const resolved = resolveNpmCliEntry({ env: { PATH: pnpmHome }, platform: 'win32' })
+  assert.equal(await realpath(resolved), await realpath(path.join(pkg, 'bin', 'npm-cli.js')))
+})

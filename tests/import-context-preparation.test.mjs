@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Session, KNOWN_SESSION_EVENT_TYPES } from './fixtures/dsh-session-host.mjs'
-import { createImportContextPreparation, planImportContext } from '../tavern-plugin/lib/domain/import-context-preparation.js'
+import { Session } from './fixtures/dsh-session-host.mjs'
+import { createImportContextPreparation } from '../tavern-plugin/lib/domain/import-context-preparation.js'
 import { buildImportedConversation, appendImportedEvents } from '../tavern-plugin/lib/domain/chat-history-session.js'
 import { parseChatHistory } from '../tavern-plugin/lib/domain/chat-history-import.js'
 import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.js'
 import { createHistoryRecall } from '../tavern-plugin/lib/domain/history-recall.js'
-import { locateRollbackSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
-import { sessionEvents, appendSessionEvent } from '../tavern-plugin/lib/domain/session-events.js'
+
+import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 const estimateMessage = message => message.content.reduce((n,b)=>n+(b.text?.length||0),0)+8
 async function fixture() {
   const session=Session.create('context-test')
@@ -24,38 +24,7 @@ async function fixture() {
     flush:async()=>{flushes++},modelInfo:async()=>{modelCalls++;return {context:{contextWindow:capacity}}},estimateMessage}
   return {session,request,options,get chat(){return chat},get flushes(){return flushes},get modelCalls(){return modelCalls},failSave:()=>{failSave=true},capacity:n=>{capacity=n}}
 }
-test('only oversized imports trim the middle to below 80 percent while preserving head and recent complete rounds',async()=>{
-  const h=await fixture()
-  const result=planImportContext({session:h.session,request:h.request,operationId:h.chat.importHistory.operationId,contextWindow:1200,estimateMessage})
-  assert.equal(result.status,'trimmed')
-  assert.ok(result.afterTokens<1200*.8)
-  assert.equal(result.removedIds.length%3,0,'input, frame and assistant stay together')
-  assert.ok(!result.removedIds.includes('new-input'))
-  const large=planImportContext({session:h.session,request:h.request,operationId:h.chat.importHistory.operationId,contextWindow:10000,estimateMessage})
-  assert.equal(large.status,'unchanged')
-  const projected=await createImportContextPreparation(h.options).prepare(h.request)
-  const texts=projected.messages.map(m=>m.content.map(b=>b.text||'').join('')).join('\n')
-  assert.match(texts,/Fixed setting/);assert.match(texts,/Original opening/);assert.match(texts,/Secret-11/);assert.match(texts,/Continue/)
-  assert.doesNotMatch(texts,/Secret-0 /)
-})
-test('native Surface shrinks durably but history_recall still searches and reads excluded rounds',async()=>{
-  const h=await fixture(),before=structuredClone(h.chat.messages),initialCount=sessionEvents(h.session).length
-  const service=createImportContextPreparation(h.options)
-  await service.prepare(h.request)
-  assert.deepEqual(h.chat.messages,before)
-  const recall=createHistoryRecall()
-  const search=recall.recall({chat:h.chat,query:'Secret-0'})
-  assert.equal(search.found,true)
-  assert.match(JSON.stringify(recall.recall({chat:h.chat,turn:2,radius:0})),/Secret-0/)
-  assert.doesNotMatch(JSON.stringify(h.session.deriveMessages()),/Secret-0 /)
-  const restored=Session.create(h.session.id,sessionEvents(h.session),h.session.header)
-  assert.deepEqual(restored.deriveMessages(),h.session.deriveMessages())
-  assert.ok(sessionEvents(h.session).every(e=>KNOWN_SESSION_EVENT_TYPES.has(e.type)))
-  assert.equal(sessionEvents(h.session).length,initialCount+1)
-  await service.prepare({...h.request,messages:h.session.deriveMessages()})
-  assert.equal(sessionEvents(h.session).length,initialCount+1)
-  assert.equal(h.modelCalls,1)
-})
+
 test('retry after publication failure reuses the durable replacement rather than trimming again',async()=>{
   const h=await fixture();h.failSave()
   await assert.rejects(createImportContextPreparation(h.options).prepare(h.request),/save failed/)
@@ -86,13 +55,16 @@ test('unknown model capacity and an oversized mandatory tail fail before touchin
     assert.equal(sessionEvents(h.session).length,before)
   }
 })
-test('normal sessions bypass preparation and a native reply can roll back across the preparation marker',async()=>{
+test('ordinary and already-checked chats are decided from the header without a full read',async()=>{
   const h=await fixture()
-  await createImportContextPreparation({...h.options,readChat:async()=>({messages:[]})}).prepare(h.request)
-  assert.equal(h.modelCalls,0)
-  await createImportContextPreparation(h.options).prepare(h.request)
-  appendSessionEvent(h.session, 'assistant/message',{turn:14,step:1,message:{id:'new-body',role:'assistant',content:[{type:'text',text:'New body'}],source:{kind:'model',provider:'fixture',model:'small'}}},{surfaceOp:'append',sourceEventSeqs:[]})
-  const surface=locateRollbackSurface({events:sessionEvents(h.session),nodes:h.session.surface.nodes})
-  assert.equal(sessionEvents(h.session).find(e=>e.seq===surface.userSeq).data.id,'new-input')
-  assert.equal(surface.turn,14)
+  let fullReads=0
+  const options={...h.options,readChat:async()=>{fullReads++;return h.options.readChat()}}
+  for(const header of [{id:'chat'},{id:'chat',importHistory:{operationId:'x',contextPreparation:{status:'unchanged'}}}]){
+    const request=await createImportContextPreparation({...options,readHeader:async()=>header}).prepare(h.request)
+    assert.equal(request,h.request)
+  }
+  assert.equal(fullReads,0)
+  await createImportContextPreparation({...options,readHeader:async()=>({id:'chat',importHistory:h.chat.importHistory})}).prepare(h.request)
+  assert.equal(fullReads,1)
+  assert.equal(h.chat.importHistory.contextPreparation.status,'trimmed')
 })

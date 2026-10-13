@@ -114,7 +114,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     // Bounded views have their own contract and never enter the complete view
     // cache. Explicit full reads retain the existing compatibility path.
     if (args.openingWindow === 1 && args.viewSync === 1 && args.fullView !== true && readOpeningWindow && project.opening) {
-      const window = await trace.stage('readOpeningWindow', () => readOpeningWindow(sessionId))
+      const window = await trace.stage('readOpeningWindow', () => readOpeningWindow(sessionId, args.historyFrom))
       if (window) {
         const view = await trace.stage('projectOpeningWindow', () => project.opening(window, {deferResources:args.resourceSync === 1}))
         trace.state({viewRebuild:'window',helperMessageCount:window.chat.messages.length})

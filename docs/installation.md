@@ -19,7 +19,7 @@
 
 ### Windows 一键安装版
 
-下载首页提供的 `DSH-Tavern-Desktop-2.0.13-x64-Setup5.exe`（SHA-256：`cdb14589aff5bb63706010bd8a1e7de010ef52ae81206231c403f4ca02c28d01`），双击后选择安装文件夹，再点击「安装并启动」。首次需要联网下载兼容的最新版酒馆；无需另外安装 Node.js 或 DSH Desktop。若遇到「安装或更新失败」、「对路径 DSH Desktop.exe 的访问被拒绝」或「对路径 preparing-…\\app 的访问被拒绝」，请改用上述修复版并先关闭已打开的酒馆。
+下载首页提供的 `DSH-Tavern-Desktop-2.0.13-x64-Setup8.exe`（SHA-256：`13c362eacb472dfae650ba6a7b91a935232b90270517a24d81b9dc43dbd0e5dc`），双击后选择安装文件夹，再点击「安装并启动」。首次需要联网下载兼容的最新版酒馆；无需另外安装 Node.js 或 DSH Desktop。若遇到「安装或更新失败」、「对路径 DSH Desktop.exe 的访问被拒绝」或「对路径 preparing-…\\app 的访问被拒绝」，请改用上述修复版并先关闭已打开的酒馆。
 
 - **以后启动：** 双击桌面或开始菜单中的「DSH Tavern」。也可以在安装目录双击 `DSH Tavern.exe`；不要直接运行 `runtime-…` 里的 `DSH Desktop.exe`，内部程序需要外层启动器提供正确的数据路径。
 - **安装位置：** 首次可自选，默认 `%LOCALAPPDATA%\DSH-Tavern`。新安装的程序、运行文件和数据放在所选目录下；数据位于 `data` 子目录。完成提示和目录中的 `如何启动.txt` 列出实际位置。
@@ -32,7 +32,7 @@ Windows Desktop 安装和更新使用 Desktop 自带的 pnpm 与 Node（即 Desk
 
 Desktop 固定为 **2.0.13**；以后在酒馆界面更新插件。仅 Desktop 安装和更新内置 **`dsh-pocket 2.10.6`**（固定版本），并移除冲突的 `dsh-web-mobile`；手机扫码入口在 **设置 → 手机访问**，无需自行安装插件。CLI 不安装 Pocket，升级时会移除旧版 Pocket。Android / DSHA 不安装 Pocket，继续使用 `dsh-web-mobile`。切换到下面的 CLI 安装方式不会自动同步这份数据。
 
-### 标准插件安装（试验）
+### 用 DSH 命令安装 Tavern（试验）
 
 适用于已经安装 **DSH 0.1.5-rc.2、Node.js 22.19+、pnpm**、准备新建独立 `tavern` Profile 的用户：
 

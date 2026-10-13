@@ -22,8 +22,8 @@ const SPEC = `# DSH Tavern 资源工作区
 ## Tavern 投影
 
 - \`.tavern/bindings.json\`：全部人物卡当前绑定的剧本与世界书。
-- \`.tavern/sessions/<id>/context.json\`：某个 Agent Session 当前绑定的人物卡与挂载资源。
-- \`.tavern/sessions/<id>/diagnostics.json\`：该 Session 已挂载诊断的有界摘要。
+- \`.tavern/sessions/<id>/context.json\`：某个 Agent Session 当前打开的人物卡与关联的游玩记录。
+- \`.tavern/sessions/<id>/diagnostics.json\`：该 Session 关联的游玩诊断的有界摘要。
 
 不要把这些投影当成聊天历史，也不要通过改写投影来伪造 Tavern 状态。对话与 Frame 时间线仍由宿主保存，并保持追加式演进。
 `

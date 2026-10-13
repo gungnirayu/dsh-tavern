@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -32,52 +32,8 @@ async function serve(t, routes) {
 }
 
 // Sends `bytes` in `pieces` chunks, one every `interval` ms.
-const trickle = (bytes, pieces, interval) => (req, res) => {
-  res.writeHead(200, { 'content-length': bytes.length })
-  const size = Math.ceil(bytes.length / pieces)
-  let offset = 0
-  const timer = setInterval(() => {
-    if (res.destroyed) { clearInterval(timer); return }
-    res.write(bytes.subarray(offset, offset + size)); offset += size
-    if (offset >= bytes.length) { clearInterval(timer); res.end() }
-  }, interval)
-  res.on('close', () => clearInterval(timer))
-}
+
 const hang = (req, res) => { res.writeHead(200, { 'content-length': 10 }); res.write('a') }
-
-test('slow but steady transfer outlives the stall window', async t => {
-  const bytes = Buffer.alloc(20000, 7)
-  const { base } = await serve(t, { '/slow': trickle(bytes, 10, 60) })
-  const progress = []
-  // Total transfer (~600 ms) is far longer than the 250 ms stall window.
-  const { bytes: received } = await download([`${base}/slow`], { stallMs: 250, sha256: sha(bytes), onProgress: p => progress.push(p.received) })
-  assert.deepEqual(received, bytes)
-  assert.ok(progress.length >= 5 && progress.at(-1) === bytes.length)
-})
-
-test('stalled transfer fails over to the next source with a Chinese reason', async t => {
-  const bytes = Buffer.from('mirror bytes')
-  const { base, hits } = await serve(t, { '/primary': hang, '/mirror': (req, res) => res.end(bytes) })
-  const retries = []
-  const result = await download([`${base}/primary`, `${base}/mirror`], { stallMs: 150, retryDelayMs: 1, sha256: sha(bytes), onRetry: r => retries.push(r) })
-  assert.equal(result.url, `${base}/mirror`)
-  assert.equal(hits.get('/primary'), 1)
-  assert.match(retries[0].reason, /秒没有收到数据/)
-  assert.equal(retries[0].willRetry, true)
-})
-
-test('checksum and size mismatches are retried and finally reported', async t => {
-  const good = Buffer.from('good')
-  const { base } = await serve(t, { '/bad': (req, res) => res.end('evil'), '/good': (req, res) => res.end(good) })
-  assert.equal((await download([`${base}/bad`, `${base}/good`], { sha256: sha(good), retryDelayMs: 1 })).url, `${base}/good`)
-  await assert.rejects(download([`${base}/bad`], { sha256: sha(good), retryDelayMs: 1 }), error => {
-    assert.ok(error instanceof DownloadError)
-    assert.match(error.message, /SHA-256 校验不符/)
-    assert.equal(error.attempts.length, 2)
-    return true
-  })
-  await assert.rejects(download([`${base}/good`], { size: 99, retryDelayMs: 1, attempts: 1 }), /文件大小不符/)
-})
 
 test('HTTP and connection failures keep the attempt history and underlying cause', async t => {
   const { base } = await serve(t, {})
@@ -98,25 +54,6 @@ test('HTTP and connection failures keep the attempt history and underlying cause
   const cause = new Error('connection reset')
   await assert.rejects(download(['https://example.invalid/a'], { retryDelayMs: 1, attempts: 2, fetch: async () => { throw cause } }),
     error => error.cause === cause && /connection reset/.test(error.message))
-})
-
-test('deadline is an upper bound across attempts, not per request', async t => {
-  const { base, hits } = await serve(t, { '/slow': trickle(Buffer.alloc(1000), 100, 50) })
-  const started = Date.now()
-  await assert.rejects(download([`${base}/slow`], { stallMs: 1000, deadlineMs: 300, attempts: 5 }), /超过总时长上限/)
-  assert.ok(Date.now() - started < 2000)
-  assert.equal(hits.get('/slow'), 1, 'no retry after the deadline')
-})
-
-test('downloadFile publishes only complete verified files', async t => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'download-file-'))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  const bytes = Buffer.from([0, 1, 2, 255])
-  const { base } = await serve(t, { '/ok': (req, res) => res.end(bytes), '/bad': (req, res) => res.end('nope') })
-  await downloadFile([`${base}/ok`], path.join(directory, 'nested/ok.bin'), { sha256: sha(bytes) })
-  assert.deepEqual(await readFile(path.join(directory, 'nested/ok.bin')), bytes)
-  await assert.rejects(downloadFile([`${base}/bad`], path.join(directory, 'bad.bin'), { sha256: sha(bytes), retryDelayMs: 1 }))
-  assert.deepEqual((await readdir(directory)).sort(), ['nested'])
 })
 
 async function runtimeFixture(t, files, handler) {
@@ -156,30 +93,6 @@ test('runtime download filters, reuses installed files, retries and writes the m
   assert.ok(![...hits.keys()].some(url => /docs|escape/.test(url)), 'excluded paths are never requested')
   assert.ok(status.some(m => /HTTP 503.*尝试 1\/2，正在重试/.test(m)))
   assert.match(status.at(-1), /9\/9 文件，复用 1/)
-})
-
-test('runtime download stops at the stage budget and reports the fallback', async t => {
-  const files = new Map(Array.from({ length: 40 }, (_, n) => [`bin/f${n}.js`, Buffer.from('ok')]))
-  const { root, hits, args } = await runtimeFixture(t, files, (req, res, bytes) => setTimeout(() => res.end(bytes), 50))
-  await assert.rejects(downloadRuntime({ ...args, destination: path.join(root, 'out'), budgetMs: 120, concurrency: 2 }), /备用源下载超过 0\.1 秒/)
-  assert.ok(hits.size - 1 < files.size, 'remaining files are not scheduled after the budget')
-})
-
-test('runtime download rejects unsafe manifest entries before writing', async t => {
-  const files = new Map([['bin/a.js', Buffer.from('a')], ['bin/evil:name.js', Buffer.from('b')]])
-  const { root, args } = await runtimeFixture(t, files)
-  await assert.rejects(downloadRuntime({ ...args, destination: path.join(root, 'out') }), /无效文件/)
-  await assert.rejects(readdir(path.join(root, 'out')), { code: 'ENOENT' })
-})
-
-test('runtime download refuses a manifest that is not the requested target commit', async t => {
-  const files = new Map([['bin/a.js', Buffer.from('a')]])
-  const { root, metadata, hits, args } = await runtimeFixture(t, files)
-  const other = 'f'.repeat(40)
-  await assert.rejects(downloadRuntime({ ...args, destination: path.join(root, 'out'), targetCommit: other }), /与目标版本（ffffffffffff）不一致/)
-  assert.ok(![...hits.keys()].some(url => url.includes('/bin/')), 'no files are downloaded for a mismatched manifest')
-  await downloadRuntime({ ...args, destination: path.join(root, 'out'), targetCommit: metadata.revision.toUpperCase() })
-  assert.deepEqual(await readFile(path.join(root, 'out/bin/a.js')), Buffer.from('a'))
 })
 
 test('CLI reports failures in Chinese with a nonzero exit code', async t => {

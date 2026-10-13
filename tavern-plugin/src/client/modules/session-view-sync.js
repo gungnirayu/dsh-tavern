@@ -1,6 +1,10 @@
 // Cached session views are immutable, like the React views returned by getSession.
 function createSessionViewReader(maxSessions = 4) {
   const sessions = new Map();
+  // Evict cached views, never an outstanding request's freshness watermark.
+  // The pending map is bounded by actual in-flight work, and released on every
+  // RPC outcome, including failures and cancellation.
+  const pending = new Map();
   const index = createSessionViewReader.indexApi ||= createIndexedArrayApi();
   const receiptLookup = createSessionViewReader.receiptLookup ||= createTurnLookup(index,createSessionViewReader.onReceiptLookupVisit);
   const ordered = typeof createOrderedNumericIndex === "function" ? (createSessionViewReader.receiptOrderedIndex ||= createOrderedNumericIndex()) : null;
@@ -9,12 +13,28 @@ function createSessionViewReader(maxSessions = 4) {
   const storyTurnLookup = createSessionViewReader.storyTurnLookup ||= createStoryTurnLookup();
   let sequence = 0;
   return function begin(sessionId) {
-    const base = sessions.get(sessionId);
+    const owner = pending.get(sessionId) || sessions.get(sessionId) || { latest: null, count: 0 };
+    const base = owner.latest;
+    owner.count++;
+    pending.set(sessionId, owner);
     const requestSequence = ++sequence;
+    let released = false;
+    function release() {
+      if (released) return;
+      released = true;
+      if (--owner.count === 0 && pending.get(sessionId) === owner) pending.delete(sessionId);
+    }
+    function current() { return owner.latest && owner.latest.sequence > requestSequence ? owner.latest.result : null; }
     return {
-      cursor: base && base.cursor,
+      cursor: base?.cursor,
+      current,
+      release,
       receiptSync: ordered ? 1 : undefined,
       accept(result) {
+        if (released) throw new Error("会话读取已取消");
+        try {
+        const newer = current();
+        if (newer) return newer;
         let view = result.view, projectionChanges = null, storyChanges = null, storyKeys = null;
         if (result.viewDelta) {
           if (!base || result.viewDelta.baseCursor !== base.cursor) throw new Error("会话增量已过期，请重新读取");
@@ -147,13 +167,17 @@ function createSessionViewReader(maxSessions = 4) {
           if (value !== view?.[field]) view = {...view, [field]: value};
         }
         storyChanges = storyTurnLookup.remember(view?.regeneratedDshTurns, base?.view?.regeneratedDshTurns, storyKeys);
-        const latest = sessions.get(sessionId);
-        if (!latest || latest.sequence < requestSequence) {
-          sessions.delete(sessionId);
-          sessions.set(sessionId, { view, cursor: result.viewCursor, sequence: requestSequence });
-          while (sessions.size > maxSessions) sessions.delete(sessions.keys().next().value);
-        }
-        return Object.assign({}, result, { view, viewBase: result.viewDelta ? base.view : undefined, projectionChanges, storyChanges });
+        const accepted = Object.assign({}, result, { view, viewBase: result.viewDelta ? base.view : undefined, projectionChanges, storyChanges });
+        // A stale caller receives a coherent full result, never a new view with
+        // an old cursor, delta or changed-path hint from another request.
+        const snapshot = Object.assign({}, accepted);
+        for (const key of ["viewDelta", "viewBase", "projectionChanges", "storyChanges"]) delete snapshot[key];
+        owner.latest = { view, cursor: result.viewCursor, sequence: requestSequence, result: snapshot };
+        sessions.delete(sessionId);
+        sessions.set(sessionId, owner);
+        while (sessions.size > maxSessions) sessions.delete(sessions.keys().next().value);
+        return accepted;
+        } finally { release(); }
       }
     };
   };

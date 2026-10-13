@@ -33,5 +33,14 @@ export function createGuideLibrary({ store, now = Date.now }) {
     })
     return updated
   }
-  return { list, save, get, update }
+  async function remove(input) {
+    await store.updateJson(PATH, value => {
+      const items = value?.items || []
+      const item = items.find(item => item.id === input?.id)
+      if (!item) throw new Error('Guide 方案不存在，请刷新后重试')
+      if (JSON.stringify(item) !== JSON.stringify(input.expected)) throw new Error('方案已被修改，请刷新后重试')
+      return { ...value, items: items.filter(other => other !== item) }
+    })
+  }
+  return { list, save, get, update, remove }
 }

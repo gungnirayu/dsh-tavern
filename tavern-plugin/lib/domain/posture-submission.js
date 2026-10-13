@@ -24,3 +24,19 @@ export function normalizePostureSubmission(value, context = {}) {
   if (posture === '') throw new Error('posture_submit 缺少非空 posture')
   return Object.freeze({ posture })
 }
+
+/** The posture the latest visible posture_submit call wrote, or '' when the history has none. */
+export function lastSubmittedPosture(session) {
+  const nodes = session?.surface?.nodes || []
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    const event = session.eventAt(nodes[index])
+    if (event?.type !== 'assistant/message') continue
+    const calls = (event.data?.message?.content || []).filter(block => block?.type === 'tool-call' && block.name === POSTURE_SUBMIT_TOOL_NAME)
+    for (let at = calls.length - 1; at >= 0; at--) {
+      let args = calls[at].arguments
+      if (typeof args === 'string') { try { args = JSON.parse(args) } catch { continue } }
+      if (typeof args?.posture === 'string' && args.posture.trim() !== '') return args.posture.trim()
+    }
+  }
+  return ''
+}

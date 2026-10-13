@@ -40,6 +40,9 @@
 - Desktop 2.0.13 使用 `resources/app` 目录布局，并已自带 UTF-8 代码页 prologue。`patch-runtime.cjs` 只注入 Windows 包管理隔离桥，并在新解压运行时内写入 ready 标记前执行。运行时版本后缀变更可避免修改正在运行的旧版文件；改补丁时必须同步提升后缀。
 - `setup2` 使用随安装包嵌入的 `setup-upgrade.mjs` 和 PowerShell 安装器，从 `main` 安装或更新 Tavern。旧 payload 中的实验性 `online-install.mjs` 不再作为安装入口。
 - `setup3` 取消准备完成后的整目录移动，并内置包含 `patches/` 的新版安装清单。安装包嵌入的补丁、安装脚本或包管理辅助文件变化时都须提升运行时后缀，避免复用旧目录中的过期脚本。
+- `setup7` 给 Tavern 独立的 Windows AppUserModelID（`ai.deepseek.dsh.tavern`），运行时与 `DSH Tavern` 快捷方式一致；此前沿用原版 DSH Desktop 的 ID，任务栏会把两者合并，点用户自己的 DSH Desktop 固定图标会切到正在运行的 Tavern。
+- `setup8` 对应 Tavern v2.6：结束旧酒馆进程被拒绝（进程正在退出或以管理员身份运行）时不再中断安装（#192）；嵌入的安装脚本切换目录前先离开安装目录，界面更新不再报 EBUSY。
+- `setup6` 对应 Tavern v2.5，重新嵌入当前安装脚本，包含安装任务管理、中断回滚和非 ASCII 路径修复；使用新的运行时后缀，避免复用旧版嵌入脚本。
 - `setup5` 随包嵌入共享下载模块 `bin/download.cjs`（写到运行时 `resources/download.cjs`）：下载按“30 秒无数据”判定失败，并把 Windows 系统代理转换为 `HTTP(S)_PROXY` 供 Node、curl、git、pnpm 使用。
 - 显式运行安装包时，即使已有 Tavern 也会执行更新。升级先关闭所选安装根目录下的 Desktop 进程（先请求关闭，等待十秒后结束残留托盘进程），不操作其他安装；安装页面提醒用户先保存操作。
 - 数据目录中的 `.launcher-upgrade-ready` 只在成功后记录当前启动器版本。安装失败清除旧标记，下一次可重试；正常使用已成功升级的安装入口无需联网。新启动器首次运行也会执行一次升级，以补齐旧 Profile 的宿主依赖。

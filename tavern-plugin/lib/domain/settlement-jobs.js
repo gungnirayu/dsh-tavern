@@ -23,6 +23,12 @@ export function createSettlementJobs({ run, onSettled }) {
     return job.promise
   }
 
+  /** The running job of a chat (settled either way), or null. */
+  function pending(chatId) {
+    const job = jobs.get(chatId)
+    return job ? job.promise.catch(() => {}) : null
+  }
+
   async function cancel(chatId, { wait = true } = {}) {
     const job = jobs.get(chatId)
     if (!job) return false
@@ -39,5 +45,5 @@ export function createSettlementJobs({ run, onSettled }) {
     jobs.clear()
   }
 
-  return Object.freeze({ start, cancel, dispose })
+  return Object.freeze({ start, pending, cancel, dispose })
 }

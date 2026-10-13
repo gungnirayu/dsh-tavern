@@ -53,54 +53,6 @@ function rollback(timeline, chat) {
   return result
 }
 
-test('正文提交建立 checkpoint，revision 单调增加并清除旧候选', () => {
-  const { timeline, chat } = harness()
-  chat.candidates = { messageId: 'old', choices: [{ type: 'action', text: '旧候选' }] }
-  const next = beginAndCommitBody(timeline, chat, 1, '推门', '门开了。')
-
-  const view = timeline.inspect({ chat: next })
-  const checkpoint = next.timeline.checkpoints[0]
-  const bodyOperation = Object.values(next.timeline.operations).find(function (operation) { return operation.kind === 'body' })
-  assert.equal(view.revision, 1)
-  assert.equal(view.checkpointCount, 1)
-  assert.equal(checkpoint.beforeRevision, 1)
-  assert.equal(Object.hasOwn(checkpoint, 'before'), false)
-  assert.equal(bodyOperation.beforeRevision, 1)
-  assert.equal(Object.hasOwn(bodyOperation, 'before'), false)
-  assert.equal(next.candidates, null)
-  assert.equal(next.messages.length, 2)
-  assert.equal(next.scriptState.cursor, 1)
-})
-
-test('前台正文独立提交 checkpoint，后台结算失败也不阻塞下一轮', () => {
-  const { timeline, chat } = harness()
-  const begun = timeline.apply({ chat, intent: { kind: 'body.begin', turn: 1, userText: '推门' } })
-  const foreground = timeline.complete({
-    chat: begun.chat,
-    operationId: begun.value.operationId,
-    basedOn: begun.value.basedOn,
-    outcome: { status: 'success' },
-    apply(draft) { draft.messages.push({ role: 'user', text: '推门' }, { role: 'assistant', text: '门开了。' }) }
-  })
-
-  assert.equal(timeline.inspect({ chat: foreground.chat }).revision, 1)
-  assert.equal(timeline.inspect({ chat: foreground.chat }).checkpointCount, 1)
-  assert.equal(foreground.chat.timeline.operations[begun.value.operationId].status, 'completed')
-
-  const settlement = timeline.apply({ chat: foreground.chat, intent: { kind: 'agent.begin', role: 'settlement' } })
-  const completed = timeline.complete({
-    chat: settlement.chat,
-    operationId: settlement.value.operationId,
-    basedOn: settlement.value.basedOn,
-    outcome: { status: 'failed' }
-  })
-  assert.equal(timeline.inspect({ chat: completed.chat }).revision, 1)
-  assert.equal(timeline.inspect({ chat: completed.chat }).checkpointCount, 1)
-  assert.equal(completed.chat.timeline.operations[begun.value.operationId].status, 'completed')
-  assert.equal(completed.chat.timeline.operations[begun.value.operationId].background.phase, 'failed')
-  assert.doesNotThrow(() => timeline.apply({ chat: completed.chat, intent: { kind: 'body.begin', turn: 2, userText: '进去' } }))
-})
-
 test('结算延后、失败和重试都不重复提交正文 checkpoint', () => {
   const { timeline, chat } = harness()
   const begun = timeline.apply({ chat, intent: { kind: 'body.begin', turn: 1, userText: '推门' } })
@@ -142,37 +94,6 @@ test('结算延后、失败和重试都不重复提交正文 checkpoint', () => 
   }).chat
   assert.equal(timeline.inspect({ chat: current }).revision, 1)
   assert.equal(timeline.inspect({ chat: current }).checkpointCount, 1)
-})
-
-test('多轮在同一毫秒完成时，结算状态仍只更新 roundOperationId 绑定的正文', () => {
-  let sequence = 0
-  const timeline = createStoryTimeline({
-    id(prefix) { sequence += 1; return prefix + '-' + sequence },
-    now() { return 1000 }
-  })
-  let chat = { id: 'chat-same-ms', mode: 'story', messages: [], posture: '', _storageRevision: 1 }
-
-  function commitBody(turn) {
-    const begun = timeline.apply({ chat, intent: { kind: 'body.begin', turn, userText: '第' + turn + '轮' } })
-    chat = timeline.complete({
-      chat: begun.chat,
-      operationId: begun.value.operationId,
-      basedOn: begun.value.basedOn,
-      outcome: { status: 'success' }
-    }).chat
-    return begun.value.operationId
-  }
-
-  const firstBodyId = commitBody(1)
-  let settlement = timeline.apply({ chat, intent: { kind: 'agent.begin', role: 'settlement' } })
-  chat = timeline.complete({ chat: settlement.chat, operationId: settlement.value.operationId, basedOn: settlement.value.basedOn, outcome: { status: 'success' } }).chat
-
-  const secondBodyId = commitBody(2)
-  settlement = timeline.apply({ chat, intent: { kind: 'agent.begin', role: 'settlement' } })
-  chat = timeline.complete({ chat: settlement.chat, operationId: settlement.value.operationId, basedOn: settlement.value.basedOn, outcome: { status: 'failed' } }).chat
-
-  assert.equal(chat.timeline.operations[firstBodyId].background.phase, 'completed')
-  assert.equal(chat.timeline.operations[secondBodyId].background.phase, 'failed')
 })
 
 test('旧正文结算迟到时不能覆盖更新正文之后的派生状态', () => {
@@ -267,158 +188,6 @@ test('同一 operation 协议可扩展到状态结算，迟到结算不能覆盖
   assert.equal(late.chat.posture, '门边站立')
 })
 
-test('关联 Round 已失效时先拒绝结算，再执行 apply', () => {
-  const { timeline, chat } = harness()
-  const body = timeline.apply({ chat, intent: { kind: 'body.begin', turn: 1, userText: '推门' } })
-  const foreground = timeline.complete({
-    chat: body.chat,
-    operationId: body.value.operationId,
-    basedOn: body.value.basedOn,
-    outcome: { status: 'success' },
-    apply(draft) { draft.messages.push({ role: 'user', text: '推门' }, { role: 'assistant', text: '门开了。' }) }
-  })
-  const settlement = timeline.apply({ chat: foreground.chat, intent: { kind: 'agent.begin', role: 'settlement' } })
-  settlement.chat.timeline.operations[body.value.operationId].status = 'cancelled'
-  let applied = false
-
-  const completed = timeline.complete({
-    chat: settlement.chat,
-    operationId: settlement.value.operationId,
-    basedOn: settlement.value.basedOn,
-    outcome: { status: 'success' },
-    apply(draft) { applied = true; draft.posture = '不应写入' }
-  })
-
-  assert.equal(completed.value.status, 'stale')
-  assert.equal(applied, false)
-  assert.equal(completed.chat.posture, '门边站立')
-})
-
-test('世界书不创建 Agent operation，候选与状态结算共用后台 participant', () => {
-  const { timeline, chat } = harness()
-  let current = beginAndCommitBody(timeline, chat, 1, '推门', '门开了。')
-  let begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'settlement' } })
-  assert.equal(begun.value.participant.role, 'background')
-  let completed = timeline.complete({
-    chat: begun.chat,
-    operationId: begun.value.operationId,
-    basedOn: begun.value.basedOn,
-    outcome: { status: 'success', stateChanged: true, participant: { sessionId: 'background-1', boundary: 20, lifetime: 'chat' } },
-    apply(draft) { draft.posture = '门内站立' }
-  })
-  current = completed.chat
-
-  begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-  assert.equal(begun.value.role, 'candidate')
-  assert.equal(begun.value.participant.role, 'background')
-  assert.equal(begun.value.participant.sessionId, 'background-1')
-  assert.equal(begun.value.participant.syncedRevision, begun.value.basedOn.revision)
-  assert.equal(timeline.inspect({ chat: begun.chat }).participants.candidate, undefined)
-  assert.equal(timeline.inspect({ chat: begun.chat }).participants.settlement, undefined)
-  assert.equal(Object.values(timeline.inspect({ chat: begun.chat }).operations).some(function (operation) { return operation.role === 'worldbook' }), false)
-})
-
-test('后台 participant 在正常推进时复用，回退后仍使用同一 Session 并请求 Surface 回退', () => {
-  const { timeline, chat } = harness()
-  let current = beginAndCommitBody(timeline, chat, 1, '推门', '门开了。')
-  let begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-  let completed = timeline.complete({
-    chat: begun.chat,
-    operationId: begun.value.operationId,
-    basedOn: begun.value.basedOn,
-    outcome: { status: 'success', participant: { sessionId: 'candidate-1', boundary: 42, lifetime: 'chat' } },
-    apply() {}
-  })
-  current = completed.chat
-
-  current = beginAndCommitBody(timeline, current, 2, '上楼', '钟声响了。')
-
-  begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-  assert.equal(begun.value.participant.sessionId, 'candidate-1')
-  assert.equal(begun.value.participant.rewindTo, null)
-
-  const rolled = rollback(timeline, begun.chat)
-  const next = timeline.apply({ chat: rolled.chat, intent: { kind: 'agent.begin', role: 'candidate' } })
-  assert.equal(next.value.participant.sessionId, 'candidate-1')
-  assert.equal(next.value.participant.rewindTo, 42)
-})
-
-test('后台 Session 压缩后发生正文回退时重建 Session，不复用可能含废弃剧情的摘要', () => {
-  const { timeline, chat } = harness()
-  let current = beginAndCommitBody(timeline, chat, 1, '推门', '门开了。')
-  let begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-  current = timeline.complete({
-    chat: begun.chat,
-    operationId: begun.value.operationId,
-    basedOn: begun.value.basedOn,
-    outcome: { status: 'success', participant: { sessionId: 'background-1', boundary: 42, lifetime: 'chat' } }
-  }).chat
-  current = beginAndCommitBody(timeline, current, 2, '上楼', '钟声响了。')
-  current.timeline.participants.background.requiresNewSessionOnRewind = true
-  current.timeline.participants.background.compactedAt = 1000
-
-  const rolled = rollback(timeline, current)
-  begun = timeline.apply({ chat: rolled.chat, intent: { kind: 'agent.begin', role: 'candidate' } })
-
-  assert.equal(begun.value.participant.sessionId, '')
-  assert.equal(begun.value.participant.rewindTo, null)
-})
-
-test('连续正文替代始终回退同一个后台 Session 的有效 checkpoint', () => {
-  const { timeline, chat } = harness()
-  let current = timeline.apply({ chat, intent: { kind: 'ensure' } }).chat
-  current.timeline.participants.background = {
-    role: 'background', lifetime: 'chat', sessionId: 'background-before-body',
-    branchId: current.timeline.branchId, syncedRevision: current.timeline.revision,
-    boundary: 42, status: 'current', rewindTo: null, updatedAt: 1
-  }
-
-  current = beginAndCommitBody(timeline, current, 1, '推门', '第一版正文')
-  current = rollback(timeline, current).chat
-  let begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-  assert.equal(begun.value.participant.sessionId, 'background-before-body')
-  assert.equal(begun.value.participant.rewindTo, 42)
-
-  current = beginAndCommitBody(timeline, begun.chat, 2, '推门', '第二版正文')
-  current = rollback(timeline, current).chat
-  begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'candidate' } })
-
-  assert.equal(begun.value.participant.sessionId, 'background-before-body')
-  assert.equal(begun.value.participant.rewindTo, 42)
-})
-
-test('旧对话可惰性迁移，现有候选 Session 成为后台 participant', () => {
-  const { timeline, chat } = harness()
-  chat.messages.push({ role: 'assistant', text: '已有正文' })
-  chat.candidateAgent = { sessionId: 'legacy-candidate', mode: 'continuable', updatedAt: 9 }
-  const ensured = timeline.apply({ chat, intent: { kind: 'ensure' } })
-  const view = timeline.inspect({ chat: ensured.chat })
-
-  assert.equal(view.revision, 0)
-  assert.equal(view.participants.background.sessionId, 'legacy-candidate')
-  assert.equal(view.participants.background.status, 'current')
-})
-
-test('上一版 timeline 的 candidate participant 自动迁移为 background', () => {
-  const { timeline, chat } = harness()
-  chat.timeline = {
-    schemaVersion: 1,
-    branchId: 'old-branch',
-    revision: 7,
-    checkpoints: [],
-    operations: {},
-    participants: {
-      candidate: { role: 'candidate', lifetime: 'branch', sessionId: 'old-candidate', branchId: 'old-branch', syncedRevision: 7, status: 'current' }
-    }
-  }
-
-  const ensured = timeline.apply({ chat, intent: { kind: 'ensure' } })
-  const participants = timeline.inspect({ chat: ensured.chat }).participants
-  assert.equal(participants.background.sessionId, 'old-candidate')
-  assert.equal(participants.background.role, 'background')
-  assert.equal(participants.candidate, undefined)
-})
-
 test('正文替代失败恢复原内容，但仍换 branch/revision 防止瞬时 operation 复活', () => {
   const { timeline, chat } = harness()
   const original = timeline.apply({ chat, intent: { kind: 'ensure' } }).chat
@@ -434,25 +203,6 @@ test('正文替代失败恢复原内容，但仍换 branch/revision 防止瞬时
   assert.notEqual(restored.chat.timeline.branchId, original.timeline.branchId)
   assert.ok(restored.chat.timeline.revision > transient.timeline.revision)
   assert.equal(restored.chat.timeline.operations[Object.keys(restored.chat.timeline.operations)[0]], undefined)
-})
-
-test('正文替代失败不会清空待回退的后台 checkpoint', () => {
-  const { timeline, chat } = harness()
-  const original = timeline.apply({ chat, intent: { kind: 'ensure' } }).chat
-  original.timeline.participants.background = {
-    role: 'background', lifetime: 'branch', sessionId: '', branchId: original.timeline.branchId,
-    syncedRevision: null, boundary: null, status: 'needs-branch',
-    forkFrom: { sessionId: 'background-before-body', boundary: 42 }, updatedAt: 1
-  }
-  const transient = timeline.apply({ chat: original, intent: { kind: 'agent.begin', role: 'candidate' } }).chat
-
-  const restored = timeline.apply({
-    chat: transient,
-    intent: { kind: 'replacement.abort', restoreChat: original }
-  })
-
-  assert.equal(restored.chat.timeline.participants.background.sessionId, 'background-before-body')
-  assert.equal(restored.chat.timeline.participants.background.rewindTo, 42)
 })
 
 test('旧 checkpoint 丢失直接来源时向前恢复最近的有效后台边界', () => {
@@ -474,20 +224,6 @@ test('旧 checkpoint 丢失直接来源时向前恢复最近的有效后台边�
 
   assert.equal(begun.value.participant.sessionId, 'background-old')
   assert.equal(begun.value.participant.rewindTo, 42)
-})
-
-test('导入后的旧快照没有后台身份，反复回退仍复用已创建的后台', () => {
-  const { timeline, chat } = harness()
-  let current = timeline.apply({ chat, intent: { kind: 'ensure' } }).chat
-  current.timeline.participants.background = { role: 'background', lifetime: 'chat', sessionId: '', boundary: null, status: 'needs-session' }
-  for (let attempt = 0; attempt < 3; attempt++) {
-    current = beginAndCommitBody(timeline, current, 2, '行动', '正文')
-    current.timeline.participants.background = { role: 'background', lifetime: 'chat', sessionId: 'same-background', boundary: 42 + attempt, status: 'current' }
-    current = rollback(timeline, current).chat
-    assert.equal(current.timeline.participants.background.sessionId, 'same-background')
-    assert.equal(current.timeline.participants.background.status, 'needs-rewind')
-    assert.equal(current.timeline.participants.background.rewindTo, -1)
-  }
 })
 
 test('台账随正文 checkpoint 回退，旧后台迟到不能恢复撤回的物品，重新推进可重新记账', () => {

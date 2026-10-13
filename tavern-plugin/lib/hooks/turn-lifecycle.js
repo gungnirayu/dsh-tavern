@@ -1,4 +1,6 @@
 import { assistantResultForTurn } from '../domain/session-turn-result.js'
+import { inputEventForTurn } from '../domain/session-turn-input.js'
+import { roundAnchor } from '../domain/round-anchor.js'
 import { inputAttachments } from '../domain/player-input-content.js'
 import { prependSystemInstruction } from '../domain/system-append.js'
 import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/session-stable-prefix.js'
@@ -6,8 +8,9 @@ import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 
 export function registerTurnLifecycleHooks({
+  reconcileWhenIdle,
   backgroundAgentRunner,
-  chatForSession,
+  hookChatForSession,
   clearRuntimePresetRequestState,
   contentText,
   ctx,
@@ -17,6 +20,7 @@ export function registerTurnLifecycleHooks({
   fullTemplateRuntime,
   nativeWorldBookTemplateContext,
   persistClearedBodyEdits,
+  pluginPromptSections,
   publishResourceWorkspace,
   readChatCard,
   replaceAssistantReply,
@@ -60,7 +64,8 @@ export function registerTurnLifecycleHooks({
       requestId,
       userText,
       userContent,
-      assistantText: assistant === null ? '' : assistant.text
+      assistantText: assistant === null ? '' : assistant.text,
+      nativeAnchor: roundAnchor(payload.turn, inputEventForTurn(session, payload.turn), assistant.event)
     })
     if (saved.reply) replaceAssistantReply(session, assistant, saved.reply.sessionText)
   })
@@ -75,6 +80,9 @@ export function registerTurnLifecycleHooks({
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''
     foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason })
+    // A turn whose record went missing (#196) is adopted before the player's next
+    // message, once the agent has gone idle; reconcile never blocks this hook.
+    setTimeout(() => { void reconcileWhenIdle?.(session.id) }, 0)
   })
 
   ctx.on('system-prompt/assemble', async function (_assembly, context, next) {
@@ -82,7 +90,7 @@ export function registerTurnLifecycleHooks({
     const agent = context && context.agent
     if (agent === undefined || agent.session === undefined) return assembly
     if (backgroundAgentRunner.owns(agent.session.id)) return assembly
-    const chat = await chatForSession(agent.session.id)
+    const chat = await hookChatForSession(agent.session.id)
     if (chat) await synchronizeTemplateHistory(agent.session, chat, session => sessionStore.flush(session))
     if (chat) await synchronizeBodyEdits(agent.session, chat, session => sessionStore.flush(session), persistClearedBodyEdits)
     if (chat && chat.requestMode !== 'sillytavern' && ['story', 'script', 'card'].includes(await turnOrchestrator.modeFor(agent.session.id))) {
@@ -100,6 +108,11 @@ export function registerTurnLifecycleHooks({
         ? withCurrentWorldbook(sessionStablePrefixSections(agent.session), (await nativeWorldBookTemplateContext(chat, await readChatCard(chat))).prefixContext ?? '')
         : sessionStablePrefixSections(agent.session)
     })
+    // Third-party plugin sections join the play prompt only, after Tavern's own.
+    if (pluginPromptSections && chat && chat.requestMode !== 'sillytavern' && ['story', 'script'].includes(await turnOrchestrator.modeFor(agent.session.id))) {
+      const extra = await pluginPromptSections({ gameId: agent.session.id })
+      if (extra.length) assembled.sections = [...(assembled.sections || []), ...extra]
+    }
     return prependSystemInstruction(assembled, chat ? runtimePrompt('system-append') : '')
   })
 }

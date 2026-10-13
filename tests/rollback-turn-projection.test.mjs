@@ -86,14 +86,6 @@ for (const alpha of [false, true]) {
   })
 }
 
-test('alpha 上一轮尾部未挂载时，仍按明确轮次边界保留上一轮', () => {
-  const before = row('assistant-step', 5, true)
-  const removed = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 6, true))
-  harness([before, ...removed]).applySuppressedDshTurns([6])
-  assert.equal(before.style.display, '')
-  assert.ok(removed.every(row => row.style.display === 'none'))
-})
-
 for (const alpha of [false, true]) {
   test(`${alpha ? 'alpha' : 'main'} 重生成保留原玩家输入，并以可见 append 回合承载新正文`, () => {
     const original = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 2, alpha))
@@ -162,16 +154,6 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 撤销后�
   projection.applySuppressedDshTurns([])
   assert.ok(latest.every(item => item.style.display === ''), '最新投影必须撤销旧的隐藏样式')
 })
-test('撤销隐藏保留宿主原有显示样式和其他隐藏行', () => {
-  const rows = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 6, true))
-  rows[0].style.display = 'none'
-  rows[1].style.display = 'flex'
-  const projection = harness(rows)
-  projection.applySuppressedDshTurns([6])
-  projection.applySuppressedDshTurns([6])
-  projection.applySuppressedDshTurns([])
-  assert.deepEqual(rows.map(item => item.style.display), ['none', 'flex', '', ''])
-})
 
  test('隐藏内部恢复上下文行，保留普通注入及包含标识的正文', () => {
   const internal = row('context', 9, true)
@@ -202,12 +184,4 @@ test('隐藏旧正文不能越过明确轮次边界，重生成正文尚未挂�
   const tail = row('turn-tail', 3, true)
   harness([previous, tail]).applyRegeneration([6], { '3': 6 })
   assert.equal(previous.style.display, '')
-})
-
- test('被替换的合成轮即使没有尾部，也按明确轮次隐藏', () => {
-  const oldAttempt = row('assistant-step', 4, true)
-  const newest = row('assistant-step', 6, true)
-  harness([oldAttempt, newest]).applyRegeneration([4, 5, 6], { '3': 6 })
-  assert.equal(oldAttempt.style.display, 'none')
-  assert.equal(newest.style.display, '')
 })

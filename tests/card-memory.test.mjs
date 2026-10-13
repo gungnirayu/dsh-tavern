@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, readdir } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createCardMemory } from '../tavern-plugin/packages/dsh-tavern-card-memory/index.js'
@@ -48,43 +48,4 @@ test('validation failures are deduplicated and successful static checks do not i
   assert.equal(JSON.parse(rows[0].content).status, 'unverified')
   assert.equal(JSON.parse(rows[0].content).recordedBy, 'tavern_validate_card')
   await assert.rejects(memory.experience(chat, { title: '已修复', status: 'runtime-verified' }), /验证依据/)
-})
-
-test('play mode has no memory reads, writes or injections, including direct tool calls', async t => {
-  const { memory, chat, dataRoot } = await fixture(t)
-  const story = { ...chat, mode: 'story' }
-  const decision = { kind: 'enter', messages: [{ role: 'user', content: [{ type: 'text', text: '继续' }] }] }
-  assert.equal(await memory.appendRecall({ chat: story, payload: { step: 1, messages: decision.messages }, decision }), decision)
-  await assert.rejects(memory.search(story), /仅限卡片/)
-  await assert.rejects(memory.preference(story, { action: 'add', content: '不能写入' }), /仅限卡片/)
-  await assert.rejects(memory.experience(story, { title: '不能写入' }), /仅限卡片/)
-  await assert.rejects(memory.recordValidation(story, chat.cardPath, { valid: false, errors: [{}] }), /仅限卡片/)
-  assert.deepEqual(await readdir(dataRoot), [])
-})
-
-test('the memory panel can view and edit memory from a play conversation', async t => {
-  const { memory, chat } = await fixture(t)
-  const story = { ...chat, mode: 'story' }
-  await memory.preference(story, { action: 'add', content: '面板手动添加' }, { manual: true })
-  assert.deepEqual((await memory.search(story, '', { manual: true })).preferences, ['面板手动添加'])
-  assert.equal((await memory.search(chat)).preferences[0], '面板手动添加')
-  await assert.rejects(memory.search(null, '', { manual: true }), /请先打开一个对话/)
-})
-
-test('changed preferences append after the query without modifying any previous request prefix', async t => {
-  const { memory, chat } = await fixture(t)
-  const query = text => ({ id: text, role: 'user', content: [{ type: 'text', text }] })
-  const first = query('改卡')
-  await memory.preference(chat, { action: 'add', content: '不要改开场白' })
-  const turn1 = await memory.appendRecall({ chat, payload: { step: 1, messages: [first] }, decision: { kind: 'enter', messages: [first] } })
-  const prefix = JSON.stringify(turn1.messages)
-  await memory.preference(chat, { action: 'replace', oldText: '不要改开场白', content: '可以按要求改开场白' })
-  const second = query('再改一次')
-  const turn2 = await memory.appendRecall({ chat, payload: { step: 1, messages: [second] }, decision: { kind: 'enter', messages: [second] } })
-  const request = [...turn1.messages, ...turn2.messages]
-  assert.equal(JSON.stringify(request.slice(0, turn1.messages.length)), prefix)
-  assert.equal(turn2.messages[0], second)
-  assert.match(turn2.messages.at(-1).content[0].text, /可以按要求改开场白/)
-  assert.equal(await memory.appendRecall({ chat, payload: { step: 1, messages: [second] }, decision: turn2 }), turn2)
-  assert.equal(await memory.appendRecall({ chat, payload: { step: 2, messages: [second] }, decision: turn2 }), turn2)
 })

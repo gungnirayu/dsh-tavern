@@ -7,22 +7,13 @@ const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.me
 
 const chats = [{ id: 'compat', sessionId: 'compat-session', requestMode: 'sillytavern' }, { id: 'native', sessionId: 'native-session', requestMode: 'dsh' }]
 
-test('实验分支公开兼容会话并声明兼容能力可用', async () => {
-  const start = server.indexOf("case 'listSessions': {")
-  const context = { readTavernSettings: async () => ({ trustedCardMode: true, sillyModeEnabled: true }), listTavernSessions: async () => chats }
-  vm.runInNewContext('this.list = async () => { switch ("listSessions") {' + server.slice(start, server.indexOf("case 'listMobileCardImports'", start)) + '} };', context)
-  const result = await context.list()
-  assert.deepEqual(Array.from(result.sessions, chat => chat.id), ['native'])
-  assert.equal(result.capabilities.compatibilityMode, false)
-})
-
 test('启动恢复包含兼容与普通会话', async () => {
   const calls = []
   const context = {
     recoverRegeneration: async () => {}, str: value => String(value || ''),
-    chatPersistence: { readWindow: async id => ({ chat: { ...chats.find(chat => chat.id === id), runtimePresetPath: 'preset' } }) },
+    chatPersistence: { readWindow: async id => ({ chat: { ...chats.find(chat => chat.id === id), bypassPlanId: 'plan' } }) },
     readChat: async id => chats.find(chat => chat.id === id),
-    presetLibrary: { migrateChat: async chat => { calls.push(chat.id); return false } },
+    presetLibrary: { restoreChat: async chat => { calls.push(chat.id); return false } },
     syncChatSummary: async () => {},
     foregroundHandoff: { recover: async ids => { context.foreground = ids } },
     candidateTasks: { recover: async ids => { context.background = ids } },

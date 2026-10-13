@@ -151,16 +151,6 @@ test('mailbox scoped writes retry revision conflicts without reading or overwrit
   assert.equal(chat.story,'concurrent')
 })
 
-test('durable result can project completion without waiting for a second write', async () => {
- const task={taskId:'t',requestId:'r',kind:'candidate',status:'running',version:1}
- const state={id:'c',candidates:{choices:['ready']},taskMailbox:{version:1,tasks:{t:task},latestByKind:{candidate:'t'}}}
- const mailbox=createDurableTaskMailbox({projectReconciledState:true,store:{readChat(){throw Error('full read')},writeChat(){throw Error('redundant write')},async readState(){return structuredClone(state)}},reconcile:chat=>({status:'succeeded',result:chat.candidates})})
- const result=await mailbox.sync('c',{kind:'candidate'})
- assert.equal(result.task.status,'succeeded')
- assert.deepEqual(result.task.result,{choices:['ready']})
- assert.equal(state.taskMailbox.tasks.t.status,'running')
-})
-
 test('durable completion is readable while a mailbox write is blocked', async () => {
  let unblock,started
  const entered=new Promise(resolve=>started=resolve), blocked=new Promise(resolve=>unblock=resolve)
@@ -173,4 +163,19 @@ test('durable completion is readable while a mailbox write is blocked', async ()
   const result=await Promise.race([mailbox.sync('c',{kind:'candidate'}),new Promise((_,reject)=>setTimeout(()=>reject(Error('waited for mailbox writer')),200))])
   assert.equal(result.task.status,'succeeded')
  } finally {unblock();await writing}
+})
+
+test('任务表被存成数组时，新任务仍能写入并查到', async () => {
+  let chat = { id: 'c', _storageRevision: 1, taskMailbox: { version: 3, latestByKind: { settle: 'old' }, tasks: [{ taskId: 'old', requestId: 'old-r', kind: 'settle', status: 'succeeded', createdAt: 1 }] } }
+  const mailbox = createDurableTaskMailbox({ store: {
+    readChat() { throw new Error('full read forbidden') },
+    writeChat() { throw new Error('full write forbidden') },
+    async readState() { return structuredClone(chat) },
+    async patchChat(id, revision, changes) { chat = applyJsonChanges(chat, changes); chat._storageRevision++; return structuredClone(chat) }
+  } })
+  const task = await mailbox.submit('c', { kind: 'candidate', requestId: 'r' })
+  assert.equal(Array.isArray(chat.taskMailbox.tasks), false)
+  assert.equal(chat.taskMailbox.tasks[task.taskId].requestId, 'r')
+  assert.equal(chat.taskMailbox.tasks.old.status, 'succeeded')
+  assert.equal((await mailbox.sync('c', { requestId: 'r' })).task.taskId, task.taskId)
 })

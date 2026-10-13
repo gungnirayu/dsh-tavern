@@ -9,7 +9,9 @@ function clone(value) {
 }
 
 const execFile = promisify(execFileCallback)
-const JSD_GH_URL = /https:\/\/(?:cdn|testingcf)\.jsdelivr\.net\/gh\/([^/\s"'<>]+)\/([^/@\s"'<>]+)(?:@([^/\s"'<>]+))?(\/[^\s"'<>]*)?/g
+// A URL in JS source ends at a backtick or template interpolation: swallowing
+// `]); would splice the cache path over code and break the card script.
+const JSD_GH_URL = /https:\/\/(?:cdn|testingcf)\.jsdelivr\.net\/gh\/([^/\s"'<>`$]+)\/([^/@\s"'<>`$]+)(?:@([^/\s"'<>`$]+))?(\/(?:[^\s"'<>`$]|\$(?!\{))*)?/g
 const FIXED_COMMIT = /^[0-9a-f]{40}$/i
 const CONTENT_HASH = /^[0-9a-f]{64}$/i
 const MAX_ENTRY_BYTES = 5 * 1024 * 1024

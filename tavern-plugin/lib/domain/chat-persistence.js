@@ -1,6 +1,7 @@
 import { diffJson } from './json-mutation.js'
 import { projectSceneImageState, projectDisplayRuntimeState, projectChatBackgroundConfig } from './chat-session-state.js'
 import { isDeepStrictEqual } from 'node:util'
+import { isScopedMessages } from './scoped-messages.js'
 
 const STORAGE_REVISION = '_storageRevision'
 const MISSING = Symbol('missing')
@@ -24,6 +25,12 @@ function same(left, right) {
   if (left === MISSING || right === MISSING) return left === right
   return isDeepStrictEqual(left, right)
 }
+
+// Bookkeeping stamps that every writer bumps, not story data. Like the root
+// updatedAt, two compatible writers (a settlement finishing and the next round
+// starting) must not conflict over them; keep the later one. Entries inside the
+// timeline stay strict.
+const MONOTONIC_STAMPS = new Set(['timeline.updatedAt'])
 
 function conflict(chatId, path) {
   const error = new Error('Tavern Chat 已被另一项操作修改，拒绝覆盖冲突字段：' + (path || '<root>'))
@@ -87,6 +94,10 @@ function mergeValue(base, latest, desired, path, chatId) {
     for (const key of keys) {
       if (path === '' && (key === STORAGE_REVISION || key === 'updatedAt')) continue
       const childPath = path === '' ? key : path + '.' + key
+      if (MONOTONIC_STAMPS.has(childPath)) {
+        const stamps = [latest[key], desired[key]].filter(Number.isFinite)
+        if (stamps.length) { result[key] = Math.max(...stamps); continue }
+      }
       const value = mergeValue(
         Object.prototype.hasOwnProperty.call(base, key) ? base[key] : MISSING,
         Object.prototype.hasOwnProperty.call(latest, key) ? latest[key] : MISSING,
@@ -247,12 +258,16 @@ export function createChatPersistence(options = {}) {
           entries=changed.indices.map((id,index)=>[id,changed.chat.messages[index]])
         } else {
           // Lost revision evidence is an explicit, safe full-read fallback.
+          // A bounded history cannot adopt it: the caller retries from fresh reads.
+          if (isScopedMessages(input.messages)) throw conflict(input.id,'messages')
           const full=await records.read(input.id)
           if (!full) throw conflict(input.id,'<deleted>')
           fullMessages=full.messages
           selected={chat:full,messageCount:fullMessages.length}
         }
       }
+      // A bounded history keeps its floor count: new floors mean the story moved on.
+      if (isScopedMessages(input.messages) && input.messages.length !== selected.messageCount) throw conflict(input.id,'messages')
       const latest=captureChatHeader(normalize(selected.chat))
       if (latest.sessionId !== baseline.sessionId) throw conflict(input.id,'sessionId')
       const next=mergeValue(baseline,latest,desired,'',input.id)
@@ -339,8 +354,8 @@ export function createChatPersistence(options = {}) {
     const selected = await records.readChangedSlice?.(chatId, revision, fields)
     return selected ? {...selected, chat: normalize(selected.chat)} : undefined
   }
-  async function readChangedIndices(chatId, revision) {
-    return await records.readChangedIndices?.(chatId, revision)
+  async function readChangedIndices(chatId, revision, options) {
+    return await records.readChangedIndices?.(chatId, revision, options)
   }
   async function readViewDelta(chatId, revision) {
     const selected = await records.readViewDelta?.(chatId, revision)

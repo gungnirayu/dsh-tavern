@@ -1,6 +1,7 @@
-import { projectDisplayParts, projectReplyHistory, projectReplyLayers, resolveDisplayIdentityMacros } from './reply-presentation.js'
+import { projectDisplayParts, projectReplyLayers, resolveDisplayIdentityMacros } from './reply-presentation.js'
 import { renderTavernMacros } from './tavern-macro-engine.js'
 import { applyTavernRegexText, renderTavernRegexDisplay } from './tavern-regex-display.js'
+import { renderWorldbookRandom } from './worldbook-random.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -40,7 +41,9 @@ export function sanitizeAgentProjectionText(value) {
 
 function contentProjection(value, options, preview, sanitizeForAgent) {
   const rendered = macroProjection(value, options)
-  const renderedText = sanitizeForAgent ? sanitizeAgentProjectionText(rendered.text) : rendered.text
+  // Dice/random macros left after per-turn worldbook rendering (e.g. keyword entries)
+  // still roll like SillyTavern instead of reaching the model as "roll: d8".
+  const renderedText = sanitizeForAgent ? sanitizeAgentProjectionText(renderWorldbookRandom(rendered.text, Math.random)) : rendered.text
   const layers = projectReplyLayers(renderedText, {
     charName: options && options.charName,
     macroState: options && options.macroState,
@@ -132,17 +135,7 @@ export function projectRuntimeReply(value, options = {}) {
   return projectReplyLayers(value, options)
 }
 
-/** Rebuild visible history from authoritative reply sources. */
-export function projectRuntimeReplyHistory(messages, options = {}) {
-  return projectReplyHistory(messages, options)
-}
-
 /** Apply compatibility regexes to ephemeral background input. */
 export function projectBackgroundInput(value, scripts, placement = 1) {
   return applyTavernRegexText(value, scripts, { placement, isMarkdown: false, isEdit: false, depth: 0 })
-}
-
-/** Apply compatibility regexes to a background model result or visible history. */
-export function projectBackgroundOutput(value, scripts) {
-  return applyTavernRegexText(value, scripts, { placement: 2, isMarkdown: true, isEdit: false, depth: 0 })
 }

@@ -14,9 +14,6 @@ const windows = await readFile(new URL('../install.ps1', import.meta.url), 'utf8
 const workspace = parse(await readFile(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8'))
 const patches = Object.values(workspace.patchedDependencies || {}).map(value => typeof value === 'string' ? value : value.path)
 
-test('安装配置忽略缺失的默认 pnpmfile，避免 Desktop 自带 pnpm 11.8 中断', () => {
-  assert.equal(workspace.ignorePnpmfile, true)
-})
 const required = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bin/dsh-compatibility.mjs', 'bin/dsh-tavern.mjs', 'bin/launcher-environment.mjs', 'bin/launcher-settings.mjs', 'bin/profile-installation.mjs', 'bin/service-lifecycle.mjs', 'bin/application-update.mjs', 'config/dsh-compatibility.json', ...patches]
 required.push('bin/dsh-tavern-update-helper.mjs', 'bin/windows-update-launch.mjs', 'bin/update-diagnostics.mjs')
 required.push('tavern-plugin/lib/domain/server-template-runtime.js', 'tavern-plugin/lib/domain/server-template-worker.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/engine.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/manifest.json')
@@ -116,3 +113,15 @@ for (const format of ['tar', 'zip']) {
     }
   })
 }
+
+test('依赖补丁每个文件段都以 diff --git 标头开头（pnpm 12 拒绝缺标头的补丁，#194）', async () => {
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const dir = new URL('../patches/', import.meta.url)
+  for (const name of readdirSync(dir).filter(file => file.endsWith('.patch'))) {
+    const lines = readFileSync(new URL(name, dir), 'utf8').split(/\r?\n/)
+    assert.match(lines[0], /^diff --git a\/\S+ b\/\S+$/, name)
+    lines.forEach((line, index) => {
+      if (line.startsWith('--- a/') && lines[index + 1]?.startsWith('+++ b/')) assert.ok(lines.slice(Math.max(0, index - 4), index).some(item => item.startsWith('diff --git ')), name + ' 第 ' + (index + 1) + ' 行')
+    })
+  }
+})

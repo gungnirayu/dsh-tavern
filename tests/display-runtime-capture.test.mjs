@@ -85,23 +85,6 @@ test('rollback during capture cannot recreate the removed turn', async t => {
   assert.equal(saved.messages[457].displayRuntime, undefined)
 })
 
-test('legacy inferred turns and MVU-only reports preserve diagnostic content', async t => {
-  const { capture, persistence, records } = await harness(t)
-  await persistence.update('chat', chat => {
-    chat.messages = [{ role: 'assistant', greeting: true }, { role: 'user' }, { role: 'assistant', text: 'reply' }]
-    return chat
-  })
-  await capture('session', 2, 0, { dom: 'rendered status', panelId: 'panel', mvuViewUsed: true })
-  const before = await records.read('chat')
-  assert.equal((await capture('session', 2, 0, { panelId: 'panel', mvuViewUsed: true })).captured, false)
-  const after = await records.read('chat')
-  assert.equal(after._storageRevision, before._storageRevision)
-  assert.equal(after.messages[2].displayRuntime.frames[0].dom, 'rendered status')
-  const projected = await persistence.readDisplayRuntimeState('chat', 2)
-  projected.displayRuntime.frames[0].dom = 'mutation outside transaction'
-  assert.equal((await records.read('chat')).messages[2].displayRuntime.frames[0].dom, 'rendered status')
-})
-
 test('layout evidence is bounded, persists through replay and deduplicates without touching variables', async t => {
   const { capture, records, root } = await harness(t)
   const layout = { mode: 'viewport', source: 'template', width: 390, height: 600, availableHeight: 600,
@@ -118,4 +101,27 @@ test('layout evidence is bounded, persists through replay and deduplicates witho
   assert.equal(saved.messages[458].variables.stat_data.gold, 10)
   assert.equal((await capture('session', 459, 0, { layout: { ...layout, height: 400 } })).captured, true)
   assert.equal((await records.read('chat')).messages[458].displayRuntime.frames[0].layout.height, 400)
+})
+
+import { createDisplayRuntimeCoalescer } from '../tavern-plugin/lib/domain/display-runtime-coalescer.js'
+
+test('frame runtime reports are coalesced; first capture, errors and layout save at once', async () => {
+  let clock = 0
+  const timers = []
+  const writes = []
+  const coalescer = createDisplayRuntimeCoalescer({ intervalMs: 15000, now: () => clock,
+    setTimer: (fn, ms) => { timers.push({ fn, at: clock + ms }); return timers.length }, clearTimer: () => {},
+    write: async (sessionId, turn, partIndex, runtime) => { writes.push(runtime.dom); return { captured: true } } })
+  const report = (dom, extra = {}) => coalescer.capture('s', 3, 0, { panelId: 'status', dom, ...extra })
+  assert.equal((await report('a')).captured, true)
+  clock = 1000; assert.equal((await report('b')).deferred, true)
+  clock = 2000; assert.equal((await report('c')).deferred, true)
+  clock = 3000; assert.equal((await report('d', { errors: [{ kind: 'error', message: 'boom' }] })).captured, true)
+  clock = 4000; await report('e', { errors: [{ kind: 'error', message: 'boom' }] })
+  assert.deepEqual(writes, ['a', 'd'])
+  // One trailing write carries only the latest deferred report.
+  clock = 18000; for (const timer of timers.splice(0)) timer.fn()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(writes, ['a', 'd', 'e'])
+  clock = 40000; assert.equal((await report('f', { errors: [{ kind: 'error', message: 'boom' }] })).captured, true)
 })

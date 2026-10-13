@@ -36,20 +36,21 @@
                 const sourceSections = (message?.source?.sections || []).filter(section => typeof section.text === "string" && section.text.length);
                 if (sourceSections.length && displayParts.length === 1 && !displayParts[0].catalog) {
                     const text = displayParts[0].text;
+                    const rest = message.role === "system" ? "系统提示词" : "消息正文";
                     const parts = [];
                     let cursor = 0;
                     let aligned = true;
                     for (const section of sourceSections) {
                         const start = text.indexOf(section.text, cursor);
                         if (start < 0 || text.indexOf(section.text, start + section.text.length) >= 0) { aligned = false; break; }
-                        if (start > cursor) parts.push({ text: text.slice(cursor, start), label: text.slice(cursor, start).trim() ? "消息正文" : undefined });
+                        if (start > cursor) parts.push({ text: text.slice(cursor, start), label: text.slice(cursor, start).trim() ? rest : undefined });
                         const name = section.name || "";
                         const label = labels[name] || (name.includes(":writingRules:") ? "写作规则" : name.includes(":activeWorldbook:") ? "本轮世界书" : name.includes(":currentStateProjection:") ? "当前状态" : name === "tavern:dsh-system" ? "系统提示词" : name);
                         parts.push({ text: section.text, label: label || "附加上下文", presetPhase: labels[name] ? name : undefined });
                         cursor = start + section.text.length;
                     }
                     if (aligned) {
-                        if (cursor < text.length) parts.push({ text: text.slice(cursor), label: text.slice(cursor).trim() ? "消息正文" : undefined });
+                        if (cursor < text.length) parts.push({ text: text.slice(cursor), label: text.slice(cursor).trim() ? rest : undefined });
                         displayParts = parts;
                     }
                 }

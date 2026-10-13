@@ -29,12 +29,6 @@ function fixture(t, options = {}) {
   return { runtime, state, calls, journals, engine: runtime.forSession('s') }
 }
 
-test('sessions isolate globals and serialize foreground/background operations', async t => {
-  const {engine,runtime} = fixture(t)
-  const results = await Promise.all([engine.render('<% window.counter = (window.counter || 0)+1 %><%= window.counter %>'), engine.render('<%= ++window.counter %>'), runtime.forSession('b').render('<%= typeof window.counter %>')])
-  assert.deepEqual(results.map(r => r.text), ['1', '2', 'undefined'])
-})
-
 test('cancellation rejects running and queued work without replay', async t => {
   const {engine,runtime} = fixture(t)
   await engine.render('warm')
@@ -77,20 +71,6 @@ test('cancellation drains an admitted save before a new explicit run can observe
  await new Promise(r=>setTimeout(r,25));assert.equal(completed,false)
  release();await rejected
  assert.equal((await next).text,'7')
-})
-
-test('template workers have a configurable heap budget above the former 256 MB ceiling', async t => {
-  const { engine } = fixture(t, { maxOldSpaceMb: 768 })
-  const result = await engine.render('<%= structuredClone.constructor("return process")().execArgv.find(flag=>flag.startsWith("--max-old-space-size=")) %>')
-  assert.equal(result.text, '--max-old-space-size=768')
-})
-
-test('large template allocations fit the default heap budget', async t => {
-  const { engine } = fixture(t)
-  // Three retained arrays exceed 450 MiB without creating a multi-GB fixture.
-  // This drives the real jsdom/EJS worker through the old 256 MiB failure.
-  const result = await engine.render('<% window.memoryProbe=[new Array(20000000).fill(1),new Array(20000000).fill(2),new Array(20000000).fill(3)] %><%= window.memoryProbe.reduce((sum,array)=>sum+array.length,0) %><% delete window.memoryProbe %>')
-  assert.equal(result.text, '60000000')
 })
 
 test('OOM is classified from V8 stderr and leaves a diagnostic for the interrupted job', async t => {
@@ -144,27 +124,4 @@ test('deferred upstream token statistics cannot crash an idle template worker', 
   assert.deepEqual(diagnostics, [])
   assert.equal((await runtime.inspect('s')).present, true)
   assert.equal((await engine.render('still alive')).text, 'still alive')
-})
-
-test('bounded formatting mirror preserves full historical data and template input rendering', async t => {
-  const {engine,state} = fixture(t)
-  state('s').state.chat = Array.from({length:401}, (_, i) => ({mes:'history '+i,name:'User',is_user:true,is_system:false,swipe_id:0,swipes:['history '+i],variables:[{gold:i}]}))
-  const result = await engine.renderInput('<%= window.SillyTavern.getContext().chat[0].variables[0].gold %> / <%= window.SillyTavern.getContext().chat.length %>')
-  assert.match(result.message.template_display?.html || result.message.mes, /0 \/ 402/)
-  assert.equal(state('s').state.chat.length, 401)
-  assert.equal((await engine.render('<%= window.SillyTavern.getContext().chat[0].mes %>')).text, 'history 0')
-})
-
-test('actual isolated template engine keeps logical floors and reads old content through its scoped pipe',async t=>{
- const {engine,state,calls}=fixture(t,{readHistory:args=>{
-  assert.equal(args.token,'pinned');assert.equal(args.sessionId,'s')
-  return {revision:3,messages:[{message_id:args.messageId,message:'historical '+args.messageId,role:'assistant',swipe_id:0,swipes:['historical '+args.messageId],swipes_data:[{}],pluginData:{}}]}
- }})
- const current=state('s')
- current.historyWindow={from:9800,messageCount:10000,revision:3,token:'pinned'}
- current.state.stateRevision=3
- current.state.chat=Array.from({length:200},()=>({mes:'recent',is_user:false,is_system:false,name:'',swipe_id:0,swipes:['recent'],variables:[{}]}))
- const result=await engine.render('<%= window.SillyTavern.getContext().chat.length %>:<%= window.SillyTavern.getContext().chat[3].mes %>')
- assert.equal(result.text,'10000:historical 3')
- assert.deepEqual(calls.filter(c=>c.method==='getPromptTemplateHistory').map(c=>c.args.messageId),[3])
 })

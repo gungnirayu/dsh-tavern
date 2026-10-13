@@ -1,8 +1,11 @@
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
+import { renderPngThumbnail } from './png-thumbnail.js'
+
 const CARD_EXTENSIONS = new Set(['.json', '.png'])
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024
+const DEFAULT_THUMBNAIL_CACHE = 240
 
 function defaultRoots() {
   return [
@@ -51,6 +54,8 @@ export function createMobileCardImport(options = {}) {
     return { id: String(root.id), label: String(root.label), path: path.resolve(String(root.path)) }
   })
   const rootById = new Map(roots.map(function (root) { return [root.id, root] }))
+  const thumbnailCacheLimit = Number.isFinite(options.thumbnailCache) && options.thumbnailCache > 0 ? Math.floor(options.thumbnailCache) : DEFAULT_THUMBNAIL_CACHE
+  const thumbnailCache = new Map()
 
   async function inspect(root, name) {
     if (path.basename(name) !== name || !CARD_EXTENSIONS.has(path.extname(name).toLowerCase())) return null
@@ -76,11 +81,20 @@ export function createMobileCardImport(options = {}) {
       }
     }
     files.sort(function (left, right) { return right.modifiedAt - left.modifiedAt || left.name.localeCompare(right.name, 'zh-CN') })
-    return { available: true, storageAccessible: readableRoots > 0, files: files.slice(0, 100) }
+    // No cap: the dialog lists the whole download folder and loads thumbnails lazily.
+    return { available: true, storageAccessible: readableRoots > 0, total: files.length, files }
   }
 
   async function read(id) {
     if (!enabled) throw new Error('当前宿主不允许从手机下载目录导入')
+    const entry = await resolve(id)
+    const buffer = await readFile(path.join(entry.root.path, entry.item.name))
+    return path.extname(entry.item.name).toLowerCase() === '.json'
+      ? { kind: 'text', name: entry.item.name, text: buffer.toString('utf8') }
+      : pngPayload(buffer, entry.item.name)
+  }
+
+  async function resolve(id) {
     const separator = typeof id === 'string' ? id.indexOf(':') : -1
     if (separator <= 0) throw new Error('无效的手机文件标识')
     const root = rootById.get(id.slice(0, separator))
@@ -88,11 +102,30 @@ export function createMobileCardImport(options = {}) {
     if (!root || path.basename(name) !== name || !CARD_EXTENSIONS.has(path.extname(name).toLowerCase())) throw new Error('不允许读取这个手机文件')
     const item = await inspect(root, name)
     if (!item || item.id !== id) throw new Error('手机文件不存在、过大或不允许读取')
-    const buffer = await readFile(path.join(root.path, name))
-    return path.extname(name).toLowerCase() === '.json'
-      ? { kind: 'text', name, text: buffer.toString('utf8') }
-      : pngPayload(buffer, name)
+    return { root, item }
   }
 
-  return Object.freeze({ list, read })
+  /**
+   * 生成下载目录里某个 PNG 的小尺寸预览图。
+   * 返回 undefined 表示这张卡没有可用缩略图（JSON、图片无法识别或超出处理范围），调用方按占位处理。
+   */
+  async function thumbnail(id) {
+    if (!enabled) throw new Error('当前宿主不允许从手机下载目录导入')
+    const entry = await resolve(id)
+    if (path.extname(entry.item.name).toLowerCase() !== '.png') return undefined
+    const key = entry.item.id + ':' + entry.item.size + ':' + entry.item.modifiedAt
+    if (thumbnailCache.has(key)) return thumbnailCache.get(key)
+    let thumb
+    try {
+      const buffer = await readFile(path.join(entry.root.path, entry.item.name))
+      thumb = renderPngThumbnail(buffer)
+    } catch {
+      thumb = undefined
+    }
+    thumbnailCache.set(key, thumb)
+    while (thumbnailCache.size > thumbnailCacheLimit) thumbnailCache.delete(thumbnailCache.keys().next().value)
+    return thumb
+  }
+
+  return Object.freeze({ list, read, thumbnail })
 }

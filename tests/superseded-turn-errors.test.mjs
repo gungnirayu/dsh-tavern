@@ -72,18 +72,3 @@ test('回退重生成后，已被替代的失败输入、思考、上下文和�
     assert.ok(rows.every(row => !row.hidden), 'leaving the session restores projection-owned visibility')
   }
 })
-
-test('宿主提供独立错误投影，前端按 Session 隔离并只观察对话滚动区', async () => {
-  const host = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-  const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-  assert.match(host, /const rollbackEvidence = sessionDebugEvidence\(chat.sessionId, true\)/)
-  const stateView = await readFile(new URL('../tavern-plugin/lib/domain/chat-session-state.js', import.meta.url), 'utf8')
-  assert.match(host, /sessionStateView\.rollback\(chat, evidence, changes\)/)
-  assert.match(stateView, /suppressedDshTurns: foregroundSuppressedTurns\(chat, evidence.events \|\| \[\]\)/)
-  assert.match(stateView, /suppressedDshErrorTurns: supersededRegenerationErrorTurns\(\{\s*events: evidence.events \|\| \[\],\s*suppressedDshTurns: chat.suppressedDshTurns/)
-  assert.match(source, /createElement\(SupersededTurnErrors, Object.assign\(\{\}, props, \{ key: props.sessionId \}\)\)/)
-  const component = source.slice(source.indexOf('function SupersededTurnErrors('), source.indexOf('function CandidateQuestion('))
-  assert.match(component, /closest\("\[data-conversation-scroll\]"\)/)
-  assert.match(component, /observeTurnErrorProjection\(root, apply\)/)
-  assert.match(component, /observer.disconnect\(\); controls.dispose\(\); projection.dispose\(\)/)
-})

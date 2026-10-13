@@ -1,5 +1,88 @@
 		function createTavernFrameSlashExecutor(ctx, hostWindow) {
 			hostWindow = hostWindow || window;
+            // A deliberately bounded, read-only subset of ST slash commands. Parse
+            // every stage before reading anything; never forward a mixed pipeline.
+            function slashError(message) {
+                return Object.assign(new Error(message), { code: "UNSUPPORTED_SLASH_PIPELINE" });
+            }
+            function decodeSlashText(value) {
+                value = value.trim();
+                if ((value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) value = value.slice(1, -1);
+                return value.replace(/\\([\\|"'])/g, '$1');
+            }
+            function readPipeline(line) {
+                const stages = [];
+                let start = 0, quote = '', escaped = false;
+                for (let i = 0; i < line.length; i++) {
+                    const ch = line[i];
+                    if (escaped) { escaped = false; continue; }
+                    if (ch === '\\') { escaped = true; continue; }
+                    if (quote) { if (ch === quote) quote = ''; continue; }
+                    if ((ch === '"' || ch === "'") && (i === start || /[\s=]/.test(line[i - 1]))) { quote = ch; continue; }
+                    if (ch === '|') { stages.push(line.slice(start, i).trim()); start = i + 1; }
+                }
+                if (quote) throw slashError('人物卡命令引号未闭合');
+                stages.push(line.slice(start).trim());
+                return stages.map(function (stage) {
+                    const match = /^\/(pass|return|findentry|findlore|findwi)(?:\s+([\s\S]*))?$/i.exec(stage);
+                    if (!match) throw slashError('暂不支持这条人物卡命令管道；/pass 和 /findentry 只能与只读命令组合，未发送消息');
+                    const command = match[1].toLowerCase();
+                    let text = match[2] || '';
+                    if (command === 'pass' || command === 'return') return { command: 'pass', text: decodeSlashText(text) };
+                    const args = {};
+                    while (true) {
+                        const named = /^([a-zA-Z_]\w*)=/.exec(text);
+                        if (!named) break;
+                        const key = named[1];
+                        if (!['file', 'field'].includes(key) || Object.hasOwn(args, key)) throw slashError('不支持或重复的 /findentry 参数: ' + key);
+                        text = text.slice(named[0].length);
+                        let end = 0;
+                        if (text[0] === '"' || text[0] === "'") {
+                            const quote = text[0]; end = 1;
+                            for (; end < text.length; end++) {
+                                if (text[end] === '\\') { end++; continue; }
+                                if (text[end] === quote) { end++; break; }
+                            }
+                            if (end < text.length && !/\s/.test(text[end])) throw slashError('/findentry 引号后需要空格');
+                        } else {
+                            while (end < text.length && !/\s/.test(text[end])) end++;
+                        }
+                        args[key] = decodeSlashText(text.slice(0, end));
+                        text = text.slice(end).trimStart();
+                    }
+                    const field = args.field || 'key';
+                    if (!args.file) throw slashError('/findentry 需要 file=当前世界书名称（或 current）');
+                    if (!['key', 'keysecondary', 'comment', 'name', 'content', 'uid'].includes(field)) throw slashError('暂不支持 /findentry 字段: ' + field);
+                    return { command: 'findentry', file: args.file, field: field, text: decodeSlashText(text) };
+                });
+            }
+            async function executeReadPipeline(line, sessionId) {
+                const stages = readPipeline(line);
+                let pipe = '';
+                for (const stage of stages) {
+                    const text = stage.text.replace(/\{\{pipe\}\}/gi, function () { return pipe; });
+                    if (stage.command === 'pass') { pipe = text; continue; }
+                    const file = stage.file.replace(/\{\{pipe\}\}/gi, function () { return pipe; });
+                    const result = await rpc('getTavernHelperWorldbook', { name: file }, sessionId);
+                    const query = text.toLowerCase();
+                    let found = null, best = Infinity;
+                    for (const entry of result?.worldbook?.entries || []) {
+                        const field = stage.field;
+                        const value = field === 'key' ? entry.strategy?.keys : field === 'keysecondary' ? entry.strategy?.keys_secondary?.keys
+                            : field === 'comment' ? entry.name : entry[field];
+                        for (const item of Array.isArray(value) ? value : [value]) {
+                            if (item === undefined || item === null || !query) continue;
+                            const candidate = String(item).toLowerCase();
+                            const position = candidate.indexOf(query);
+                            // Exact matches outrank substrings. Stable ties retain book order.
+                            const score = candidate === query ? 0 : position < 0 ? Infinity : 1 + position + (candidate.length - query.length) / (candidate.length + 1);
+                            if (score < best) { best = score; found = entry; }
+                        }
+                    }
+                    pipe = found?.uid === undefined ? '' : String(found.uid);
+                }
+                return pipe;
+            }
 			return function (line, sessionId, options) {
                 if (options && typeof options.inputText === "string") {
                     const text = options.inputText.trim();
@@ -10,6 +93,7 @@
                         return { submitted:true };
                     });
                 }
+                if (/^\s*\/(?:pass|return|findentry|findlore|findwi)(?:\s|$)/i.test(String(line))) return executeReadPipeline(String(line), sessionId);
                 if (/^\/ejs(?:-refresh)?(?:\s|$)/.test(String(line))) return rpc("executeFullTemplateCommand", {text:line}, sessionId).then(function(result){return result.pipe;});
 				const draftMatch = /^\/setinput(?: ([\s\S]*))?$/.exec(String(line || ""));
                 // Preflight before touching the composer: otherwise the greedy
@@ -117,6 +201,84 @@
 			});
 		})();
 
+		// The plan behind a picture, for judging whether the Agent's staging or the image model fell short.
+		function sceneImagePlanDetails(version, onEditPrompt) {
+			if (!version || !(version.prompt || version.composition || version.description)) return null;
+			const details = document.createElement("details");
+			details.className = "dsh-tavern-image-plan";
+			const summary = document.createElement("summary");
+			summary.textContent = "画面方案";
+			details.append(summary);
+			[["画面", version.description], ["时刻", version.moment === "earlier" ? "本轮中间的瞬间" : "本轮结尾"], ["构图", version.composition], ["画风", version.style], ["提示词", version.prompt]].forEach(function (row) {
+				if (!row[1]) return;
+				const label = document.createElement("dt");
+				label.textContent = row[0];
+				const value = document.createElement("dd");
+				value.textContent = row[1];
+				details.append(label, value);
+			});
+			if (version.planPrompt && onEditPrompt) {
+				const edit = document.createElement("button");
+				edit.type = "button";
+				edit.className = "dsh-tavern-image-plan-edit";
+				edit.textContent = "改提示词重画";
+				edit.addEventListener("click", onEditPrompt);
+				details.append(edit);
+			}
+			details.addEventListener("click", function (event) { event.stopPropagation(); });
+			return details;
+		}
+
+		// gallery: { urls, index } pages through several pictures with ‹ › and the arrow keys.
+		function openSceneImagePreview(url, opener, version, onEditPrompt, gallery) {
+			const dialog = document.createElement("dialog");
+			dialog.className = "dsh-tavern-image-preview";
+			dialog.setAttribute("aria-label", "场景插画预览");
+			const close = document.createElement("button");
+			close.type = "button";
+			close.textContent = "缩小并返回 ×";
+			close.setAttribute("aria-label", "缩小并返回");
+			const image = document.createElement("img");
+			image.src = url;
+			image.alt = "放大的场景插画";
+			close.addEventListener("click", function () { dialog.close(); });
+			dialog.addEventListener("click", function (event) { if (event.target === dialog) dialog.close(); });
+			dialog.addEventListener("close", function () { dialog.remove(); if (opener && opener.isConnected) opener.focus(); }, { once: true });
+			dialog.append(close, image);
+			const urls = gallery && gallery.urls || [];
+			if (urls.length > 1) {
+				let at = Math.max(0, Math.min(urls.length - 1, Number(gallery.index) || 0));
+				const counter = document.createElement("span");
+				counter.className = "dsh-tavern-image-preview-counter";
+				const pager = ["‹", "›"].map(function (text, side) {
+					const button = document.createElement("button");
+					button.type = "button";
+					button.textContent = text;
+					button.className = "dsh-tavern-image-preview-page";
+					button.dataset.side = side ? "next" : "prev";
+					button.setAttribute("aria-label", side ? "下一张" : "上一张");
+					button.addEventListener("click", function () { step(side ? 1 : -1); });
+					return button;
+				});
+				function show() {
+					image.src = urls[at];
+					counter.textContent = (at + 1) + " / " + urls.length;
+					pager[0].disabled = at === 0; pager[1].disabled = at === urls.length - 1;
+				}
+				function step(delta) { if (urls[at + delta]) { at += delta; show(); } }
+				dialog.addEventListener("keydown", function (event) {
+					if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); step(event.key === "ArrowLeft" ? -1 : 1); }
+				});
+				dialog.append(counter, pager[0], pager[1]);
+				show();
+			}
+			const plan = sceneImagePlanDetails(version, onEditPrompt && function () { dialog.close(); onEditPrompt(); });
+			if (plan) dialog.append(plan);
+			document.body.append(dialog);
+			dialog.showModal();
+			close.focus();
+		}
+
 		function createTavernAssistantRendererFeatureModule() {
 			function TavernUserNodeView(props) {
 				const data = props.node.data;
@@ -147,36 +309,40 @@
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null, React.createElement(DshUi.Tooltip, { label: copied ? "已复制" : "复制", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-copy", "aria-label": copied ? "已复制" : "复制", onClick: copy }, React.createElement(copied ? DshUi.IconCheckOutline16 : DshUi.IconCopyOutline16, null))))
 				);
 			}
-			function openSceneImagePreview(url, opener) {
-				const dialog = document.createElement("dialog");
-				dialog.className = "dsh-tavern-image-preview";
-				dialog.setAttribute("aria-label", "场景插画预览");
-				const close = document.createElement("button");
-				close.type = "button";
-				close.textContent = "缩小并返回 ×";
-				close.setAttribute("aria-label", "缩小并返回");
-				const image = document.createElement("img");
-				image.src = url;
-				image.alt = "放大的场景插画";
-				close.addEventListener("click", function () { dialog.close(); });
-				dialog.addEventListener("click", function (event) { if (event.target === dialog) dialog.close(); });
-				dialog.addEventListener("close", function () { dialog.remove(); if (opener && opener.isConnected) opener.focus(); }, { once: true });
-				dialog.append(close, image);
-				document.body.append(dialog);
-				dialog.showModal();
-				close.focus();
+			// While a picture is being made: a placeholder frame where it will appear
+			// (or a slim line under the current picture), the stage, elapsed time and a quiet cancel.
+			function SceneImagePending(props) {
+				const state = props.state;
+				const [now, setNow] = React.useState(Date.now());
+				React.useEffect(function () { const timer = window.setInterval(function () { setNow(Date.now()); }, 1000); return function () { window.clearInterval(timer); }; }, []);
+				const started = Number(state.createdAt) || 0;
+				const seconds = started ? Math.max(0, Math.floor((now - started) / 1000)) : 0;
+				const elapsed = started ? (seconds >= 60 ? Math.floor(seconds / 60) + " 分 " + (seconds % 60) + " 秒" : seconds + " 秒") : "";
+				const cancelling = Boolean(state.cancelRequestedAt);
+				const line = React.createElement("div", { className: "dsh-tavern-image-pending-line", role: "status" },
+					React.createElement("span", { className: "dsh-tavern-image-pending-spinner", "aria-hidden": true }),
+					React.createElement("span", null, sceneImageStageLabel(state)),
+					elapsed ? React.createElement("span", { className: "dsh-tavern-image-pending-time" }, elapsed) : null,
+					React.createElement("button", { type: "button", className: "dsh-tavern-image-pending-cancel", disabled: props.disabled || cancelling, onClick: props.onCancel }, cancelling ? "正在取消…" : "取消"));
+				return props.picture ? React.createElement("div", { className: "dsh-tavern-image-pending" },
+					React.createElement("div", { className: "dsh-tavern-image-pending-frame", "aria-hidden": true }), line) : line;
 			}
 			function SceneIllustration(props) {
             const askConfirm = useTavernConfirm(props.sessionId || props.scope?.sessionId);
-				const state = useSceneImageRecord(props.sessionId, props.turn);
+				// The message view may already read the record (to place the picture); reuse it.
+				const fetchedState = useSceneImageRecord(props.record === undefined ? props.sessionId : null, props.turn);
+				const state = props.record === undefined ? fetchedState : props.record;
 				const [error, setError] = React.useState("");
 				const [selected, setSelected] = React.useState("");
 			const [refreshes, setRefreshes] = React.useState({});
 				const [busy, setBusy] = React.useState(false);
 				const [adjusting, setAdjusting] = React.useState(false);
 				const [instruction, setInstruction] = React.useState("");
+				const [promptDraft, setPromptDraft] = React.useState(null);
 				const [referenceDraft, setReferenceDraft] = React.useState(null);
+				const [addDraft, setAddDraft] = React.useState(null);
 				const requestRef = React.useRef(null);
+				const addRequestRef = React.useRef(null);
 				const versions = state && state.versions || [];
 				const version = versions.find(function (item) { return item.id === selected; }) || versions[versions.length - 1];
 				const index = version ? versions.findIndex(function (item) { return item.id === version.id; }) : -1;
@@ -185,6 +351,9 @@
 				React.useEffect(function () {
 					if (state && ["failed", "cancelled"].includes(state.status) && state.kind === "adjust" && state.instruction) {
 						setSelected(state.baseVersionId); setInstruction(state.instruction); setAdjusting(true);
+					}
+					if (state && ["failed", "cancelled"].includes(state.status) && state.kind === "prompt" && state.instruction) {
+						setSelected(state.baseVersionId); setPromptDraft(state.instruction); setAdjusting(false);
 					}
 				}, [state && state.requestId, state && state.status]);
 				function notify() { window.dispatchEvent(new CustomEvent("dsh-tavern-image-changed", { detail: { sessionId: props.sessionId } })); }
@@ -203,19 +372,20 @@
 					finally { setBusy(false); notify(); }
 				}
 				async function generate(kind) {
+				const text = kind === "prompt" ? (promptDraft || "").trim() : instruction;
 				const reusable = requestRef.current && !(state && requestRef.current.id === state.requestId && ["failed", "cancelled", "idle"].includes(state.status));
-				const clickId = reusable && requestRef.current.signature === kind + ":" + (version && version.id) + ":" + instruction ? requestRef.current.id : sceneImageRequestId();
+				const clickId = reusable && requestRef.current.signature === kind + ":" + (version && version.id) + ":" + text ? requestRef.current.id : sceneImageRequestId();
 				recordImageInteraction(props.sessionId, props.turn, clickId, "click");
 					if ((!version && kind !== "generate") || busy || state.status === "running" || state.recovery === "save") { recordImageInteraction(props.sessionId, props.turn, clickId, "blocked", "busy-or-existing"); return; }
 					const confirmNewRequestId = await sceneImagePurchaseConfirmation(state, askConfirm);
 					if (confirmNewRequestId === false) { recordImageInteraction(props.sessionId, props.turn, clickId, "cancelled", "confirmation"); return; }
 					if (requestRef.current && requestRef.current.id === state.requestId && ["failed", "cancelled", "idle"].includes(state.status)) requestRef.current = null;
 					setBusy(true); setError("");
-					const signature = kind + ":" + (version && version.id) + ":" + instruction;
+					const signature = kind + ":" + (version && version.id) + ":" + text;
 					if (!requestRef.current || requestRef.current.signature !== signature) requestRef.current = { signature: signature, id: clickId };
 					try {
-						await rpc("generateSceneImage", { turn: props.turn, key: state.key, kind: kind, versionId: version && version.id, instruction: kind === "adjust" ? instruction : "", requestId: requestRef.current.id, confirmNewRequestId: confirmNewRequestId }, props.sessionId);
-						requestRef.current = null; setAdjusting(false); setInstruction("");
+						await rpc("generateSceneImage", { turn: props.turn, key: state.key, kind: kind, versionId: version && version.id, instruction: kind === "adjust" ? instruction : "", prompt: kind === "prompt" ? text : "", requestId: requestRef.current.id, confirmNewRequestId: confirmNewRequestId }, props.sessionId);
+						requestRef.current = null; setAdjusting(false); setInstruction(""); setPromptDraft(null);
 					} catch (e) { setError(String(e.message || e)); }
 					finally { setBusy(false); notify(); }
 				}
@@ -226,6 +396,28 @@
 						await rpc("removeSceneImage", { turn: props.turn, key: state.key, versionId: version.id }, props.sessionId);
 						setSelected(""); setAdjusting(false); setReferenceDraft(null); setInstruction(""); requestRef.current = null;
 					} catch (e) { setError(String(e.message || e)); }
+					finally { setBusy(false); notify(); }
+				}
+				// A further picture of this turn: the plan Agent picks a different moment,
+				// following the optional wish. It appears in its own slot below.
+				async function addPicture() {
+					if (busy || !state || !state.enabled) return;
+					const text = (addDraft || "").trim();
+					const signature = state.key + ":" + text;
+					if (!addRequestRef.current || addRequestRef.current.signature !== signature) addRequestRef.current = { signature: signature, id: sceneImageRequestId() };
+					recordImageInteraction(props.sessionId, props.turn, addRequestRef.current.id, "click");
+					setBusy(true); setError("");
+					try {
+						await rpc("generateSceneImage", { turn: props.turn, key: state.key, kind: "add", instruction: text, requestId: addRequestRef.current.id }, props.sessionId);
+						addRequestRef.current = null; setAddDraft(null);
+					} catch (e) { setError(String(e.message || e)); }
+					finally { setBusy(false); notify(); }
+				}
+				async function dismiss() {
+					if (busy || !state || !state.slot) return;
+					setBusy(true); setError("");
+					try { await rpc("removeSceneImage", { turn: props.turn, key: state.key, versionId: "" }, props.sessionId); }
+					catch (e) { setError(String(e.message || e)); }
 					finally { setBusy(false); notify(); }
 				}
 				function openReference() {
@@ -241,14 +433,16 @@
 					finally { setBusy(false); notify(); }
 				}
 				const url = version ? "/api/dsh-tavern/scene-image?" + new URLSearchParams({ sessionId: props.sessionId, turn: String(props.turn), key: state.key, versionId: version.id }).toString() : "";
-				if (!state || state.status === "idle" && !state.hasDeletedImages) return null;
+				if (!state) return null;
+				// Without a picture, generation lives in the turn's action row.
+				if (!version && state.status === "idle") return null;
 				const locked = busy || state.status === "running" || state.recovery === "save";
 				const referencePeople = version && version.referencePeople || [];
 				const referenceBindings = state.reference && state.reference.bindings ? state.reference.bindings.filter(function (binding) { return version && binding.versionId === version.id; }) : [];
 				const canBindReference = state.enabled && state.reference && state.reference.supported && referencePeople.length > 0;
 				const showReference = referenceDraft && version && referenceDraft.key === state.key && referenceDraft.versionId === version.id;
 				return React.createElement("div", { className: "dsh-tavern-illustration" },
-					url ? React.createElement("a", { href: url, "aria-label": "放大场景插画", onClick: function (event) { event.preventDefault(); openSceneImagePreview(url, event.currentTarget); } }, React.createElement("img", { src: url, alt: "本段场景插画", loading: "lazy", onError: function () { setError("图片加载失败，请刷新后重试"); } })) : null,
+					url ? React.createElement("a", { href: url, "aria-label": "放大场景插画", onClick: function (event) { event.preventDefault(); openSceneImagePreview(url, event.currentTarget, version, state.enabled ? function () { setAdjusting(false); setPromptDraft(version.planPrompt); } : null); } }, React.createElement("img", { src: url, alt: "本段场景插画", loading: "lazy", onError: function () { setError("图片加载失败，请刷新后重试"); } })) : null,
 					version ? React.createElement("div", { className: "dsh-tavern-image-actions" },
 						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: removeImage }, "删除图片"),
 						versions.length > 1 ? React.createElement(React.Fragment, null,
@@ -257,10 +451,24 @@
 							React.createElement("button", { type: "button", className: "dsh-tavern-btn", "aria-label": "下一张插图", disabled: index >= versions.length - 1, onClick: function () { setSelected(versions[index + 1].id); } }, "›")
 						) : null,
 						state.enabled ? React.createElement(React.Fragment, null,
-							React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { setAdjusting(true); } }, "重画")
+							React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { setPromptDraft(null); setAddDraft(null); setAdjusting(true); } }, "重画"),
+							React.createElement("button", { type: "button", className: "dsh-tavern-btn", title: "自己写这张图的提示词再画，任意语言都可以，不经过文字模型", disabled: locked, onClick: function () { setAdjusting(false); setAddDraft(null); setPromptDraft(version.planPrompt || ""); } }, "改提示词"),
+							props.canAdd ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", title: "为这一轮另选一个场景，再加一张插图", disabled: busy, onClick: function () { setAdjusting(false); setPromptDraft(null); setAddDraft(""); } }, "新增插图") : null
 						) : null
 					) : null,
-					!version && state.hasDeletedImages && state.enabled ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { return generate("generate"); } }, "重新生图") : null,
+					!version && state.slot && state.status !== "running" && state.recovery !== "save" ? React.createElement("div", { className: "dsh-tavern-image-actions" },
+						state.enabled ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { return generate("generate"); } }, state.outcome === "unconfirmed" ? "重新生图" : "重试这张插图") : null,
+						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: dismiss }, "移除")
+					) : null,
+					addDraft !== null && state.enabled ? React.createElement("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": "新增插图" },
+						React.createElement("textarea", { value: addDraft, maxLength: 2000, rows: 2, autoFocus: true, "aria-label": "新插图想画什么（选填）", placeholder: "想画哪个场景？例如：她转身离开时的背影。留空由 AI 另选一个不同的场景", onChange: function (event) { setAddDraft(event.target.value); }, onKeyDown: function (event) {
+							if (event.key === "Escape" && !busy) setAddDraft(null);
+							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !busy) { event.preventDefault(); addPicture(); }
+						}, disabled: busy }),
+						React.createElement("div", { className: "dsh-tavern-image-repaint-actions" },
+							React.createElement("button", { type: "button", className: "dsh-tavern-image-repaint-cancel", disabled: busy, onClick: function () { setAddDraft(null); } }, "取消"),
+							React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", title: "另选一个场景再画一张，原有插图保留；会再跑一次文字模型和生图", disabled: busy, onClick: addPicture }, "新增插图"))
+					) : null,
 					canBindReference || referenceBindings.length ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: openReference }, referenceBindings.length ? "管理造型参考" : "用作造型参考") : null,
 					version && state.enabled && version.profile && version.profile !== state.profile ? React.createElement("span", { role: "status" }, "将按新渠道重新整理画面，可能产生文字模型费用。") : null,
 					state.referenceWarning || state.reference && state.reference.warning ? React.createElement("span", { role: "status" }, state.referenceWarning || state.reference.warning) : null,
@@ -277,13 +485,26 @@
 						referenceBindings.map(function (binding) { return React.createElement("button", { key: binding.personId, type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { return setReference(false, binding.personId); } }, "取消「" + binding.name + "」的参考"); }),
 						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { setReferenceDraft(null); } }, "关闭参考设置")
 					) : null,
-					adjusting && state.enabled ? React.createElement("div", { className: "dsh-tavern-image-adjust", role: "region", "aria-label": "重画插图" },
-						React.createElement("label", null, "重画意见（选填）", React.createElement("textarea", { value: instruction, maxLength: 2000, placeholder: "留空直接重画；例如：改成雨夜，镜头拉近", onChange: function (event) { setInstruction(event.target.value); }, disabled: locked })),
-						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: locked, onClick: function () { return generate(instruction.trim() ? "adjust" : "repaint"); } }, "开始重画"),
-						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { setAdjusting(false); } }, "取消")
+					adjusting && state.enabled ? React.createElement("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": "重画插图" },
+						React.createElement("textarea", { value: instruction, maxLength: 2000, rows: 2, autoFocus: true, "aria-label": "重画意见（选填）", placeholder: "想怎么改？例如：改成雨夜，镜头拉近。留空可重新构思画面，或按原方案再画一张", onChange: function (event) { setInstruction(event.target.value); }, onKeyDown: function (event) {
+							if (event.key === "Escape" && !busy) setAdjusting(false);
+							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !locked) { event.preventDefault(); generate(instruction.trim() ? "adjust" : "replan"); }
+						}, disabled: locked }),
+						React.createElement("div", { className: "dsh-tavern-image-repaint-actions" },
+							React.createElement("button", { type: "button", className: "dsh-tavern-image-repaint-cancel", disabled: busy, onClick: function () { setAdjusting(false); } }, "取消"),
+							instruction.trim() ? null : React.createElement("button", { type: "button", className: "dsh-tavern-btn", title: "沿用这张图的画面方案，只换随机种子", disabled: locked, onClick: function () { return generate("repaint"); } }, "同方案重画"),
+							React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", title: instruction.trim() ? "按意见修改这张图的方案后重画" : "重新读正文、选时刻、写构图，多跑一次文字模型", disabled: locked, onClick: function () { return generate(instruction.trim() ? "adjust" : "replan"); } }, instruction.trim() ? "按意见重画" : "重新构思画面"))
 					) : null,
-					state.status === "running" ? React.createElement("span", { role: "status" }, sceneImageStageLabel(state)) : null,
-					state.status === "running" ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || Boolean(state.cancelRequestedAt), onClick: cancelImage }, state.cancelRequestedAt ? "正在取消…" : "取消生图") : null,
+					promptDraft !== null && state.enabled && version ? React.createElement("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": "改提示词重画" },
+						React.createElement("textarea", { value: promptDraft, maxLength: 12000, rows: 6, autoFocus: true, "aria-label": "画面提示词", placeholder: "直接写画面提示词，中文、英文或标签都可以；画风设置会另外追加", onChange: function (event) { setPromptDraft(event.target.value); }, onKeyDown: function (event) {
+							if (event.key === "Escape" && !busy) setPromptDraft(null);
+							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !locked && promptDraft.trim()) { event.preventDefault(); generate("prompt"); }
+						}, disabled: locked }),
+						React.createElement("div", { className: "dsh-tavern-image-repaint-actions" },
+							React.createElement("button", { type: "button", className: "dsh-tavern-image-repaint-cancel", disabled: busy, onClick: function () { setPromptDraft(null); } }, "取消"),
+							React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", title: "直接用这段提示词画，不经过文字模型，不改人物资料和本轮方案", disabled: locked || !promptDraft.trim(), onClick: function () { return generate("prompt"); } }, "用这段重画"))
+					) : null,
+					state.status === "running" ? React.createElement(SceneImagePending, { state: state, picture: !version, disabled: busy, onCancel: cancelImage }) : null,
 					state.recovery === "save" && state.status !== "running" ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: retrySave }, "重试保存") : null,
 					error || state && state.error ? React.createElement("span", { role: "alert", className: "dsh-tavern-settings-error" }, error || state.error) : null
 				);
@@ -338,6 +559,35 @@
                     React.createElement("div", {ref:node, "data-dsh-legacy-message":"0"}));
             }
 
+			// DSH owns the chat list; Tavern owns what each floor renders. Floors older than the
+			// latest twenty that sit far outside the viewport keep only their measured height, so
+			// a long history loaded with "load earlier" no longer keeps every paragraph in the page.
+			const TAVERN_LIVE_FLOORS = 20;
+			const TAVERN_DISTANT_FLOOR_MARGIN = "2000px 0px";
+			const TAVERN_DISTANT_FLOOR_DELAY = 2000;
+			function useTavernDistantFloor(ref, enabled) {
+				const [height, setHeight] = React.useState(0);
+				React.useEffect(function () {
+					const node = ref.current;
+					if (!enabled || !node || typeof window.IntersectionObserver !== "function") { setHeight(0); return; }
+					let timer = null;
+					const observer = new window.IntersectionObserver(function (entries) {
+						if (entries[entries.length - 1]?.isIntersecting) {
+							if (timer !== null) { window.clearTimeout(timer); timer = null; }
+							setHeight(0);
+						} else if (timer === null) timer = window.setTimeout(function () {
+							timer = null;
+							const measured = node.getBoundingClientRect().height;
+							if (measured > 0) setHeight(measured);
+						}, TAVERN_DISTANT_FLOOR_DELAY);
+					}, { rootMargin: TAVERN_DISTANT_FLOOR_MARGIN });
+					observer.observe(node);
+					return function () { observer.disconnect(); if (timer !== null) window.clearTimeout(timer); };
+				}, [ref, enabled]);
+				return height;
+			}
+
+			// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
 			function TavernAssistantNodeView(props) {
 				const data = props.node.data;
                 const historyNode = React.useRef(null);
@@ -357,12 +607,12 @@
                     const observer = new IntersectionObserver(entries=>{
                         if(entries.some(entry=>entry.isIntersecting)) {
                             observer.disconnect();
-                            void requestCompleteHistory(props.sessionId).catch(error=>tavernErrorHub.report("读取历史",error));
+                            void requestOlderHistory(props.sessionId,currentView.historyWindow.from).catch(error=>tavernErrorHub.report("读取历史",error));
                         }
                     });
                     observer.observe(historyNode.current);
                     return ()=>observer.disconnect();
-                },[props.sessionId,storyTurn,projection,currentView?.historyWindow?.revision]);
+                },[props.sessionId,storyTurn,projection,currentView?.historyWindow?.revision,currentView?.historyWindow?.from]);
 				const tail = props.useTurnData("turn-tail");
 				const owner = React.useMemo(function () {
 					if (!turnRef || turnRef.status !== "closed" || !data.finalNode || !tail || !tail.closing || tail.closing.finalNode.seq !== data.finalNode.seq) return undefined;
@@ -370,6 +620,30 @@
 				}, [turnRef, data.finalNode, tail, props.openFile]);
 				const mentions = React.useMemo(function () { return owner === undefined ? undefined : props.fileMentions(owner); }, [owner, props.fileMentions]);
 				const waitingForHistory = Boolean(currentView?.historyWindow && !projection && settled && storyTurn>0 && storyTurn<latestProjectionTurn);
+				const playView = isPlayMode(liveState.view && liveState.view.mode) && storyTurn > 0 && !sessionTransitioning;
+				useTavernUiExtensions();
+				const pluginMedia = useTavernPluginMedia(props.sessionId, storyTurn, playView && settled);
+				const sceneImagesEnabled = Boolean(liveState.view && liveState.view.releaseCapabilities && liveState.view.releaseCapabilities.sceneImages);
+				const sceneShown = sceneImagesEnabled && settled && playView;
+				const sceneRecord = useSceneImageRecord(sceneShown ? props.sessionId : null, storyTurn);
+				const sceneAnchor = (function () {
+					const versions = sceneRecord && sceneRecord.versions || [];
+					for (let index = versions.length - 1; index >= 0; index -= 1) if (versions[index].anchor) return versions[index].anchor;
+					return "";
+				})();
+				const sceneExtras = sceneShown && sceneRecord && sceneRecord.extras || [];
+				const canAddPicture = Boolean(sceneRecord && sceneRecord.maxPictures && sceneExtras.length + 1 < sceneRecord.maxPictures);
+				const illustration = sceneShown ? React.createElement(SceneIllustration, { key: props.sessionId + ":" + storyTurn + ":" + JSON.stringify(projection), sessionId: props.sessionId, turn: storyTurn, record: sceneRecord, canAdd: canAddPicture }) : null;
+				// Added pictures sit at their own sentences; unplaced ones follow the text.
+				const extraPictures = sceneExtras.map(function (extra) {
+					const versions = extra.versions || [];
+					let anchor = "";
+					for (let index = versions.length - 1; index >= 0 && !anchor; index -= 1) anchor = versions[index].anchor || "";
+					return { id: "scene-illustration-" + extra.slot, anchor: anchor, node: React.createElement(SceneIllustration, { key: props.sessionId + ":" + storyTurn + ":slot:" + extra.slot + ":" + JSON.stringify(projection), sessionId: props.sessionId, turn: storyTurn, record: extra, canAdd: canAddPicture }) };
+				});
+				const sceneAnchors = (illustration && sceneAnchor ? [{ id: "scene-illustration", anchor: sceneAnchor, render: function () { return illustration; } }] : [])
+					.concat(extraPictures.filter(function (picture) { return picture.anchor; }).map(function (picture) { return { id: picture.id, anchor: picture.anchor, render: function () { return picture.node; } }; }));
+				const pluginText = playView ? createTavernPluginTextContext({ items: pluginMedia.items, extras: sceneAnchors, sessionId: props.sessionId, turn: storyTurn, streaming: data.status === "running" }) : null;
                 const rendered = sessionTransitioning ? [React.createElement("div", { key: "switching", className: "dsh-tavern-session-switching", role: "status" }, "正在完成游戏初始化…")] : waitingForHistory ? [React.createElement("div", {key:"history",role:"status"}, "正在读取历史内容…")] : renderTavernAssistantBlocks({
 					blocks: data.blocks,
 					streaming: data.status === "running",
@@ -379,19 +653,29 @@
                     frameSizing: liveState.view?.tavernRuntimePolicy?.frameSizing,
                     helperContextReader: () => liveTavernView.getSnapshot(props.sessionId).view?.tavernHelper,
 					trustedCardMode: Boolean(liveState.view && liveState.view.tavernRuntimePolicy && liveState.view.tavernRuntimePolicy.trustedCardMode),
+					htmlSketches: Boolean(liveState.view && groupOfMode(liveState.view.mode) === "card"),
 					frameOwner: props.frameOwner,
                     eagerFrame: storyTurn > 0 && storyTurn === latestProjectionTurn,
 					executeSlash: props.executeSlash,
 					sessionId: props.sessionId,
 					turn: storyTurn,
+					scriptLayer: (function () {
+						const messageId = liveState.view?.tavernHelper?.turnMessageIds?.[String(storyTurn)];
+						return settled && !sessionTransitioning && Number.isSafeInteger(messageId) && liveState.view?.tavernRuntimePolicy?.trustedCardMode
+							? { sessionId: props.sessionId, messageId: messageId } : null;
+					})(),
 					renderMessageImages: props.renderMessageImages,
+					plugin: pluginText,
 					mentions: mentions,
 					t: props.t
 				});
+				const distantHeight = useTavernDistantFloor(historyNode, settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
+				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
 				const mvuReceiptNode = settled ? React.createElement(TavernTurnMvuReceipt, { sessionId: props.sessionId, turn: storyTurn }) : null;
-				const sceneImagesEnabled = Boolean(liveState.view && liveState.view.releaseCapabilities && liveState.view.releaseCapabilities.sceneImages);
-				const illustration = sceneImagesEnabled && settled && storyTurn > 0 && isPlayMode(liveState.view && liveState.view.mode) && !sessionTransitioning ? React.createElement(SceneIllustration, { key: props.sessionId + ":" + storyTurn + ":" + JSON.stringify(projection), sessionId: props.sessionId, turn: storyTurn }) : null;
+				const trailingIllustration = React.createElement(React.Fragment, null,
+					pluginText && pluginText.placed.has("scene-illustration") ? null : illustration,
+					extraPictures.map(function (picture) { return pluginText && pluginText.placed.has(picture.id) ? null : React.createElement(React.Fragment, { key: picture.id }, picture.node); }));
                 const inlineStatus = liveState.view?.statusBarPlacement === "body" && !sessionTransitioning && storyTurn > 0 && storyTurn === latestProjectionTurn && data.finalNode && tail?.closing?.finalNode?.seq === data.finalNode.seq
                     ? React.createElement(TavernInlineStatusRuntime, { sessionId: props.sessionId, executeSlash: props.executeSlash }) : null;
                 const helper = liveState.view?.tavernHelper;
@@ -406,7 +690,15 @@
                     && typeof prepared.text === "string" && prepared.text.trim()
                     ? React.createElement(TavernPreparedScriptMessage, {key:props.sessionId+":"+prepared.lifecycleRevision, sessionId:props.sessionId, preparedText:prepared.text, executeSlash:props.executeSlash}) : null;
                 const body = legacyGreeting ? React.createElement(TavernLegacyGreeting, {key:props.sessionId+":greeting", source:greetingSource, sessionId:props.sessionId, executeSlash:props.executeSlash}, rendered) : rendered;
-				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, body, pendingMessage, illustration, mvuReceiptNode, inlineStatus);
+                const refusalNotice = settled && !sessionTransitioning ? tavernModelRefusalNotice((data.blocks || []).filter(block => block && block.kind === "text").map(block => String(block.text || "")).join("\n")) : "";
+                const refusalNode = refusalNotice ? React.createElement("div", { className: "dsh-tavern-refusal-notice", role: "note" }, refusalNotice) : null;
+				// Plugin media without a found anchor goes after the text.
+				const trailingMedia = pluginMedia.items.filter(function (item) { return !(pluginText && pluginText.placed.has(item.id)); });
+				const pluginMediaNode = trailingMedia.length ? React.createElement("div", { className: "dsh-tavern-plugin-media-list" }, trailingMedia.map(function (item) {
+					return React.createElement(TavernPluginMediaItem, { key: item.id, item: item, sessionId: props.sessionId, turn: storyTurn });
+				})) : null;
+				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
+				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, body, refusalNode, pendingMessage, pluginMediaNode, trailingIllustration, pluginActions, mvuReceiptNode, inlineStatus);
 			}
 			function TavernForkAssistantAction(props) {
 				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["forkTurnsByMessageId", String(props.messageId || "")]]);
@@ -425,6 +717,13 @@
 				return React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" },
 					React.createElement("button", { type: "button", className: "dsh-tavern-message-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork },
 						React.createElement(DshUi.IconBranchOutline16, null)));
+			}
+			function TavernIllustrateAssistantAction(props) {
+				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["releaseCapabilities"], ["forkTurnsByMessageId", String(props.messageId || "")]]);
+				const view = liveState.view;
+				const turn = Number(view && view.forkTurnsByMessageId && view.forkTurnsByMessageId[String(props.messageId || "")]) || 0;
+				const shown = Boolean(view && isPlayMode(view.mode) && view.releaseCapabilities && view.releaseCapabilities.sceneImages && turn > 0);
+				return shown ? React.createElement(SceneImageAction, { key: props.sessionId + ":" + turn, sessionId: props.sessionId, turn: turn }) : null;
 			}
 			function register(input) {
 				const scriptOwner = createTavernScriptSessionOwner({ sessions: input.ctx.sessions, executeSlash: createTavernFrameSlashExecutor(input.ctx) });
@@ -462,6 +761,12 @@
 						inject: function (sessionId) { return { sessionId: sessionId }; }
 					}, TavernForkAssistantAction); });
 				}, "dsh-tavern: conversation fork action");
+				input.ctx.effect(function () {
+					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
+						name: "conversation.chat.assistant-actions", id: "dsh-tavern-illustrate", order: 21,
+						inject: function (sessionId) { return { sessionId: sessionId }; }
+					}, TavernIllustrateAssistantAction); });
+				}, "dsh-tavern: earlier-turn illustration action");
 			}
 			return Object.freeze({ register: register });
 		}

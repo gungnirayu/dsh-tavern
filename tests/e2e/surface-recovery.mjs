@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { parseSessionLog } from '../../tavern-plugin/lib/domain/legacy-session-migration.js'
+import { parseNativeSessionLog } from './native-session-log.mjs'
 import { Session } from '../fixtures/dsh-session-host.mjs'
 
 export async function surfaceRecoveryChecks({ page, step, savedChat, output, report, root, restartServer }) {
@@ -21,7 +21,7 @@ export async function surfaceRecoveryChecks({ page, step, savedChat, output, rep
     const directory = join(root, 'profile-data/tavern/sessions')
     for (const file of await readdir(directory, { recursive: true })) {
       if (!file.endsWith('session.v3.jsonl.zstd')) continue
-      const parsed = parseSessionLog(await readFile(join(directory, file)))
+      const parsed = parseNativeSessionLog(await readFile(join(directory, file)))
       if (parsed.header.id === chat.sessionId) return { ...parsed, session: Session.create(chat.sessionId, parsed.events, parsed.header) }
     }
     throw Error('本次游玩原生会话尚未落盘')

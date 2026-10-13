@@ -24,3 +24,32 @@ test('模板永久改写用户和回复，恢复磁盘后真实 Agent 不再收�
   assert(texts.includes('新行动')); assert(texts.includes('新回复'))
   assert(!texts.some(text => text.includes('旧行动') || text.includes('旧回复')))
 })
+
+import { Session } from './fixtures/dsh-session-host.mjs'
+import { createScopedMessages } from '../tavern-plugin/lib/domain/scoped-messages.js'
+
+test('局部历史按最近楼层对齐原生消息面，与完整历史标记同一条输入', async () => {
+  const build = () => {
+    const session = Session.create('template-window')
+    const messages = []
+    for (let turn = 1; turn <= 6; turn++) {
+      session.append('user/message', { id: 'u' + turn, role: 'user', content: [{ type: 'text', text: '继续' }] }, { surfaceOp: 'append' })
+      session.append('assistant/message', { turn, message: { id: 'a' + turn, role: 'assistant', content: [{ type: 'text', text: '回复' + turn }] } }, { surfaceOp: 'append' })
+      messages.push({ role: 'user', text: turn === 6 ? '继续（模板渲染）' : '继续', ...(turn === 6 ? { templateInputSource: '继续' } : {}) },
+        { role: 'assistant', text: '回复' + turn, turn })
+    }
+    return { session, messages }
+  }
+  const full = build(), windowed = build()
+  await synchronizeTemplateHistory(full.session, { messages: full.messages }, async () => {})
+  const from = 8
+  const scoped = createScopedMessages(windowed.messages.length, windowed.messages.slice(from).map((row, index) => [from + index, row]))
+  await synchronizeTemplateHistory(windowed.session, { messages: scoped }, async () => {})
+  const edit = full.messages[10].templateHistoryEdit
+  assert.ok(edit)
+  assert.equal(scoped[10].templateHistoryEdit.seq, edit.seq)
+  assert.equal(full.messages.filter(row => row.templateHistoryEdit).length, 1)
+  const texts = session => session.deriveMessages().flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text))
+  assert.deepEqual(texts(windowed.session), texts(full.session))
+  assert.ok(texts(full.session).includes('继续（模板渲染）'))
+})

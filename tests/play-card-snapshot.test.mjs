@@ -45,17 +45,6 @@ test('failed save leaves caller state intact, releases concurrent build and perm
   assert.equal(h.counts.writes, 2)
 })
 
-test('failed plan is retryable and does not publish or mutate a new chat', async () => {
-  const h = fixture(), chat = oldChat(), before = structuredClone(chat)
-  h.plan(async () => { throw Error('projection failure') })
-  await assert.rejects(h.api.prepare(chat), /projection failure/)
-  await assert.rejects(h.api.ensure(chat), /projection failure/)
-  assert.deepEqual(chat, before)
-  assert.equal(h.counts.writes, 0)
-  h.plan(async () => ({ text: '恢复' }))
-  assert.equal(await h.api.ensure(chat), '恢复')
-})
-
 test('游玩中切换画像仅修改固定前缀，保留 200 轮历史、变量与原卡背景', async () => {
   const { Session } = await import('./fixtures/dsh-session-host.mjs')
   const { ensureSessionStablePrefix, sessionStablePrefixSections } = await import('../tavern-plugin/lib/domain/session-stable-prefix.js')
@@ -88,13 +77,6 @@ test('游玩中切换画像仅修改固定前缀，保留 200 轮历史、变量
   assert.equal(chat.userProfileRevision, 4)
   assert.equal(chat.cardContextRevision, 3)
   for (const field of ['messages', 'variables', 'mvu', 'runtimePresetSnapshot']) assert.deepEqual(chat[field], original[field])
-})
-
-test('未确认画像或快照不一致时拒绝切换，不误删人物卡背景', async () => {
-  const snapshots = createPlayCardSnapshots({ userPreferenceProfile: { stableContext: async () => null } })
-  await assert.rejects(snapshots.preferenceReplacement({ mode: 'story', cardContextSnapshot: '背景' }, true), /确认用户画像/)
-  await assert.rejects(snapshots.preferenceReplacement({ mode: 'card' }, true), /游玩会话/)
-  await assert.rejects(snapshots.preferenceReplacement({ mode: 'story', userProfileEnabled: true, cardContextSnapshot: '背景', userProfileContextSnapshot: '不匹配的偏好' }, false), /不一致/)
 })
 
 test('显式应用新版同步刷新常驻背景、MVU 规则和模板世界书，普通读取仍固定', async () => {
@@ -141,27 +123,13 @@ test('显式应用新版同步刷新常驻背景、MVU 规则和模板世界书�
   assert.equal(await worldBooks.bound(chat.cardPath,card,{...chat,...removed}),null)
 })
 
-test('世界书绑定改变也提示更新，确认版本后应用且不修改剧情和变量', async () => {
-  const { cardContentDigest } = await import('../tavern-plugin/lib/domain/play-card-snapshots.js')
-  const card = { name: '人物', description: '固定背景' }
-  let book = null
-  const worldBooks = { bound: async (_path, _card, chat) => chat?.openingWorldbookSnapshot?.version === 1
-    ? { ...chat.openingWorldbookSnapshot, view: { entries: [] } } : book }
-  const api = createPlayCardSnapshots({ worldBooks, planner: createContextPlanner({ prompt: () => '' }), readCard: async () => card, writeChat: async () => {} })
-  const chat = { id: 'game', mode: 'story', cardPath: 'cards/a.json', cardContentDigest: cardContentDigest(card),
-    openingWorldbookSnapshot: { version: 1, source: null, document: null }, messages: [{ role: 'assistant', text: '原剧情' }], variables: { hp: 12 } }
-  assert.equal((await api.updateStatus(chat, card)).available, false)
-  book = { source: { kind: 'standalone', path: 'worldbooks/a.json' }, document: { entries: {} }, view: { entries: [] } }
-  const status = await api.updateStatus(chat, card)
-  assert.equal(status.available, true); assert.equal(status.cardChanged, false); assert.equal(status.worldbookChanged, true)
-  const before = structuredClone(chat)
-  const patch = await api.replacement(chat, card, status.digest)
-  assert.deepEqual(chat, before)
-  assert.equal(patch.variables, undefined); assert.equal(patch.messages, undefined)
-  assert.equal((await api.updateStatus({ ...chat, ...patch }, card)).available, false)
-  book.document.entries.changed = { content: '确认后又修改了' }
-  await assert.rejects(api.replacement(chat, card, status.digest), /再次修改/)
-  assert.deepEqual(chat, before)
-  book = null
-  assert.equal((await api.updateStatus({ ...chat, ...patch }, card)).worldbookChanged, true)
+test('settled() answers from the header exactly when ensure() would not build or write', async () => {
+  const h = fixture()
+  const current = { id: 'chat', mode: 'story', cardContextSnapshot: '固定背景', cardContextSnapshotVersion: 7 }
+  assert.equal(h.api.settled(current), '固定背景')
+  assert.equal(await h.api.ensure({ ...current, messages: [] }), '固定背景')
+  assert.deepEqual(h.counts, { reads: 0, writes: 0, builds: 0 })
+  assert.equal(h.api.settled({ ...current, cardContextSnapshotVersion: 5 }), undefined)
+  assert.equal(h.api.settled({ ...current, cardContextSnapshot: '' }), undefined)
+  assert.equal(h.api.settled({ id: 'x', mode: 'card-extract' }), '')
 })

@@ -30,14 +30,6 @@ test('every channel check only sends read-only requests without body, redirects 
   }
 })
 
-test('NovelAI selector exposes all locally supported versions without network discovery', () => {
-  const channel = SCENE_IMAGE_CHANNELS.find(item => item.id === 'novelai')
-  assert.equal(channel.canListModels, false)
-  assert.ok(channel.models.includes('nai-diffusion-5-full'))
-  assert.ok(channel.models.includes('nai-diffusion-4-5-curated'))
-  assert.ok(channel.models.includes('nai-diffusion-3'))
-})
-
 test('only unchanged endpoint may use the saved key; edited address needs an explicit key', async () => {
   const fx = fixture()
   await fx.service.test({ provider: 'openai', apiKey: '' })

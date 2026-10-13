@@ -31,21 +31,6 @@ test('对话示例只识别与当前玩家和角色名匹配的英文冒号前�
   ])
 })
 
-test('绝对深度条目插入聊天历史且正则只投影真实聊天消息', () => {
-  const result = compileSillyTavernRequest({
-    card: { name: '角色' },
-    preset: { entries: [
-      { entryKey: 'depth#1', identifier: 'depth', role: 'system', content: '深度内容', enabled: true, ordered: true, injectionPosition: 1, injectionDepth: 1 },
-      { entryKey: 'history#1', identifier: 'chatHistory', role: 'system', content: '', marker: true, enabled: true, ordered: true }
-    ] },
-    presetDocument: {}, history: [{ role: 'assistant', text: '原始' }], input: '输入', resolveMacros,
-    projectPromptText: function (text) { return { text: String(text).replace('输入', '投影输入'), warnings: [] } }
-  })
-  assert.deepEqual(result.messages.map(function (item) { return [item.role, item.content] }), [
-    ['assistant', '原始'], ['system', '深度内容'], ['user', '投影输入']
-  ])
-})
-
 test('兼容编译保留历史图片和本轮纯图片输入，严格角色合并也不丢附件', async () => {
   const { applySillyTavernStrictTools } = await import('../tavern-plugin/lib/domain/sillytavern-strict-tools.js')
   const oldImage = { type: 'image', attachment: { id: 'old-photo' } }

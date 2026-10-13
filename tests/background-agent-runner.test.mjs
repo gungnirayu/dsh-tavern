@@ -250,7 +250,7 @@ test('生图常驻会话隔离后台任务与游戏，先保存编号且恢复�
   assert.equal(first.traceSessionId, second.traceSessionId)
   assert.equal(personas.get(first.traceSessionId), readSceneImageSystemInstruction())
   const taskMessage = sessions.get(first.traceSessionId).events.find(event => event.type === 'user/message').data.message.content[0].text
-  assert.ok(taskMessage.endsWith('【DSH 后台任务协议（最终指令）】\n' + readScenePlanInstruction()))
+  assert.ok(taskMessage.endsWith('【任务要求】\n' + readScenePlanInstruction()))
   assert.ok(!taskMessage.includes(readSceneImageSystemInstruction()), '初始系统提示词不重复放入本次任务')
   assert.equal(creates, 1)
   assert.equal(disposed, 0)
@@ -374,6 +374,60 @@ for (const rewindFails of [false, true]) test('后台 Surface 回退失败时停
   assert.deepEqual(appendCalls[0].options.sourceEventSeqs, [3, 4])
 })
 
+test('整段回退失败时改用新的后台会话，旧会话退休 (#164)', async () => {
+  const parent = { id: 'parent-session', session: { header: { cwd: '/tmp/tavern', delegationDepth: 0 } } }
+  const source = { kind: 'model', provider: 'test', model: 'scripted' }
+  const retired = [], ready = [], created = []
+  function child(events, nodes, appendFails) {
+    let work = Promise.resolve()
+    return {
+      session: {
+        events, surface: { nodes },
+        append(type, data, options) {
+          if (appendFails && options?.surfaceOp?.op === 'replace') throw new Error('assistant/message embeds its source stream and cannot carry sourceEventSeqs')
+          events.push({ seq: events.length, type, data, ...(options || {}) })
+        }
+      },
+      followup() {
+        work = Promise.resolve().then(function () {
+          events.push({ seq: events.length, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '新会话结算' }] } } })
+          events.push({ seq: events.length, type: 'turn/end', data: {} })
+        })
+      },
+      async whenIdle() { await work }
+    }
+  }
+  const setupCtx = () => ({ systemPrompt: { section() {}, variable() {}, suppressRuntimeContext() {} }, tools: { restrict() {}, register() {} }, on() {} })
+  const agents = {
+    get(id) { return id === parent.id ? parent : undefined },
+    async resume(options) {
+      assert.equal(options.resumeSessionId, 'old-background')
+      await options.setup(setupCtx())
+      return { agent: child([
+        { seq: 0, type: 'user/message', data: { text: '第一轮' } },
+        { seq: 1, type: 'assistant/message', data: { turn: 1, step: 1, message: { source, content: [{ type: 'text', text: '第一轮结算' }] } } },
+        { seq: 2, type: 'turn/end', data: {} }
+      ], [0, 1], true), async dispose() {} }
+    },
+    async create(options) {
+      created.push(options.sessionId)
+      await options.setup(setupCtx())
+      return { agent: child([], [], true), async dispose() {} }
+    }
+  }
+  const runner = createBackgroundAgentRunner({ agents, id: () => 'new-background',
+    retirement: { async isRetired() { return false }, async retire(id, parentId) { retired.push([id, parentId]) } } })
+  const result = await runner.run({
+    sessionId: parent.id, task: 'settlement', selection: { provider: 'test', model: 'scripted' },
+    system: '结算规则', messages: [], tools: [], persistent: true, persistentSessionId: 'old-background', rewindTo: -1,
+    onPersistentSessionReady: id => ready.push(id)
+  })
+  assert.equal(result.traceSessionId, 'new-background')
+  assert.deepEqual(created, ['new-background'])
+  assert.deepEqual(retired, [['old-background', parent.id]])
+  assert.deepEqual(ready, ['new-background'])
+})
+
 test('manual stop cancels the active background agent belonging to this game only', async () => {
   let ready, finish, cancelled = 0;
   const started = new Promise(resolve => { ready = resolve; });
@@ -396,40 +450,6 @@ test('manual stop cancels the active background agent belonging to this game onl
   await rejected;
   assert.equal(cancelled, 1);
   assert.equal(runner.cancel('game'), 0);
-  await runner.dispose();
-});
-
-test('persistent background tools change with configuration without creating another agent', async () => {
-  const registered = new Map(), requests = [];
-  let assemble, work, creates = 0;
-  let configured = { variables: false, ledger: true, posture: true, characterDesign: false };
-  const session = { id: 'task-tools', header: {}, events: [], append(type, data) { this.events.push({ type, data }); } };
-  const catalog = ['ledger_submit', 'posture_submit', 'mvu_submit_update', 'candidate_submit_choices'].map(name => ({ name, description: name, parameters: { type: 'object' } }));
-  const runner = createBackgroundAgentRunner({ resolveBackgroundTasks: async () => configured, backgroundTools: catalog, id: () => session.id, agents: {
-    get: () => ({ session: { header: {} } }),
-    async create(options) {
-      creates++;
-      await options.setup({ systemPrompt: { section() {}, suppressRuntimeContext() {} }, on(event, callback) { if (event === 'system-prompt/assemble') assemble = callback; },
-        tools: { restrict() {}, register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name); } }
-      });
-      return { agent: { session, followup() { work = (async () => {
-        const result = await assemble({}, {}, async () => ({ tools: [...registered.values()], sections: [...registered.keys()].map(name => ({ name: 'tool:' + name, text: name })) }));
-        requests.push(result);
-
-        session.append('assistant/message', { message: { content: [{ type: 'text', text: '完成' }] } });
-      })(); }, async whenIdle() { await work; } }, async dispose() {} };
-    }
-  } });
-  const selections = [['ledger_submit', 'posture_submit'], ['candidate_submit_choices']];
-  for (const names of selections) await runner.run({ sessionId: 'game', backgroundTasksSnapshot: { variables: false, ledger: true, posture: true, characterDesign: false }, persistent: true, task: names.includes('ledger_submit') ? 'settlement' : 'candidate', selection: { provider: 'fake', model: 'fake' }, messages: [], tools: catalog.filter(tool => names.includes(tool.name)), onToolCall: async () => 'accepted' });
-  requests.forEach((request, i) => {
-    assert.deepEqual(request.tools.map(tool => tool.name), ['posture_submit', 'candidate_submit_choices']);
-    assert.deepEqual(request.sections.filter(s => s.name.startsWith('tool:')).map(s => s.name.slice(5)), ['posture_submit', 'candidate_submit_choices']);
-  });
-  configured = { variables: true, ledger: false, posture: false, characterDesign: false };
-  await runner.run({ sessionId: 'game', persistent: true, task: 'settlement', selection: { provider: 'fake', model: 'fake' }, messages: [], tools: [catalog[2]], onToolCall: async () => 'accepted' });
-  assert.equal(creates, 1);
-  assert.deepEqual(requests.at(-1).tools.map(t => t.name), ['mvu_submit_update', 'candidate_submit_choices']);
   await runner.dispose();
 });
 
@@ -496,5 +516,100 @@ for (const task of ['settlement', 'image']) test(task + ' 已有会话在明确�
     assert.equal(seen[1], seen[2])
     assert.equal(session.events.filter(e => e.data?.id === 'tavern-session-prefix:' + session.id + ':revision-1').length, 1)
     assert.equal(backgroundReads, 2, 'unchanged revision reuses the saved background')
+  } finally { await runner.dispose() }
+})
+
+test('插件结算工具：随后台会话固定注册，只在结算任务里可调用，说明附在本轮任务后', async () => {
+  const registered = new Map(), texts = [], results = []
+  const pluginCalls = []
+  let work = Promise.resolve(), script = async () => {}
+  const pluginSettlement = {
+    tools: () => [{ name: 'anchor_submit', description: '提交锚点', parameters: { type: 'object' }, countsTowardLimit: false }],
+    has: name => name === 'anchor_submit',
+    toolNames: async () => ({ available: ['anchor_submit'], unavailable: ['old_tool'] }),
+    sections: async ({ gameId, turn }) => [{ text: gameId + ' 第 ' + turn + ' 轮记录锚点' }],
+    calls: context => async (name, args) => { pluginCalls.push([context, name, args]); return JSON.stringify({ ok: true }) }
+  }
+  const runner = createBackgroundAgentRunner({
+    id: () => 'background-plugin-tools',
+    backgroundTools: [{ name: 'posture_submit', parameters: { type: 'object' } }, { name: 'candidate_submit', parameters: { type: 'object' } }],
+    pluginSettlement: () => pluginSettlement,
+    pluginCandidate: () => ({ sections: async ({ gameId }) => [{ text: gameId + ' 候选多给探索选项' }] }),
+    agents: {
+      get: () => ({ id: 'parent', session: { header: {} } }),
+      async create(options) {
+        await options.setup({
+          systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {},
+          tools: { restrict() {}, register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name) } }
+        })
+        const session = { id: 'background-plugin-tools', events: [], append(type, data) { this.events.push({ type, data }) } }
+        return { agent: { session,
+          followup(message) { texts.push(message.content[0].text); work = (async () => { await script(); session.append('assistant/message', { message: { content: [{ type: 'text', text: '完成' }] } }) })() },
+          async whenIdle() { await work } }, async dispose() {} }
+      }
+    }
+  })
+  try {
+    let submitted = false
+    script = async () => {
+      results.push(await registered.get('anchor_submit').execute({ text: '门' }))
+      results.push(await registered.get('posture_submit').execute({}))
+      results.push(await registered.get('anchor_submit').execute({ text: '迟到' }))
+    }
+    await runner.run({ sessionId: 'parent', persistent: true, task: 'settlement', turn: 4, selection: { provider: 'test', model: 'test' },
+      messages: [], tools: [{ name: 'posture_submit', parameters: { type: 'object' } }],
+      stopToolsWhen: () => submitted, acceptWithoutText: () => submitted,
+      onToolCall: async call => { if (call.name === 'posture_submit') submitted = true; return JSON.stringify({ ok: true }) } })
+    assert.ok(registered.has('anchor_submit'), 'plugin tools sit in the fixed tool list')
+    assert.deepEqual(pluginCalls, [[{ gameId: 'parent', turn: 4 }, 'anchor_submit', { text: '门' }]])
+    assert.match(results[2], /提交结算之前/, 'after the final submission a plugin tool is refused')
+    assert.match(texts[0], /【插件附加的结算任务】[\s\S]*本轮可用插件工具：anchor_submit。以本轮列出的为准[\s\S]*parent 第 4 轮记录锚点/)
+    assert.match(texts[0], /本轮不可用的插件工具（玩家在本局关闭了对应插件）：old_tool。本轮不要调用/)
+
+    script = async () => { results.push(await registered.get('anchor_submit').execute({ text: '候选里' })) }
+    await runner.run({ sessionId: 'parent', persistent: true, task: 'candidate', selection: { provider: 'test', model: 'test' },
+      messages: [], tools: [{ name: 'candidate_submit', parameters: { type: 'object' } }], onToolCall: async () => '{}' })
+    assert.match(results.at(-1), /不允许调用 anchor_submit/)
+    assert.equal(pluginCalls.length, 1)
+    assert.doesNotMatch(texts[1], /插件附加的结算任务/)
+    assert.match(texts[1], /【插件附加的候选要求】[\s\S]*parent 候选多给探索选项/)
+  } finally { await runner.dispose() }
+})
+
+test('插件后台任务：独立的一次性会话，插件工具注册在这个会话里并交给插件执行，结束后撤销', async () => {
+  const registered = new Map(), texts = [], results = [], created = []
+  let work = Promise.resolve(), script = async () => {}
+  const runner = createBackgroundAgentRunner({
+    id: () => 'plugin-task-' + created.length,
+    backgroundTools: [{ name: 'posture_submit', parameters: { type: 'object' } }],
+    agents: {
+      get: () => ({ id: 'parent', session: { header: {} } }),
+      async create(options) {
+        created.push(options)
+        await options.setup({
+          systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {},
+          tools: { restrict() {}, register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name) } }
+        })
+        const session = { id: 'plugin-task', events: [], append(type, data) { this.events.push({ type, data }) } }
+        return { agent: { session,
+          followup(message) { texts.push(message.content[0].text); work = (async () => { await script(); session.append('assistant/message', { message: { content: [{ type: 'text', text: '推演完成' }] } }) })() },
+          async whenIdle() { await work } }, async dispose() {} }
+      }
+    }
+  })
+  try {
+    const calls = []
+    script = async () => {
+      results.push(await registered.get('world_advance').execute({ days: 15 }))
+      results.push(await registered.get('posture_submit').execute({}))
+    }
+    const result = await runner.run({ sessionId: 'parent', persistent: false, task: 'plugin', pluginName: 'world-sim', selection: { provider: 'test', model: 'test' },
+      system: '按日期推进世界', messages: [], tools: [{ name: 'world_advance', description: '推进', parameters: { type: 'object' } }],
+      onToolCall: async call => { calls.push(call); return JSON.stringify({ ok: true }) } })
+    assert.equal(result.text, '推演完成')
+    assert.deepEqual(calls, [{ name: 'world_advance', arguments: { days: 15 } }])
+    assert.match(results[1], /不允许调用 posture_submit/)
+    assert.match(texts[0], /任务类型：插件任务[\s\S]*【任务要求】\n按日期推进世界/)
+    assert.equal(registered.has('world_advance'), false, '任务结束后撤销插件工具')
   } finally { await runner.dispose() }
 })

@@ -13,10 +13,10 @@ test('多端输入、短窗口与标签边界', { skip: !process.env.TAVERN_BROW
   page.on('pageerror', error => errors.push(error.message))
   const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
-  await t.test('真实 contenteditable 可由自由行动同步聚焦，手机和平板开始输入均收起候选', async () => {
+  await t.test('手机和平板点击输入框即聚焦并收起候选', async () => {
     for (const width of [390, 1280]) {
       await page.setViewportSize({ width, height: 900 }); await install(page); await nativeComposer(page)
-      await page.getByRole('button', { name: '✎ 自由行动（直接在下方输入）', exact: true }).click()
+      await page.locator('[contenteditable]').click()
       assert.equal(await page.locator('[contenteditable]').evaluate(el => el === document.activeElement), true)
       assert.equal(await page.locator('.dsh-tavern-question-option').count(), 0)
       await page.getByRole('button', { name: '展开行动列表', exact: true }).click()

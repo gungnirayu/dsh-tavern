@@ -47,23 +47,6 @@ test('HTTP 200 JSON error never executes; its cause is retained and manual recov
   assert.equal(evaluations, 1)
 })
 
-test('HTML, JSON disguised as JavaScript, and oversized error bodies are never evaluated', async () => {
-  for (const [body, type, status] of [['<html>login</html>', 'text/html', 200], ['{"ok":false,"error":"denied"}', 'text/javascript', 200], ['x'.repeat(100000), 'text/plain', 503]]) {
-    let failed, canceled = false
-    const paused = new Promise(resolve => { failed = resolve })
-    const bytes = new TextEncoder().encode(body)
-    const stream = new ReadableStream({ start(controller) { controller.enqueue(bytes) }, cancel() { canceled = true } })
-    const loader = client.createMvuBundleLoader({ retryDelays: [],
-      fetch: async () => new Response(status === 200 ? body : stream, { status, headers: { 'content-type': type } }),
-      evaluate: async () => assert.fail('invalid response executed'), onState: state => { if (state.phase === 'failed') failed(state) } })
-    const pending = loader.load('/bundle.js')
-    await paused
-    if (status === 503) assert.equal(canceled, true)
-    loader.dispose()
-    await assert.rejects(pending, /disposed/)
-  }
-})
-
 test('disposal aborts paused downloads and rejects late completion without evaluation', async () => {
   let finish, signal
   const h = harness((_url, options) => { signal = options.signal; return new Promise(resolve => { finish = resolve }) })

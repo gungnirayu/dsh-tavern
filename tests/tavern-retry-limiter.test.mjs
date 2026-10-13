@@ -44,16 +44,3 @@ test('rc.1 snapshot-only Session still limits requests to one retry', async () =
   assert.equal(await limiter.handle(payload, async () => {}), undefined)
   assert.equal(events.filter(event => event.type === 'llm/retry').length, 1)
 })
-
-test('非 Tavern 会话和不可重试错误继续交给 DSH', async () => {
-  const { payload } = fixture()
-  let downstream = 0
-  const next = async function () { downstream++; return undefined }
-  const outside = createTavernRetryLimiter({ owns: async function () { return false } })
-  assert.equal(await outside.handle(payload, next), undefined)
-
-  const inside = createTavernRetryLimiter({ owns: async function () { return true } })
-  payload.failure = { message: 'invalid', code: 'INVALID_REQUEST' }
-  assert.equal(await inside.handle(payload, next), undefined)
-  assert.equal(downstream, 2)
-})

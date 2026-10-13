@@ -15,9 +15,9 @@ export function registerPlayChatTool({
 }) {
   tools.register(defineTool({
     name: 'tavern_read_play_chat',
-    description: '在卡片工作台中渐进读取已挂载的游玩诊断。默认从最新一轮的小型 overview 开始；需要时可列出轮次、读取任意轮次或整场对话，并按层、分页获取文本、状态、日志、真实模型请求、正则诊断和 iframe 证据。',
+    description: '在卡片工作台中渐进读取当前工作台关联的游玩诊断。默认从最新一轮的小型 overview 开始；需要时可列出轮次、读取任意轮次或整场对话，并按层、分页获取文本、状态、日志、真实模型请求、正则诊断和 iframe 证据。',
     parameters: {
-      ref: { type: 'string', description: '已挂载游玩记录引用，例如 play-chat:chat-xxx；只有一个引用时可省略' },
+      ref: { type: 'string', description: '关联的游玩记录引用，例如 play-chat:chat-xxx；只有一个引用时可省略' },
       turn: { type: 'integer', description: '要读取的游玩轮次；省略时使用最新一轮' },
       layer: { type: 'string', enum: ['overview', 'turns', 'conversation', 'input', 'source', 'session', 'display', 'saved-display', 'diagnostics', 'tavern', 'foreground', 'background', 'request', 'worldbook', 'iframe', 'preset', 'context', 'regex'], description: '读取层：小型概览、轮次目录、整场对话、本轮玩家输入、模型原文、Session 文本、当前实时展示、保存时展示快照、当前正则诊断、Tavern 状态、前台 Agent、后台 Agent、真实模型请求、iframe 运行证据、本局预设快照、完整持久上下文或组合正则；默认 overview' },
       offset: { type: 'integer', description: '可选的 1 起始字符位置，默认 1' },
@@ -56,7 +56,7 @@ export function registerPlayChatTool({
       const reference = requestedRef === ''
         ? (references.length === 1 ? references[0] : null)
         : references.find(function (item) { return item.path === requestedRef })
-      if (reference === null || reference === undefined) throw new Error(references.length > 1 ? '请指定要读取的游玩记录 ref' : '当前卡片工作台没有挂载游玩记录')
+      if (reference === null || reference === undefined) throw new Error(references.length > 1 ? '请指定要读取的游玩记录 ref' : '当前卡片工作台没有关联的游玩记录，请从对应游玩对话进入卡片调试')
       const sourceChat = await readChat(reference.chatId)
       if (sourceChat === undefined) throw new Error('游玩记录已不存在')
       let projector = null

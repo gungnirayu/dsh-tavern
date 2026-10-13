@@ -87,9 +87,20 @@ test('stale recovery refuses to overwrite a later normal input before mutating e
 })
 
 // Native cancellation can finish before the host writes turn/end.
-test('missing turn/end still cannot absorb the next normal input',()=>{
- const f=fixture({ended:false});const later=f.user('later-normal-input')
- clearRegenerationAttemptSurface(f)
- assert.ok(f.session.surface.nodes.includes(later.seq))
- assert.ok(f.session.surface.nodes.includes(f.body.seq))
+
+test('重新生成卡住时被拒绝的发送（失败回合）不会让恢复永远失败', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'regen-rejected-')); t.after(() => rm(root, { recursive: true, force: true }))
+  const chats = createChatPersistence({ store: createChatJournalStore({ dataRoot: root }) })
+  const before = await chats.write({ id: 'chat', messages: [{ role: 'user', text: 'input' }, { role: 'assistant', text: 'original-body' }] })
+  await chats.update('chat', c => ({ ...c, regenInProgress: true, regenRecovery: { id: 'op' } }))
+  const f = fixture()
+  // The player sent while the marker was set: prepareStep rejected it and its turn failed.
+  appendSessionEvent(f.session, 'turn/start', { turn: 3 })
+  f.user('rejected')
+  appendSessionEvent(f.session, 'turn/end', { turn: 3, reason: { kind: 'error', error: { message: '上一次正文重新生成尚未完成' } } })
+  const recovery = createRegenerationRecovery({ chats, timeline: createStoryTimeline(), isActive: () => false, sessions: {} })
+  await recovery.abort({ chatId: 'chat', originalChat: before, session: f.session, eventStart: f.eventStart, operationId: 'op' })
+  const restored = await chats.read('chat')
+  assert.equal(restored.regenInProgress, undefined)
+  assert.deepEqual(restored.messages.map(message => message.text), ['input', 'original-body'])
 })

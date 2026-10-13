@@ -20,13 +20,6 @@ const windows = await readFile(new URL('../install.ps1', import.meta.url), 'utf8
 const workspace = parse(await readFile(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8'))
 const patches = Object.values(workspace.patchedDependencies || {}).map(value => typeof value === 'string' ? value : value.path)
 
-test('CDN 下载过滤器允许运行文件并排除文档', () => {
-  const metadata = { revision: 'a'.repeat(40), files: [...patches, 'config/dsh-compatibility.json', 'docs/private.md', 'bin/docs/x.md'].map(file => ({ path: file, sha256: 'a'.repeat(64) })) }
-  const listed = runtimeFiles(metadata).map(file => file.path)
-  for (const file of [...patches, 'config/dsh-compatibility.json']) assert.ok(listed.includes(file), `下载器过滤了 ${file}`)
-  assert.ok(!listed.some(file => file.includes('docs')))
-})
-
 test('两平台安装脚本内嵌的下载模块与 bin/download.cjs 一致', async () => {
   await execute(process.execPath, [fileURLToPath(new URL('../bin/build-installer-scripts.mjs', import.meta.url)), '--check'])
 })

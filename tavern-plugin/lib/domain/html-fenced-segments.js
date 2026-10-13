@@ -12,7 +12,10 @@ function isHtmlSource(value, info = '') {
       && /<(?:script|iframe|object|embed)\b/i.test(content)
   }
   if (language !== '') return language === 'html' || language === 'htm'
-  return /<!--[\s\S]*?-->|<\/?[a-z][\w:-]*(?:\s[^<>]*?)?>/i.test(content)
+  // Match JS-Slash-Runner: an unlabeled fence renders as a page only when it holds
+  // a document (html>/<head>/<body). Protocol snippets such as <msg>…</msg> stay
+  // code blocks, which card scripts (phone UIs) locate and replace in the message.
+  return /html>|<head>|<body/i.test(content)
 }
 
 export function fencedSegments(value) {

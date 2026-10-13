@@ -1,3 +1,4 @@
+import { runInstallationProcess } from './installation-process.mjs'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
@@ -22,12 +23,13 @@ export const DSH_ROOT = path.resolve(RUNTIME_HOST === 'cli'
   ? (process.env.DSH_TAVERN_CLI_HOME || (installation.host === 'cli' && installation.dshHome) || path.join(os.homedir(), '.dsh-tavern'))
   : (process.env.DSH_HOME || path.join(os.homedir(), '.dsh')))
 export const CLI_RUNTIME_ROOT = path.join(DSH_ROOT, 'runtime')
-export function runtimeEnvironment() {
+export function runtimeEnvironment({ installation = true } = {}) {
   const environment = { ...process.env }
   // Match both installer scripts, including direct `dsh-tavern install` calls.
   // Windows treats these names case-insensitively; do not leave conflicting keys.
   for (const key of Object.keys(environment)) {
     if (['npm_config_registry', 'pnpm_config_registry'].includes(key.toLowerCase())) delete environment[key]
+    if (!installation && (/^DSH_TAVERN_INSTALL_/i.test(key) || key === 'DSH_TAVERN_UPDATE_ATTEMPT')) delete environment[key]
   }
   const registry = process.env.DSH_TAVERN_NPM_REGISTRY || 'https://registry.npmmirror.com'
   // pnpm's optional update check can keep Node alive after a completed install.
@@ -178,4 +180,31 @@ export function runDsh(command, args, options = {}) {
     throw new Error(`dsh 配置验证失败${detail ? `：\n${detail}` : '。'}`)
   }
   return options.capture ? result.stdout.trim() : ''
+}
+
+// Installer-only async boundary: unlike spawnSync, the supervisor can cancel and
+// terminate the entire owned process tree before callers restore configuration.
+export async function runInstallCommand(command, args, options = {}) {
+  const nativeNpm = process.platform === 'win32' && command === 'npm'
+  const result = await runInstallationProcess(nativeNpm ? process.execPath : commandName(command), nativeNpm ? [resolveNpmCliEntry(), ...args] : args, {
+    ...options, env: runtimeEnvironment(), shell: process.platform === 'win32' && !nativeNpm,
+    stdio: options.capture ? 'pipe' : 'inherit', timeoutMs: options.timeoutMs || 10 * 60 * 1000,
+    label: options.label || command,
+  })
+  return options.capture ? result.stdout.trim() : ''
+}
+export async function runInstallDsh(command, args, options = {}) {
+  const nativeCli = process.platform === 'win32' && (options.host || RUNTIME_HOST) === 'cli'
+  const invocation = nativeCli ? { command: process.execPath, args: [resolveDshCliEntry({ dsh: command }), ...args] } : resolveDshInvocation(command, args, options.host)
+  try {
+    const result = await runInstallationProcess(invocation.command, invocation.args, {
+      ...options, env: runtimeEnvironment(), shell: process.platform === 'win32' && !nativeCli,
+      timeoutMs: options.timeoutMs || 60_000, label: options.label || 'DSH 配置验证',
+    })
+    return options.capture ? result.stdout.trim() : ''
+  } catch (error) {
+    const details = [error.stderr, error.stdout].filter(Boolean).join('\n').trim().slice(-2000)
+    if (details) error.message += `：\n${details}`
+    throw error
+  }
 }

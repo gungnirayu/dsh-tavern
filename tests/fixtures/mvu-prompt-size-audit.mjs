@@ -23,7 +23,7 @@ for (const message of after.messages || []) {
     const schema = JSON.parse(text.slice(schemaStart + '\n【变量结构】\n'.length, rulesStart))
     const rules = text.slice(rulesStart + '\n【人物卡变量更新规则】\n'.length, end)
     const storyStart = text.indexOf('[正文]\n', end)
-    const storyEnd = text.indexOf('\n\n【DSH 后台任务协议', storyStart)
+    const storyEnd = text.indexOf('\n\n【任务要求】', storyStart)
     assert(storyStart > end && storyEnd > storyStart)
     const frame = createMvuBackgroundTaskFrame({ operationId: 'audit', chatId: 'audit', branchId: 'audit', basedOnRevision: 0,
       messageId: 0, swipeId: 0, storyText: text.slice(storyStart + '[正文]\n'.length, storyEnd), currentVariables: variables, variableSchema: schema, updateRules: [rules] })

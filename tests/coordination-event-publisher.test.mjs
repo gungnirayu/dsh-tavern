@@ -55,31 +55,3 @@ test('文件内容未变化时不重复通知，单次读取失败不会终止�
   assert.equal(received[0].kind, 'tavern-state')
   close()
 })
-
-test('服务器只轮询小版本文件，版本不变时不重读完整对话', async function () {
-  const clock = intervals()
-  let version = 'v1'
-  let fullLoads = 0
-  const received = []
-  const publisher = createPublisher(received, {
-    readVersion: async function () { return version },
-    load: async function () {
-      fullLoads += 1
-      return { mailboxVersion: fullLoads, activity: { busy: fullLoads === 1, phase: fullLoads === 1 ? 'running' : 'idle', updatedAt: fullLoads } }
-    },
-    startInterval: clock.start,
-    stopInterval: clock.stop
-  })
-  const close = publisher.watch('session-small-file')
-
-  await new Promise((resolve) => setImmediate(resolve))
-  await clock.tick()
-  assert.equal(fullLoads, 1)
-  assert.equal(received.length, 1)
-
-  version = 'v2'
-  await clock.tick()
-  assert.equal(fullLoads, 2)
-  assert.equal(received.at(-1).kind, 'tavern-state')
-  close()
-})

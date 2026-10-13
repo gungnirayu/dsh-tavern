@@ -7,7 +7,7 @@ export const SYSTEM_PROMPT_DEFINITIONS = Object.freeze([
   ['candidate-story', '普通剧情候选项', '控制普通剧情候选项的数量、类型和输出格式。'],
   ['candidate-script', '剧本候选项', '控制剧本模式候选项及剧本推进规则。'],
   ['posture-settlement', '姿势状态结算', '控制后台姿势结算的工具提交。'],
-  ['story-compaction', '前台上下文压缩', '用于前台手动和自动压缩：保留续玩要点。修改后下次压缩生效；后台仍使用 DSH 内置压缩提示词。'],
+  ['story-compaction', '前台上下文压缩', '用于前台手动和自动压缩：把更早的剧情写成摘要，最近 10 轮原文原样附在摘要后。修改后下次压缩生效；后台仍使用 DSH 内置压缩提示词。'],
   ['card-system', '卡片 Agent 系统指令', '默认空白；从 card-system.md 读取，非空时仅注入卡片 Agent。'],
   ['card-workspace', '卡片 Agent 工作区说明', '仅注入卡片 Agent 的 system。可编辑完整说明；{{resourceRoot}} 自动替换为当前资源根目录，{{projectionPaths}} 自动替换为当前会话的投影文件路径。保存后下一次请求生效。'],
   ['scene-image-system', '文生图 Agent 系统指令', '控制生图 Agent 的角色与职责，修改后下一次生图任务生效。'],
@@ -18,7 +18,7 @@ export const SYSTEM_PROMPT_DEFINITIONS = Object.freeze([
 export const SYSTEM_PROMPT_NAMES = Object.freeze(SYSTEM_PROMPT_DEFINITIONS.map(function (item) { return item.name }))
 
 const knownNames = new Set([...SYSTEM_PROMPT_NAMES,
-  'card-mode-greeting', 'card-reference', 'card-task-edit', 'card-task-extract', 'card-task-script',
+  'card-reference', 'card-task-edit', 'card-task-extract', 'card-task-script',
   'card-task-worldbook', 'card-task-preset', 'card-task-debug-play'
 ])
 

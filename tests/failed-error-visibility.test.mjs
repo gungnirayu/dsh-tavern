@@ -33,3 +33,16 @@ test('批量隐藏与恢复按失败轮去重计数，不改变剧情或其他�
   assert.deepEqual(chat.hiddenDshErrorTurns, [3])
   assert.throws(() => setAllFailedErrorVisibility(chat, input, 'true'))
 })
+
+test('失败状态：清除或被后续轮次取代的失败为过期；只统计末尾连续的内容审核拦截', async () => {
+  const { failedErrorTurnStates } = await import('../tavern-plugin/lib/domain/failed-error-visibility.js')
+  const filtered = turn => [{ seq: turn * 10, type: 'turn/start', data: { turn } }, { seq: turn * 10 + 1, type: 'turn/end', data: { turn, reason: { kind: 'error', error: { message: 'Provider finish_reason: content_filter' } } } }]
+  const events = [
+    { seq: 10, type: 'turn/start', data: { turn: 1 } }, { seq: 11, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'timeout' } } } },
+    { seq: 20, type: 'turn/start', data: { turn: 2 } }, { seq: 21, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+    ...filtered(3), ...filtered(4)
+  ]
+  assert.deepEqual(failedErrorTurnStates(events, []), { staleTurns: [1, 3], filteredStreak: 2 })
+  assert.deepEqual(failedErrorTurnStates(events, [4]).staleTurns, [1, 3, 4])
+  assert.equal(failedErrorTurnStates(events.slice(0, 4), []).filteredStreak, 0)
+})

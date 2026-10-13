@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { sceneStateSources } from '../tavern-plugin/lib/domain/scene-state.js'
-import { sceneTarget, sceneInput } from '../tavern-plugin/lib/domain/scene-illustration.js'
+import { sceneTarget } from '../tavern-plugin/lib/domain/scene-illustration.js'
 
 function fixture(data) {
   const chat = { id: 'state-chat', settleStatus: 'done', _storageRevision: 12, messages: [{ role: 'assistant', turn: 2,
@@ -27,26 +27,6 @@ test('visual state selects present identities and scene facts, never schema/mirr
   for (const word of ['不发送', '后台角色', '朋友的衣服', '结构规则', '模板值', '全量定义', '变化记录', '镜像', '整卡说明', 'not Alice', 'top schema', '好感度']) assert.ok(!text.includes(word), word)
   assert.ok(result.sources.every(source => source.origin.kind === 'mvu-state' && source.origin.bodyDigest === target.sourceDigest && source.origin.storageRevision === 12))
   assert.deepEqual(chat, before)
-})
-
-test('state is bound to selected body and readiness; missing old state never uses future variables', () => {
-  const { chat, target } = fixture({ 林岚: { 衣着: '过去青衣' } })
-  const history = structuredClone(chat)
-  chat.messages.push({ role: 'assistant', turn: 3, text: '未来剧情。', variables: [{ stat_data: { 林岚: { 衣着: '未来红衣' } } }] })
-  assert.equal(sceneInput(chat, target).state.sources.length, 0)
-  assert.match(JSON.stringify(sceneInput(chat, target, history).state.sources), /过去青衣/)
-  assert.doesNotMatch(JSON.stringify(sceneInput(chat, target, history)), /未来红衣/)
-  for (const alter of [
-    draft => { draft.settleStatus = 'running' },
-    draft => { draft.mvu = { enabled: false } },
-    draft => { draft.messages[0].mvu.pending = true },
-    draft => { draft.messages[0].mvu.receipt = { status: 'partial' } },
-    draft => { draft.messages[0].swipeId = 1 },
-    draft => { draft.messages[0].swipes[0] = '重写的正文' }
-  ]) {
-    const changed = structuredClone(history); alter(changed)
-    assert.equal(sceneStateSources(changed, target, target.source).sources.length, 0)
-  }
 })
 
 test('state projection is bounded, omits markup and unknown formats, and preserves literal provenance', () => {

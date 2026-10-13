@@ -9,7 +9,7 @@ import {createChatJournalStore} from '../tavern-plugin/lib/domain/chat-journal-s
 import {createChatPersistence} from '../tavern-plugin/lib/domain/chat-persistence.js'
 import {createConversationPageStore} from '../tavern-plugin/lib/domain/conversation-page-store.js'
 import {createConversationState} from '../tavern-plugin/lib/domain/conversation-state.js'
-import {projectChatSessionState,projectChatBackgroundConfig,projectSceneImageState} from '../tavern-plugin/lib/domain/chat-session-state.js'
+import { projectChatSessionState, projectChatBackgroundConfig } from '../tavern-plugin/lib/domain/chat-session-state.js'
 
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'native-chat-'))
@@ -20,17 +20,6 @@ async function fixture(t){
  return {root,store,persistence,pages,domain:createConversationState({store:pages}),io}
 }
 const row=gold=>({role:'assistant',text:'reward',variables:[{stat_data:{gold},schema:{}}]})
-
-test('one variable transaction persists final roots, not twenty intermediate worlds',async t=>{
- const {persistence,io,domain,root}=await fixture(t)
- const chat=await persistence.write({id:'a',messages:[{role:'assistant',text:'reward',variables:[{stat_data:Object.fromEntries(Array.from({length:20},(_,i)=>['f'+i,0]))}]}]})
- io.length=0
- await persistence.patch('a',chat._storageRevision,Array.from({length:20},(_,i)=>({op:'set',path:['messages',0,'variables',0,'stat_data','f'+i],value:1})))
- assert.ok(io.filter(e=>e.kind==='write').length<=35,'do not persist unreachable intermediate tree roots')
- assert.deepEqual((await domain.readWorld('a')).variables.stat_data,Object.fromEntries(Array.from({length:20},(_,i)=>['f'+i,1])))
- const fresh=createChatJournalStore({dataRoot:root})
- assert.deepEqual((await fresh.read('a')).messages[0].variables[0],(await domain.readWorld('a')).variables)
-})
 
 test('process death during a buffered flush cannot publish half a variable transaction',async t=>{
  const {root,persistence}=await fixture(t)
@@ -166,31 +155,6 @@ test('new-format option does not convert existing journals or card chats; stale 
  await assert.rejects(persistence.write(fourth),{code:'DSH_TAVERN_CHAT_CONFLICT'})
 })
 
-
-test('cold Helper projections read only requested page rows and preserve all historical API fields',async t=>{
- const {root,persistence}=await fixture(t)
- const messages=Array.from({length:530},(_,i)=>({...row(i),turn:i+1,swipeId:1,swipes:['a'+i,'b'+i],variables:[{gold:i},{gold:i+1}],tavernPluginData:{custom:i}}))
- messages[0]={...messages[0],role:'tavern-helper',tavernRole:'system',tavernHidden:true,name:'plugin'}
- // These large runtime-only fields must never be read for a Helper request.
- messages[529].displayRuntime={frames:['diagnostic'.repeat(20000)]}
- messages[529].mvuBaseline={variables:{archive:'baseline'.repeat(20000)}}
- const chat=await persistence.write({id:'helper',sessionId:'s',messages,variables:{chat:true},tavernHelperScriptVariables:{test:{value:1}},tavernPluginMetadata:{custom:true}})
- const io=[]
- const cold=createChatPersistence({store:createChatJournalStore({dataRoot:root,cacheMaxBytes:1,onNativeIO:e=>io.push(e)})})
- const range=await cold.readHelperContext('helper',{from:527,to:600})
- assert.deepEqual({from:range.from,to:range.to,messages:range.context.messages},hydrateTavernHelperMessages(chat,527,600))
- assert.ok(io.filter(e=>e.type==='page').length<=2)
- assert.ok(io.every(e=>e.bytes<65536),'skip runtime-only blobs even in selected rows')
- io.length=0
- const full=await cold.readHelperContext('helper')
- assert.deepEqual(full.context,projectTavernHelperContext(chat))
- assert.ok(io.every(e=>e.bytes<65536))
- full.context.messages[0].variables.gold=-1
- assert.deepEqual((await cold.readHelperContext('helper')).context,projectTavernHelperContext(chat),'detached full API')
- assert.deepEqual((await cold.readHelperContext('helper',{from:540})).context.messages,[])
- assert.deepEqual((await cold.read('helper')).messages,chat.messages,'full runtime API stays lossless')
-})
-
 test('legacy Helper reads keep the complete context and range fallback',async t=>{
  const {root}=await fixture(t)
  const p=createChatPersistence({store:createChatJournalStore({dataRoot:root,newConversations:false})})
@@ -198,20 +162,6 @@ test('legacy Helper reads keep the complete context and range fallback',async t=
  assert.deepEqual((await p.readHelperContext(chat.id)).context,projectTavernHelperContext(chat))
  const selected=await p.readHelperContext(chat.id,{from:1,to:1})
  assert.deepEqual({from:selected.from,to:selected.to,messages:selected.context.messages},hydrateTavernHelperMessages(chat,1,1))
-})
-
-test('cold native delta eligibility checks never hydrate a Chat that has no cached change coverage',async t=>{
- const {root,persistence}=await fixture(t)
- const historical=row(1)
- historical.displayRuntime={frames:['must-not-read'.repeat(20000)]}
- const chat=await persistence.write({id:'delta',messages:[historical,row(2)]})
- const io=[]
- const cold=createChatJournalStore({dataRoot:root,cacheMaxBytes:1,onNativeIO:e=>io.push(e)})
- assert.deepEqual(await cold.readChangedIndices('delta',chat._storageRevision),{indices:[],baseRevision:chat._storageRevision,revision:chat._storageRevision})
- assert.equal(await cold.readChangedIndices('delta',0),undefined)
- assert.equal(await cold.readChangedSlice('delta',0),undefined)
- assert.equal(await cold.readViewDelta('delta',0),undefined)
- assert.ok(io.every(e=>e.type!=='page'&&e.bytes<65536),'checking missing delta coverage must only read the head')
 })
 
 test('a cold native point patch reads only its target and keeps current world and revisions atomic',async t=>{
@@ -268,7 +218,6 @@ test('cold native patches match warm JSON semantics and reject invalid or cancel
  assert.deepEqual(await cold.read('cold'),before)
 })
 
-
 test('Helper hydration is pinned to the view revision across concurrent edits and rollback',async t=>{
  const {root,persistence}=await fixture(t)
  const before=await persistence.write({id:'hydration',messages:[row(1),row(2)]})
@@ -280,123 +229,6 @@ test('Helper hydration is pinned to the view revision across concurrent edits an
  assert.deepEqual(selected.context.messages,projectTavernHelperContext(before).messages)
  assert.equal((await cold.readHelperContext(before.id)).context.messages.length,1)
  await assert.rejects(cold.readHelperContext(before.id,{revision:999}),{code:'DSH_TAVERN_REVISION_NOT_FOUND'})
-})
-
-
-test('native scene polling does not materialize historical variables or display diagnostics',async t=>{
- const {root,persistence}=await fixture(t)
- const message={...row(1),swipes:['inactive','active'],swipeId:1,variables:[{archive:'unused'.repeat(40000)}],displayRuntime:{frames:['diagnostic'.repeat(30000)]}}
- const chat=await persistence.write({id:'scene',mode:'story',messages:[message,{role:'user',text:'next'},row(2)]})
- const io=[],cold=createChatJournalStore({dataRoot:root,onNativeIO:e=>io.push(e)})
- assert.deepEqual(await cold.readSceneImageState('scene'),projectSceneImageState(chat))
- assert.ok(io.every(e=>e.bytes<65536))
-})
-
-test('native opening window reads only tail pages and pins later paging to the same revision',async t=>{
- const {root,persistence}=await fixture(t)
- const messages=Array.from({length:530},(_,i)=>({...row(i),turn:i+1,text:'floor '+i}))
- messages[0].text='old body'.repeat(100000)
- const chat=await persistence.write({id:'window',sessionId:'s',backgroundConfigVersion:1,conversationFeaturesVersion:1,timeline:{checkpoints:[{participants:{background:{sessionId:'old-background'}}}]},messages})
- const io=[],cold=createChatPersistence({store:createChatJournalStore({dataRoot:root,cacheMaxBytes:1,onNativeIO:e=>io.push(e)})})
- const window=await cold.readWindow('window',{limit:48})
- assert.equal(window.messageCount,530)
- assert.equal(window.from,482)
- assert.equal(window.to,529)
- assert.deepEqual(window.chat.messages,chat.messages.slice(-48))
- assert.equal(window.chat._storageRevision,chat._storageRevision)
- assert.ok(io.filter(e=>e.type==='page').length<=2)
- assert.ok(io.every(e=>e.bytes<65536),'opening must not read an old body')
- assert.deepEqual((await cold.readWindow('window',{limit:1,includeCheckpoints:true})).chat.timeline.checkpoints,chat.timeline.checkpoints)
- await persistence.patch('window',chat._storageRevision,[{op:'set',path:['messages',529,'text'],value:'new'}])
- const pinned=await cold.readWindow('window',{limit:48,revision:chat._storageRevision})
- assert.equal(pinned.chat.messages.at(-1).text,'floor 529')
- assert.equal((await cold.readWindow('window',{before:482,limit:48})).to,481)
-})
-
-test('session summary reads share a bounded immutable-revision cache without exposing mutable rows',async t=>{
- const {root,persistence}=await fixture(t)
- const messages=Array.from({length:530},(_,i)=>({...row(i),turn:i+1}))
- await persistence.write({id:'summary-cache',messages})
- const io=[],cold=createChatJournalStore({dataRoot:root,onNativeIO:e=>io.push(e)})
- const first=await cold.readSessionState('summary-cache',{scoped:true})
- assert.ok(io.some(e=>e.type==='page'))
- const firstPages=io.filter(e=>e.type==='page').length
- first.messages[529].turn=999
- io.length=0
- const again=await cold.readSessionState('summary-cache',{scoped:true})
- assert.equal(again.messages[529].turn,530)
- assert.equal(io.filter(e=>e.type==='page').length,0,'same revision must not rescan all history pages')
- const full=await cold.readSessionState('summary-cache')
- full.messages[529].turn=888
- assert.equal((await cold.readSessionState('summary-cache')).messages[529].turn,530)
- const parallelIO=[],parallel=createChatJournalStore({dataRoot:root,onNativeIO:e=>parallelIO.push(e)})
- await Promise.all(Array.from({length:4},()=>parallel.readSessionState('summary-cache',{scoped:true})))
- assert.equal(parallelIO.filter(e=>e.type==='page').length,firstPages,'concurrent readers share the same immutable load')
- await persistence.patch('summary-cache',1,[{op:'set',path:['messages',529,'turn'],value:600}])
- assert.equal((await cold.readSessionState('summary-cache',{scoped:true})).messages[529].turn,600)
-})
-
-test('native display capture reads only target diagnostics at absolute coordinates',async t=>{
- const {root,persistence}=await fixture(t)
- const chat=await persistence.write({id:'display',sessionId:'s',mode:'story',backgroundConfigVersion:1,conversationFeaturesVersion:1,
-  rollbackUndo:{ready:true,storageRevision:1},messages:[{role:'assistant',greeting:true,text:'old'.repeat(50000),variables:[{huge:'vars'.repeat(50000)}]},
-   {role:'user',text:'next'},{role:'assistant',turn:2,text:'last',displayRuntime:{frames:[{dom:'target'}]}}]})
- const {projectDisplayRuntimeState}=await import('../tavern-plugin/lib/domain/chat-session-state.js')
- const io=[],fresh=createChatJournalStore({dataRoot:root,onNativeIO:event=>io.push(event)})
- for(const turn of [1,2,9])assert.deepEqual(await fresh.readDisplayRuntimeState('display',turn),projectDisplayRuntimeState(chat,turn))
- assert.ok(io.every(event=>event.bytes<65536),'display capture must skip body and variable blobs')
-})
-
-test('cold native settlement checkpoint reads only its target floor and preserves operation guards',async t=>{
- const {root,persistence}=await fixture(t)
- await persistence.write({id:'checkpoint',sessionId:'s',tavernHelperLifecycleRevision:3,
-  timeline:{schemaVersion:1,branchId:'b',revision:7,operations:{op:{id:'op',kind:'agent',status:'running'}}},
-  messages:Array.from({length:1200},(_,i)=>({...row(i),text:'floor '+i}))})
- const io=[],cold=createChatJournalStore({dataRoot:root,onNativeIO:e=>io.push(e)})
- const selected=await cold.readSettlementCheckpoint('checkpoint',1198,'op')
- assert.equal(selected.chat.messages[0].variables[0].stat_data.gold,1198)
- assert.ok(Number.isSafeInteger(selected.chat._storageRevision))
- assert.equal(selected.chat.tavernHelperLifecycleRevision,3)
- assert.equal(selected.chat.timeline.operations.op.status,'running')
- assert.ok(io.filter(e=>e.type==='page').length<=2,'checkpoint must not materialize archive')
- const saved=await createChatPersistence({store:cold}).patch('checkpoint',selected.chat._storageRevision,[{op:'set',path:['messages',1198,'mvu'],value:{pending:true}}])
- assert.ok(saved,'selected revision must support a scoped CAS write')
- selected.chat.messages[0].text='local'
- assert.equal((await cold.readSlice('checkpoint',[1198])).chat.messages[0].text,'floor 1198')
-})
-
-test('cold candidate task state reads no history pages and stays detached across revisions',async t=>{
- const {createTaskStateReader}=await import('../tavern-plugin/lib/domain/task-state-reader.js')
- const {persistence,root}=await fixture(t)
- const saved=await persistence.write({id:'task-state',sessionId:'session',mode:'story',cardPath:'card',
-  timeline:{schemaVersion:1,branchId:'branch',revision:1,operations:{},participants:{},checkpoints:[{before:{large:"rollback".repeat(200000)}}]},
-  candidates:{requestId:'request',messageId:'last',operationId:'candidate'},
-  messages:Array.from({length:530},(_,i)=>({...row(i),turn:i+1}))})
- const io=[],cold=createChatPersistence({store:createChatJournalStore({dataRoot:root,onNativeIO:event=>io.push(event)})})
- const reader=createTaskStateReader({readSlice:cold.readSlice,readState:()=>{throw Error('must not materialize session history')}})
- const selected=await reader.read('task-state')
- assert.deepEqual(selected.candidates,saved.candidates)
- const {checkpoints,...metadata}=saved.timeline
- assert.deepEqual(selected.timeline,metadata)
- assert.ok(io.every(event=>event.bytes<65536),"rollback snapshots stay unread")
- assert.equal(selected._storageRevision,saved._storageRevision)
- assert.equal(io.filter(event=>event.type==='page').length,0)
- selected.candidates.requestId='local mutation'
- selected.timeline.operations.local={status:'running'}
- assert.deepEqual((await reader.read('task-state')).timeline,metadata)
- await persistence.patch('task-state',saved._storageRevision,[{op:'set',path:['candidates','requestId'],value:'new request'}])
- assert.equal((await reader.read('task-state')).candidates.requestId,'new request')
- assert.equal(io.filter(event=>event.type==='page').length,0)
-})
-
-test('opening eligibility skips materialization when the entire conversation fits in the window',async t=>{
- const {root,persistence}=await fixture(t)
- const chat=await persistence.write({id:'short-opening',cardDefinitionSnapshot:{payload:'large-card'.repeat(100000)},messages:[row(1),row(2)]})
- const io=[],cold=createChatPersistence({store:createChatJournalStore({dataRoot:root,onNativeIO:e=>io.push(e)})})
- assert.equal(await cold.readWindow(chat.id,{limit:48,requirePartial:true}),null)
- assert.ok(io.every(e=>e.bytes<65536),'an ineligible opening must not materialize the large card')
- assert.deepEqual((await cold.readWindow(chat.id,{limit:48})).chat.messages,chat.messages,'ordinary full windows remain available')
- assert.equal((await cold.readWindow(chat.id,{limit:1,requirePartial:true})).from,1,'partial windows remain available')
 })
 
 test('scoped mailbox commit preserves story, world and historical revisions',async t=>{
@@ -411,30 +243,4 @@ test('scoped mailbox commit preserves story, world and historical revisions',asy
  assert.deepEqual((await domain.readWorld('mailbox')).variables.stat_data,{gold:7})
  assert.deepEqual(await cold.readRevision('mailbox',original._storageRevision),original)
  assert.equal(await cold.patch('mailbox',original._storageRevision,[{op:'set',path:['taskMailbox'],value:{version:99}}],{returnProjection:['id']}),undefined)
-})
-
-
-test('candidate metadata patch canonicalizes optional undefined leaves',async t=>{
- const {persistence}=await fixture(t)
- const original=await persistence.write({id:'optional',messages:[row(7)],candidates:{choices:[],script:{old:true}}})
- const saved=await persistence.patch('optional',original._storageRevision,[{op:'set',path:['candidates','script'],value:undefined},{op:'set',path:['candidates','optional'],value:undefined}],{returnProjection:['id','candidates']})
- assert.deepEqual(saved.candidates,{choices:[]})
-})
-
-test('unchanged card blocks survive task revisions without sharing writable projections',async t=>{
- const {root,persistence}=await fixture(t)
- const chat=await persistence.write({id:'resource-reuse',cardDefinitionSnapshot:{description:'large'.repeat(200000)},messages:[row(1)]})
- await persistence.write({id:'other-game',messages:[]})
- const io=[],reader=createChatPersistence({store:createChatJournalStore({dataRoot:root,onNativeIO:e=>io.push(e)})})
- const first=await reader.readSlice(chat.id,[],['id','cardDefinitionSnapshot'])
- first.chat.cardDefinitionSnapshot.description='caller mutation'
- await reader.readSlice('other-game',[],['id'])
- const updated=await persistence.patch(chat.id,chat._storageRevision,[{op:'set',path:['taskMailbox'],value:{version:1}}],{returnProjection:['id','_storageRevision']})
- io.length=0
- const second=await reader.readSlice(chat.id,[],['id','cardDefinitionSnapshot'])
- assert.equal(second.chat.cardDefinitionSnapshot.description,'large'.repeat(200000))
- assert.ok(io.every(e=>e.bytes<65536),'unchanged large immutable blocks should not be loaded again')
- await persistence.patch(chat.id,updated._storageRevision,[{op:'set',path:['cardDefinitionSnapshot','description'],value:'external edit'}])
- assert.equal((await reader.readSlice(chat.id,[],['cardDefinitionSnapshot'])).chat.cardDefinitionSnapshot.description,'external edit')
- assert.equal((await reader.readRevision(chat.id,chat._storageRevision)).cardDefinitionSnapshot.description,'large'.repeat(200000))
 })

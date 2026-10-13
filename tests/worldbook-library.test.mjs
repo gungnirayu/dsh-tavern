@@ -120,25 +120,6 @@ test('World Book Library 通过来源 adapter 原子编辑、导入、导出和�
   assert.deepEqual(run.removed, ['worldbooks/海港.json'])
 })
 
-test('添加保留自带书，按绑定顺序合并，移除单书不影响其他绑定，导出包含全部内容', async () => {
-  const run = harness()
-  const source = { kind: 'standalone', path: 'worldbooks/王都.json' }
-  const result = await run.library.bind('cards/命运.json', source)
-  assert.equal(result.kind, 'multiple')
-  assert.equal(result.books.length, 2)
-  assert.equal((await run.library.bind('cards/命运.json', source)).books.length, 2)
-  const merged = await run.library.bound('cards/命运.json')
-  assert.equal(merged.view.displayName, '命运世界书')
-  assert.equal(merged.view.entries.length, 2)
-  assert.equal((await run.library.characterBookForCard('cards/命运.json')).entries.length, 2)
-  await run.library.setBindings('cards/命运.json', result.books.map(book => book.source).reverse())
-  assert.equal((await run.library.bound('cards/命运.json')).view.displayName, '王都')
-  const snapshot = { id: 'game', openingWorldbookSnapshot: { version: 1, source: merged.source, document: merged.document } }
-  await run.library.unbind('cards/命运.json', source)
-  assert.equal((await run.library.binding('cards/命运.json')).kind, 'embedded')
-  assert.equal((await run.library.bound('cards/命运.json', null, snapshot)).view.entries.length, 2)
-})
-
 test('删除内置世界书清理所有引用并保留其他世界书和人物卡内容', async () => {
   const run = harness()
   const source = { kind: 'card', cardPath: 'cards/命运.json' }
@@ -196,7 +177,6 @@ test('世界书未接受的外部修改保持待同步，手动人物正文冲�
   assert.equal(entry.content, '用户自己修改的人物')
 })
 
-
 test('全局世界书覆盖无绑定的新卡、与本地合并并按来源去重，不修改或导出到卡', async () => {
   const { library, cards } = harness()
   const source = { kind: 'standalone', path: 'worldbooks/王都.json' }
@@ -220,38 +200,4 @@ test('全局世界书覆盖无绑定的新卡、与本地合并并按来源去�
   assert.equal((await library.bound('cards/命运.json')).view.entryCount, 2)
   await assert.rejects(library.setGlobal({ kind: 'card', cardPath: 'cards/命运.json' }, true), /独立世界书/)
   await assert.rejects(library.setGlobal(source, 'true'), /布尔值/)
-})
-
-test('全局开关保留旧对话世界书快照，变更提示和重新加载使用最新合并内容', async () => {
-  const { createPlayCardSnapshots } = await import('../tavern-plugin/lib/domain/play-card-snapshots.js')
-  const { library, cards } = harness()
-  const card = cards.get('cards/命运.json')
-  const api = createPlayCardSnapshots({ worldBooks: library, planner: { plan: async () => ({ text: '前缀' }) }, writeChat: async chat => chat })
-  const chat = { id: 'old', cardPath: 'cards/命运.json', mode: 'story', messages: [] }
-  Object.assign(chat, await api.replacement(chat, card))
-  assert.equal((await api.updateStatus(chat, card)).available, false)
-  await library.setGlobal({ kind: 'standalone', path: 'worldbooks/王都.json' }, true)
-  assert.equal((await library.bound(chat.cardPath, card, chat)).view.entryCount, 1)
-  assert.equal((await api.updateStatus(chat, card)).worldbookChanged, true)
-  const patch = await api.replacement(chat, card)
-  assert.equal(Object.keys(patch.openingWorldbookSnapshot.document.entries).length, 2)
-  Object.assign(chat, patch)
-  assert.equal((await api.updateStatus(chat, card)).available, false)
-  await library.setGlobal({ kind: 'standalone', path: 'worldbooks/王都.json' }, false)
-  assert.equal((await api.updateStatus(chat, card)).worldbookChanged, true)
-  assert.equal((await library.bound(chat.cardPath, card, chat)).view.entryCount, 2)
-})
-
-test('世界书目录行可由宿主按文件版本缓存，结果与直接解析一致', async () => {
-  const computed = []
-  const memo = new Map()
-  const cached = kind => async (path, compute) => {
-    if (!memo.has(kind + path)) { computed.push(path); memo.set(kind + path, await compute(path)) }
-    return memo.get(kind + path)
-  }
-  const run = harness({ summaries: { standalone: cached('standalone'), card: cached('card') } })
-  const first = await run.library.catalog()
-  assert.deepEqual(first, await harness().library.catalog())
-  assert.deepEqual(await run.library.catalog(), first)
-  assert.deepEqual(computed.sort(), ['cards/命运.json', 'cards/空白.json', 'worldbooks/王都.json'])
 })

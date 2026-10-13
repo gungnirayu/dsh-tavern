@@ -92,3 +92,28 @@ test('库内编辑覆盖内置正文和参考，保留原包并持久生效', as
   await assert.rejects(fresh.edit({ name: 'example', content: content.replace('name: example', 'name: other') }))
   assert.equal((await fresh.read('example')).content, content)
 })
+
+test('导入 Skill：单个 SKILL.md 或文件夹压缩包，带参考文件，同名先确认再覆盖，内置 Skill 不可覆盖', async t => {
+  const { skills, builtin } = await harness(t)
+  const skill = (name, body = '按步骤写作') => '---\nname: ' + name + '\ndescription: "导入的 Skill"\nmetadata:\n  tavern:\n    purpose: writing\n---\n\n' + body + '\n'
+  const single = await skills.importBundle({ files: { 'SKILL.md': skill('imported') } })
+  assert.equal(single.skill.name, 'imported')
+  assert.deepEqual((await skills.read('imported')).agents, ['foreground'])
+
+  const folder = { 'pack/SKILL.md': skill('pack'), 'pack/references/style.md': '风格', 'pack/scripts/run.md': '忽略', 'pack/notes.md': '忽略' }
+  const zipped = await skills.importBundle({ files: folder })
+  assert.deepEqual(zipped.skipped.sort(), ['notes.md', 'scripts/run.md'])
+  assert.deepEqual(await skills.referenceFiles('pack'), [{ path: 'references/style.md', content: '风格' }])
+
+  assert.deepEqual(await skills.importBundle({ files: { 'SKILL.md': skill('imported', '新版本') } }), { conflict: true, name: 'imported' })
+  assert.match((await skills.read('imported')).content, /按步骤写作/)
+  await skills.importBundle({ files: { 'SKILL.md': skill('imported', '新版本') }, overwrite: true })
+  assert.match((await skills.read('imported')).content, /新版本/)
+
+  await mkdir(path.join(builtin, 'builtin-one'), { recursive: true })
+  await writeFile(path.join(builtin, 'builtin-one', 'SKILL.md'), skill('builtin-one'))
+  await assert.rejects(skills.importBundle({ files: { 'SKILL.md': skill('builtin-one') }, overwrite: true }), /内置 Skill 不可覆盖/)
+  await assert.rejects(skills.importBundle({ files: { 'readme.md': 'x' } }), /没有找到 SKILL\.md/)
+  await assert.rejects(skills.importBundle({ files: { 'SKILL.md': skill('Bad Name') } }), /只允许小写字母/)
+  await assert.rejects(skills.importBundle({ files: { 'SKILL.md': '没有开头' } }), /缺少 ---/)
+})

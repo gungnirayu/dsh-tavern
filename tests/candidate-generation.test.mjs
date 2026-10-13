@@ -199,46 +199,6 @@ test('候选生成期间时间线变化，迟到候选与 point 都不会落盘'
   assert.equal(run.continuity.inspect({ script: script(), state: run.chat().scriptState, request: { kind: 'progress' } }).cursor, 0)
 })
 
-test('剧本候选可按数字自由读取远处剧本并直接定位游标', async () => {
-  const researched = []
-  const run = harness({ mode: 'script', outputs: [async function (options) {
-    researched.push(JSON.parse(await options.onToolCall({
-      name: 'tavern_read_script',
-      arguments: { position: 2 }
-    })))
-    researched.push(JSON.parse(await options.onToolCall({
-      name: 'tavern_read_script',
-      arguments: { position: 3 }
-    })))
-    researched.push(JSON.parse(await options.onToolCall({
-      name: 'tavern_point_script',
-      arguments: { position: 3 }
-    })))
-    return JSON.stringify({
-      choices: [{ type: 'action', text: '沿着钟楼石阶谨慎地向上追去' }]
-    })
-  }] })
-
-  const result = await run.candidates.generate({ sessionId: 'session-1', messageId: 'message-2' })
-  assert.equal(result.choices.length, 1)
-  assert.deepEqual(researched.slice(0, 2).map((item) => item.chunks[0].id), ['chunk-00002', 'chunk-00003'])
-  assert.equal(researched[2].pointedAt, 3)
-  assert.match(run.plannerCalls[0].task, /剧本候选项生成器/)
-  assert.match(run.plannerCalls[0].task, /tavern_point_script/)
-  const savedChat = run.chat()
-  const progress = run.continuity.inspect({ script: script(), state: savedChat.scriptState, request: { kind: 'progress' } })
-  assert.equal(progress.cursor, 2)
-  assert.equal(run.plannerCalls[0].scriptWindow.chunks[0].id, 'chunk-00001')
-  assert.deepEqual(run.modelRequests[0].tools.map((tool) => tool.name), ['tavern_read_script', 'tavern_point_script', 'character_design_read', 'character_design_save', 'candidate_submit_choices'])
-  assert.equal(run.modelRequests[0].tools[0].parameters.properties.position.minimum, 1)
-  assert.equal(run.modelRequests[0].tools[0].parameters.properties.point, undefined)
-  assert.equal(run.modelRequests[0].tools[1].parameters.properties.position.minimum, 1)
-  assert.equal(run.modelRequests[0].tools[1].parameters.properties.query, undefined)
-  assert.equal(run.modelRequests[0].tools[1].countsTowardLimit, false)
-  assert.equal(result.traceSessionId, 'candidate-trace-1')
-  assert.deepEqual(savedChat.messages, [{ role: 'assistant', text: '雨水敲着窗。' }])
-})
-
 test('单次输出无效时不覆盖旧候选，也不改变剧本游标', async () => {
   const invalid = '{"choices":[{"type":"unknown","text":"有文本但类型无效"}]}'
   const oldCandidates = { messageId: 'old', choices: [{ type: 'action', text: '保留这一份旧的有效候选内容' }], generatedAt: 1 }

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createIncrementalReplyView} from '../tavern-plugin/lib/domain/incremental-reply-view.js'
 import {projectPersistentStatusView} from '../tavern-plugin/lib/domain/persistent-status-view.js'
-import {projectRuntimeReplyHistory} from '../tavern-plugin/lib/domain/runtime-content-projection.js'
+import {projectReplyHistory} from '../tavern-plugin/lib/domain/reply-presentation.js'
 const options={regexScripts:[{id:'panel',placement:[2],markdownOnly:true,findRegex:'<StatusPlaceHolderImpl/>',replaceString:'<script>show()</script>'}]}
 const panelId=projectPersistentStatusView([{role:'assistant',turn:2}],[],options).statusView.viewId
 for(const count of [20,400,10000])test(`sidebar fallback reads only the changed message among ${count}`,async()=>{
@@ -31,7 +31,7 @@ test('opening declarations retain priority over receipts and survive transitions
  const cache=createIncrementalReplyView({readChanges:async()=>changes})
  async function check(expected){
   const result=await cache.project(chat,options,options)
-  const history=projectRuntimeReplyHistory(chat.messages,options)
+  const history=projectReplyHistory(chat.messages,options)
   assert.deepEqual(result,{...projectPersistentStatusView(chat.messages,history.projections,options),presentation:null,latestSourceBacked:history.latestSourceBacked})
   assert.equal(result.statusView?.sourceTurn,expected)
  }

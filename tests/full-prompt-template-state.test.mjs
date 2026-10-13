@@ -164,38 +164,6 @@ test('局部保存回执不覆盖等待期间的后续编辑，下一次保存�
   assert.equal((await persistence.read('chat')).messages[0].variables[0].hp,12)
 })
 
-test('unchanged reads and current variable patches bypass complete chat read/update',async t=>{
- const {persistence}=await fixture(t)
- let reads=0,updates=0
- const adapter=createTavernScriptHostAdapter({
-  resolveChat:()=>{reads++;return persistence.read('chat')},
-  resolveChatSlice:(_id,indices)=>persistence.readSlice('chat',indices),resolveChangedChatSlice:(_id,revision)=>persistence.readChangedSlice('chat',revision),patchChat:persistence.patch,
-  writeChat:persistence.write,updateChat:(...args)=>{updates++;return persistence.update(...args)},readChatRevision:persistence.readRevision,
-  readCard:async()=>({name:'角色'}),worldBooks:{bound:async()=>null},scriptDispatch:{},isPlayChat:()=>true
- })
- const initial=await adapter.readFullPromptTemplateState('session')
- const unchanged=await adapter.readFullPromptTemplateState('session',initial.cursor)
- assert.equal(reads,1)
- assert.deepEqual(unchanged.delta.chat.set,[])
-
- const {chatId,sessionId,stateRevision,lifecycleRevision}=initial.state
- const request={chatId,sessionId,stateRevision,lifecycleRevision,changes:[{op:'set',path:['chat',0,'variables',0,'hp'],value:22}]}
- const result=await adapter.saveFullPromptTemplateState('session',request)
- assert.equal(updates,0);assert.equal(reads,1)
- assert.equal((await persistence.read('chat')).messages[0].variables[0].hp,22)
- assert.equal(result.statePatch.find(c=>c.path[0]==='stateRevision').value,2)
- // A stale variable write must go through the existing merge and reject conflict.
- request.changes[0].value=23
- await assert.rejects(adapter.saveFullPromptTemplateState('session',request),e=>e.code==='PROMPT_TEMPLATE_STATE_CONFLICT')
- assert.equal(updates,1)
- const current=await adapter.readFullPromptTemplateState('session')
- const readsBefore=reads
- await persistence.update('chat',c=>{c.messages.push({role:'assistant',text:'only new row'});return c})
- const appended=await adapter.readFullPromptTemplateState('session',current.cursor)
- assert.equal(reads,readsBefore,'changed revision must not read full history')
- assert.deepEqual(appended.delta.chat.set.map(([index])=>index),[1])
-})
-
 test('concurrent unchanged readers recover when the same cursor is consumed',async t=>{
  const {persistence}=await fixture(t)
  let blocked=false,waiting=[]
@@ -235,4 +203,77 @@ test('changed-floor synchronization equals full projection through append, varia
  await open().update('chat',c=>{c.messages[0].text='外部修改';return c})
  received=applyTemplateSync(received,await adapter.readFullPromptTemplateState('session',received.cursor))
  assert.deepEqual(received.state,(await adapter.readFullPromptTemplateState('session')).state)
+})
+
+import { readRowsAt } from '../tavern-plugin/lib/domain/bounded-history.js'
+import { applyTemplateStateChanges } from '../tavern-plugin/lib/domain/template-state-patch.js'
+
+// Same native save, with and without the bounded stale-reader merge.
+async function nativeFixture(t, bounded) {
+  const root=await mkdtemp(join(tmpdir(),'template-stale-'))
+  t.after(()=>rm(root,{recursive:true,force:true}))
+  const persistence=createChatPersistence({store:createChatJournalStore({dataRoot:root,newConversations:true})})
+  const messages=Array.from({length:40},(_,i)=>({role:i%2?'assistant':'user',text:'楼层'+i,sourceText:'楼层'+i,turn:Math.floor(i/2)+1,
+    variables:[{hp:i,mp:i}],tavernPluginData:{keep:i}}))
+  await persistence.write({id:'chat',sessionId:'session',cardPath:'cards/test.json',mode:'story',mvu:{enabled:true},backgroundConfigVersion:1,conversationFeaturesVersion:1,
+    tavernHelperLifecycleRevision:1,variables:{local:1},messages,tavernPluginMetadata:{other:true}})
+  const full=[]
+  const adapter=createTavernScriptHostAdapter({resolveChatSlice:async(_id,indices)=>persistence.readSlice('chat',indices),patchChat:persistence.patch,
+    resolveChat:async()=>{full.push('read');return persistence.read('chat')},writeChat:persistence.write,
+    updateChat:async(...args)=>{full.push('update');return persistence.update(...args)},readChatRevision:async(...args)=>{full.push('revision');return persistence.readRevision(...args)},
+    ...(bounded?{resolveChatSliceAt:async(_id,revision,indices)=>readRowsAt(persistence.readWindow,'chat',revision,indices),
+      resolveChangedIndices:async(_id,revision)=>persistence.readChangedIndices('chat',revision)}:{}),
+    readCard:async()=>({name:'角色'}),worldBooks:{bound:async()=>null},scriptDispatch:{},isPlayChat:()=>true,
+    globalVariables:createPromptTemplateGlobalVariables(createProfileDataStore({dataRoot:root})),
+    fullExtensionSettings:createTavernExtensionSettings(createProfileDataStore({dataRoot:root}))})
+  return {persistence,adapter,full}
+}
+
+test('过期读者的局部模板保存：只合并相关楼层，回执与完整合并相同', async t => {
+  const results=[]
+  for(const bounded of [true,false]){
+    const h=await nativeFixture(t,bounded)
+    const {state}=await h.adapter.readFullPromptTemplateState('session')
+    const {chat:_chat,chat_metadata:_metadata,...header}=state
+    // Concurrent writes after the template read: another floor, another variable
+    // on the edited floor, and a chat variable.
+    await h.persistence.update('chat',chat=>{chat.messages[3].variables[0].hp=300;chat.messages[7].variables[0].mp=700;chat.variables.other=2;chat.timeline={schemaVersion:1};return chat})
+    const request={...header,changes:[{op:'set',path:['chat',7,'variables',0,'hp'],value:77},{op:'set',path:['chat',9,'template_rendered'],value:{hash:'x'}}]}
+    const receipt=await h.adapter.saveFullPromptTemplateState('session',structuredClone(request))
+    const stored=await h.persistence.read('chat')
+    const worker=applyTemplateStateChanges(applyTemplateStateChanges(state,request.changes),receipt.statePatch)
+    const {state:authoritative}=await h.adapter.readFullPromptTemplateState('session')
+    assert.deepEqual(worker,authoritative)
+    results.push({stored:{...stored,updatedAt:0},full:h.full})
+  }
+  // Template reads in this fixture have no cursor; only the save path is compared.
+  assert.deepEqual(results[0].full.filter(call=>call!=='read'),[])
+  assert.ok(results[1].full.includes('update'))
+  assert.deepEqual(results[0].stored,results[1].stored)
+  assert.equal(results[0].stored.messages[7].variables[0].hp,77)
+  assert.equal(results[0].stored.messages[7].variables[0].mp,700)
+  assert.equal(results[0].stored.messages[3].variables[0].hp,300)
+})
+
+test('过期读者与并发写入改了同一变量：局部与完整合并都拒绝', async t => {
+  for(const bounded of [true,false]){
+    const h=await nativeFixture(t,bounded)
+    const {state}=await h.adapter.readFullPromptTemplateState('session')
+    const {chat:_chat,chat_metadata:_metadata,...header}=state
+    await h.persistence.update('chat',chat=>{chat.messages[7].variables[0].hp=700;return chat})
+    await assert.rejects(h.adapter.saveFullPromptTemplateState('session',{...header,changes:[{op:'set',path:['chat',7,'variables',0,'hp'],value:77}]}),/已被其他操作修改/)
+    assert.equal((await h.persistence.read('chat')).messages[7].variables[0].hp,700)
+  }
+})
+
+test('过期读者遇到楼层数变化：局部与完整合并同样拒绝，局部路径不整读', async t => {
+  for(const bounded of [true,false]){
+    const h=await nativeFixture(t,bounded)
+    const {state}=await h.adapter.readFullPromptTemplateState('session')
+    const {chat:_chat,chat_metadata:_metadata,...header}=state
+    await h.persistence.update('chat',chat=>{chat.messages.splice(-2,2);return chat})
+    h.full.length=0
+    await assert.rejects(h.adapter.saveFullPromptTemplateState('session',{...header,changes:[{op:'set',path:['chat',7,'variables',0,'hp'],value:77}]}),/楼层已变化/)
+    if(bounded)assert.deepEqual(h.full,[])
+  }
 })

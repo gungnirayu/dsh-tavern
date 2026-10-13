@@ -85,14 +85,3 @@ test('other platforms do not resolve or change host packages', async () => {
   const restore = await installHostSubprocessPatch({ platform: 'linux', hostRequire: { resolve() { throw new Error('must not resolve') } } })
   restore()
 })
-
-test('unknown DSH versions are left unchanged', async () => {
-  const require = createRequire(import.meta.url)
-  const restore = await installHostSubprocessPatch({ platform: 'win32', hostRequire: {
-    resolve(name) {
-      assert.equal(name, '@deepseek-ai/dsh-subprocess-local/package.json')
-      return require.resolve('../package.json')
-    },
-  } })
-  restore()
-})

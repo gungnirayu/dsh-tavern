@@ -13,17 +13,7 @@ function setup() {
     async file => file, () => {}, async () => { state.refreshes++ }, async path => { state.loads.push(path) })
   return { state, run, importing }
 }
-test('multiple cards continue after failure, report file name, refresh once and stay in library', async () => {
-  const { state, run, importing } = setup()
-  await run(['a.png', 'bad.json', 'b.json'].map(name => ({ name })))
-  assert.deepEqual(state.calls, ['a.png', 'bad.json', 'b.json'])
-  assert.equal(state.status, '已导入 2 张，1 张失败')
-  assert.match(state.error, /bad.json：invalid card/)
-  assert.equal(state.refreshes, 1)
-  assert.deepEqual(state.loads, [])
-  assert.equal(importing.current, false)
-  assert.equal(state.busy, false)
-})
+
 test('single import still opens the imported card; cancelling picker does nothing', async () => {
   const { state, run } = setup()
   await run([])

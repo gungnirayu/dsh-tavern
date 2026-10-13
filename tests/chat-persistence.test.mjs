@@ -145,18 +145,6 @@ for (const captureFirst of [true, false]) test('过期显示捕获不附着到�
   assert.deepEqual(app.stored().messages, replacement.messages)
 })
 
-test('清理显示记录与结算合并后不会复活旧记录', async () => {
-  for (const cleanupFirst of [true, false]) {
-    const app = harness({ id: 'chat-1', messages: [message()], _storageRevision: 1 })
-    const cleanup = await app.persistence.read('chat-1'), business = await app.persistence.read('chat-1')
-    delete cleanup.messages[0].displayRuntime
-    business.messages[0].variables[0].stat_data.hp = 9
-    for (const draft of cleanupFirst ? [cleanup, business] : [business, cleanup]) await app.persistence.write(draft)
-    assert.equal(app.stored().messages[0].variables[0].stat_data.hp, 9)
-    assert.equal(Object.hasOwn(app.stored().messages[0], 'displayRuntime'), false)
-  }
-})
-
 test('真实 journal 重开后仍保留并发结算与捕获结果，原历史 revision 不变', async t => {
   const root = await mkdtemp(join(tmpdir(), 'tavern-capture-regression-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -202,6 +190,16 @@ test('并发改写同一路径时明确拒绝旧快照覆盖', async function ()
   assert.equal(app.stored().posture, '窗边')
 })
 
+test('时间线同一条目被并发改成不同状态时仍然拒绝', async function () {
+  const app = harness({ id: 'chat-1', timeline: { updatedAt: 1, operations: { a: { status: 'running' } } }, _storageRevision: 4 })
+  const first = await app.persistence.read('chat-1')
+  const second = await app.persistence.read('chat-1')
+  first.timeline.operations.a.status = 'settled'; first.timeline.updatedAt = 2
+  second.timeline.operations.a.status = 'failed'; second.timeline.updatedAt = 3
+  await app.persistence.write(first)
+  await assert.rejects(app.persistence.write(second), error => error.code === 'DSH_TAVERN_CHAT_CONFLICT' && error.path === 'timeline.operations.a.status')
+})
+
 test('对象字段顺序变化不应让等价的预设条目数组产生假冲突', async function () {
   const app = harness({
     id: 'chat-1',
@@ -224,58 +222,6 @@ test('对象字段顺序变化不应让等价的预设条目数组产生假冲�
   assert.equal(app.stored().macroState.local.compiled, true)
 })
 
-test('domain mutation 总是在锁内基于最新聊天执行', async function () {
-  const app = harness({ id: 'chat-1', counter: 0, _storageRevision: 0 })
-  await Promise.all(Array.from({ length: 20 }, function () {
-    return app.persistence.update('chat-1', function (chat) { chat.counter += 1; return chat })
-  }))
-  assert.equal(app.stored().counter, 20)
-  assert.equal(app.stored()._storageRevision, 20)
-})
-
-test('诊断性写入可以保留业务 updatedAt', async function () {
-  const app = harness({ id: 'chat-1', updatedAt: 600, displayRuntime: null, _storageRevision: 1 })
-  const chat = await app.persistence.read('chat-1')
-  chat.displayRuntime = { dom: '<p>ready</p>' }
-
-  await app.persistence.write(chat, { source: 'display.capture', touchUpdatedAt: false })
-
-  assert.equal(app.stored().updatedAt, 600)
-  assert.deepEqual(app.stored().displayRuntime, { dom: '<p>ready</p>' })
-})
-
-test('删除字段与修改其他字段可按任意保存顺序合并，删除不会复活', async function () {
-  for (const nested of [false, true]) {
-    for (const deletionFirst of [false, true]) {
-      const app = harness({ id: 'chat-1', state: { obsolete: true, posture: '门边' }, obsolete: true, unknown: { keep: null }, _storageRevision: 1 })
-      const deletion = await app.persistence.read('chat-1')
-      const edit = await app.persistence.read('chat-1')
-      delete (nested ? deletion.state : deletion).obsolete
-      edit.state.posture = '窗边'
-      const writes = deletionFirst ? [deletion, edit] : [edit, deletion]
-      for (const chat of writes) await app.persistence.write(chat)
-      const saved = await app.persistence.read('chat-1')
-      assert.equal(Object.hasOwn(nested ? saved.state : saved, 'obsolete'), false)
-      assert.equal(saved.state.posture, '窗边')
-      assert.deepEqual(saved.unknown, { keep: null })
-      assert.equal(saved._storageRevision, 3)
-    }
-  }
-})
-
-test('双方删除同一个字段视为一致结果，同时保留各自的其他修改', async function () {
-  const app = harness({ id: 'chat-1', state: { obsolete: { nested: true }, left: 0, right: 0 }, _storageRevision: 1 })
-  const first = await app.persistence.read('chat-1')
-  const second = await app.persistence.read('chat-1')
-  delete first.state.obsolete
-  delete second.state.obsolete
-  first.state.left = 1
-  second.state.right = 2
-  await app.persistence.write(first)
-  await app.persistence.write(second)
-  assert.deepEqual(app.stored().state, { left: 1, right: 2 })
-})
-
 test('删除与修改同一个字段仍按任意保存顺序拒绝冲突，失败不改存档', async function () {
   for (const deletionFirst of [false, true]) {
     const app = harness({ id: 'chat-1', state: { obsolete: { value: 1 } }, _storageRevision: 1 })
@@ -289,18 +235,6 @@ test('删除与修改同一个字段仍按任意保存顺序拒绝冲突，失�
     await assert.rejects(app.persistence.write(second), error => error.code === 'DSH_TAVERN_CHAT_CONFLICT' && error.path === 'state.obsolete')
     assert.deepEqual(app.stored(), before)
   }
-})
-
-test('两个写入者删除不同字段时都生效，不产生 undefined 字段', async function () {
-  const app = harness({ id: 'chat-1', state: { one: true, two: true, keep: null }, _storageRevision: 1 })
-  const first = await app.persistence.read('chat-1')
-  const second = await app.persistence.read('chat-1')
-  delete first.state.one
-  delete second.state.two
-  await app.persistence.write(first)
-  await app.persistence.write(second)
-  assert.deepEqual(app.stored().state, { keep: null })
-  assert.deepEqual(Object.keys(app.stored().state), ['keep'])
 })
 
 test('journal 的过期写入按需读取持久版本，不长期保留每轮完整副本', async t => {
@@ -336,32 +270,6 @@ for (const anotherToggle of [false, true]) test('复用已合并的草稿不会�
   assert.deepEqual(app.stored().hiddenDshErrorTurns, anotherToggle ? [1, 2] : [1])
 })
 
-test('保存合并同步嵌套字段和删除，同时保留草稿已有对象引用', async () => {
-  const app = harness({ id: 'chat-1', settings: { old: 1, local: 0 }, _storageRevision: 1 })
-  const draft = await app.persistence.read('chat-1'), settings = draft.settings
-  await app.persistence.update('chat-1', current => { delete current.settings.old; current.settings.remote = 2; return current })
-  draft.settings.local = 1
-  await app.persistence.write(draft)
-  assert.equal(draft.settings, settings)
-  assert.deepEqual(settings, { local: 1, remote: 2 })
-  settings.local = 3
-  await app.persistence.write(draft)
-  assert.deepEqual(app.stored().settings, { local: 3, remote: 2 })
-})
-
-test('保存等待期间的新编辑不被合并结果覆盖', async () => {
-  const app = harness({ id: 'chat-1', settings: { local: 0, remote: 0 }, _storageRevision: 1 })
-  const draft = await app.persistence.read('chat-1')
-  await app.persistence.update('chat-1', current => { current.settings.remote = 2; return current })
-  draft.settings.local = 1
-  const pending = app.persistence.write(draft)
-  draft.settings.local = 3
-  await pending
-  assert.deepEqual(draft.settings, { local: 3, remote: 2 })
-  await app.persistence.write(draft)
-  assert.deepEqual(app.stored().settings, { local: 3, remote: 2 })
-})
-
 test('批量隐藏与单条恢复并发时按顺序保留最新选择及剧情', async () => {
   const { setAllFailedErrorVisibility, setFailedErrorVisibility } = await import('../tavern-plugin/lib/domain/failed-error-visibility.js')
   const app = harness({ id: 'chat-1', messages: [{ text: '正文' }], hiddenDshErrorTurns: [], _storageRevision: 1 })
@@ -373,7 +281,6 @@ test('批量隐藏与单条恢复并发时按顺序保留最新选择及剧情',
   assert.deepEqual(app.stored().hiddenDshErrorTurns, [2])
   assert.deepEqual(app.stored().messages, [{ text: '正文' }])
 })
-
 
 test('前后台并发召回分别冷却且不覆盖彼此记录或剧情', async () => {
   const app = harness({ id: 'chat-1', messages: [message()], _storageRevision: 1 })

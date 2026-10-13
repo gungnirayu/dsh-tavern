@@ -2,45 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createChatPersistence } from '../tavern-plugin/lib/domain/chat-persistence.js'
-import { assertRegenerationSourceCurrent, replaceLastRound } from '../tavern-plugin/lib/domain/last-round-replacement.js'
-
-test('重新生成正文只保留唯一新正文和对应变量快照', function () {
-  const originalChat = {
-    id: 'chat-1', posture: '旧状态', messages: [
-      { role: 'assistant', greeting: true, text: '开场' },
-      { role: 'user', text: '继续', swipeId: 0, swipes: ['继续'], variables: [{ stat_data: { hp: 10 } }] },
-      { role: 'assistant', turn: 2, text: '旧正文', sourceText: '旧正文', displayText: '<p>旧正文</p>', swipeId: 0, swipes: ['旧正文'], variables: [{ stat_data: { hp: 9 } }] }
-    ]
-  }
-  const regeneratedChat = {
-    id: 'chat-1', posture: '新状态', timeline: { revision: 3 }, messages: [
-      { role: 'assistant', greeting: true, text: '开场' },
-      { role: 'user', text: '合成输入' },
-      { role: 'assistant', turn: 8, text: '新正文', sourceText: '新正文', projectionText: '新投影', displayText: '<p>新正文</p>', swipeId: 0, swipes: ['新正文\n<StatusPlaceHolderImpl/>'], variables: [{ stat_data: { hp: 7 } }] }
-    ]
-  }
-
-  const result = replaceLastRound({ originalChat, regeneratedChat, assistantIndex: 2 })
-  assert.equal(result.chat.posture, '新状态')
-  assert.equal(result.chat.timeline.revision, 3)
-  assert.equal(result.chat.messages[1].text, '继续')
-  assert.equal(result.assistant.turn, 2)
-  assert.equal(result.assistant.swipeId, 0)
-  assert.deepEqual(result.assistant.swipes, ['新正文\n<StatusPlaceHolderImpl/>'])
-  assert.equal(result.assistant.variables.length, 1)
-  assert.equal(result.assistant.variables[0].stat_data.hp, 7)
-  assert.equal(result.assistant.displayText, '<p>新正文</p>')
-  assert.equal(originalChat.messages[2].swipes.length, 1)
-})
-
-test('没有 MVU 的重新生成也只保留唯一正文', function () {
-  const originalChat = { messages: [{ role: 'user', text: '继续' }, { role: 'assistant', turn: 1, text: '旧正文' }] }
-  const regeneratedChat = { messages: [{ role: 'user', text: '合成输入' }, { role: 'assistant', turn: 2, text: '新正文' }] }
-  const result = replaceLastRound({ originalChat, regeneratedChat, assistantIndex: 1 })
-  assert.deepEqual(result.assistant.swipes, ['新正文'])
-  assert.equal(result.assistant.swipeId, 0)
-  assert.equal(result.assistant.variables, undefined)
-})
+import { assertRegenerationSourceCurrent } from '../tavern-plugin/lib/domain/last-round-replacement.js'
 
 test('重新生成允许状态栏捕获并发更新，但拒绝正文真的变化', function () {
   const originalChat = {

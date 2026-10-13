@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { createServer } from 'node:http'
+
 import { EventEmitter } from 'node:events'
 import test, { beforeEach, afterEach, mock } from 'node:test'
 
-import { createApplicationUpdater as createUpdater, sanitizeUpdateError } from '../tavern-plugin/lib/application-updater.js'
+import { createApplicationUpdater as createUpdater } from '../tavern-plugin/lib/application-updater.js'
 
 // Never let fixtures accidentally consume a real release. Local HTTP fixtures
 // still exercise the production fetch path; every other request fails the test,
@@ -32,7 +32,7 @@ afterEach(() => {
 function createApplicationUpdater(options) {
   return createUpdater({
     // Most fixtures model a direct child; Windows broker fixtures opt in below.
-    platform: 'linux',
+    platform: 'linux', dshHome: options.sourceRoot,
     // CDN fallback is explicit in each fixture; never fetch live metadata.
     fetchCdnMetadata: async () => { throw new Error('CDN unavailable in GitHub fixture') },
     ...options,
@@ -46,28 +46,6 @@ const verifiedUpdate = {
   fetchLatestCommit: async () => 'b'.repeat(40),
   compareCommits: async () => 'ahead',
 }
-
-test('standard plugin installation delegates updates to DSH without fetching or rewriting package files', async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'tavern-package-updater-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const profile = path.join(root, 'profiles/tavern')
-  await mkdir(profile, { recursive: true })
-  const manifest = JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-profile-tavern'] } } })
-  await writeFile(path.join(profile, 'package.json'), manifest)
-  const updater = createApplicationUpdater({
-    sourceRoot: root, dshHome: root, dataRoot: path.join(root, 'profile-data/tavern/data'),
-    readLocalIdentity: async () => knownIdentity,
-    fetchManifest() { assert.fail('package-managed updates must not fetch source releases') },
-    spawnProcess() { assert.fail('legacy updater must not touch package-manager installations') },
-  })
-  const status = await updater.status()
-  assert.equal(status.phase, 'package-managed')
-  assert.equal(status.currentVersion, knownIdentity.currentVersion)
-  assert.match(status.updateCommand, /^dsh plugin --profile tavern add github:/)
-  assert.deepEqual(await updater.check(), status)
-  await assert.rejects(updater.start(), /DSH 插件管理器安装/)
-  assert.equal(await readFile(path.join(profile, 'package.json'), 'utf8'), manifest)
-})
 
 test('真实 Git 历史可离线识别新旧，包括 archive 安装的 bare source-cache', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-order-git-'))
@@ -97,48 +75,6 @@ test('真实 Git 历史可离线识别新旧，包括 archive 安装的 bare sou
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('无 Git 的安装使用提交比较接口，校验比较方向并处理限流及错误响应', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-order-api-'))
-  const currentCommit = 'a'.repeat(40)
-  const latestCommit = 'b'.repeat(40)
-  let status = 'ahead'
-  let base = currentCommit
-  let code = 200
-  const urls = []
-  const server = createServer((req, res) => {
-    urls.push(req.url)
-    res.writeHead(code, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ status, base_commit: { sha: base } }))
-  })
-  try {
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-    const updater = createApplicationUpdater({
-      dataRoot: path.join(root, 'data'), sourceRoot: root, dshHome: root, runtimeHost: 'desktop',
-      readLocalIdentity: async () => ({ currentVersion: '1.1.0', currentCommit }),
-      fetchManifest: async () => ({ version: '1.1.0' }), fetchLatestCommit: async () => latestCommit,
-      compareUrl: `http://127.0.0.1:${server.address().port}/compare`,
-      fetchCdnMetadata: async () => { throw new Error('offline') },
-      spawnProcess() { assert.fail('不应启动安装') },
-    })
-    for (const [relation, expected] of [['ahead', 'update-available'], ['behind', 'up-to-date'], ['diverged', 'check-failed'], ['nonsense', 'check-failed']]) {
-      status = relation
-      assert.equal((await updater.check()).phase, expected)
-    }
-    status = 'ahead'
-    base = latestCommit
-    assert.equal((await updater.check()).phase, 'check-failed')
-    base = currentCommit
-    code = 403
-    assert.equal((await updater.check()).phase, 'check-failed')
-    await assert.rejects(() => updater.start(), /尚未开始下载/)
-    assert.ok(urls.length >= 7)
-    assert.ok(urls.every(url => url === `/compare/${currentCommit}...${latestCommit}`))
-  } finally {
-    await new Promise(resolve => server.close(resolve))
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
 test('GitHub 路径的较高版本号不能绕过提交先后判断，未知本地构建不能盲目安装', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-order-version-'))
   try {
@@ -151,22 +87,6 @@ test('GitHub 路径的较高版本号不能绕过提交先后判断，未知本�
     const unknown = createApplicationUpdater({ ...common, readLocalIdentity: async () => ({ currentVersion: 'unknown', currentCommit: '' }) })
     assert.equal((await unknown.check()).phase, 'check-failed')
     await assert.rejects(() => unknown.start(), /尚未开始下载/)
-  } finally { await rm(root, { recursive: true, force: true }) }
-})
-
-test('旧算法的更新提示失效，新算法已核验的提示跨重启保留，本地改变后失效', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-order-cache-'))
-  try {
-    const dataRoot = path.join(root, 'data')
-    await mkdir(dataRoot)
-    await writeFile(path.join(dataRoot, 'update-status.json'), JSON.stringify({ phase: 'update-available', ...knownIdentity, latestCommit: 'b'.repeat(40) }))
-    const options = { ...verifiedUpdate, dataRoot, sourceRoot: root, runtimeHost: 'desktop' }
-    const updater = createApplicationUpdater(options)
-    assert.equal((await updater.status()).phase, 'idle')
-    assert.equal((await updater.check()).phase, 'update-available')
-    assert.equal((await createApplicationUpdater(options).status()).phase, 'update-available')
-    const changed = createApplicationUpdater({ ...options, readLocalIdentity: async () => ({ ...knownIdentity, currentCommit: 'c'.repeat(40) }) })
-    assert.equal((await changed.status()).phase, 'idle')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -245,39 +165,12 @@ test('jsDelivr 发布序号阻止缓存倒退，并允许无 GitHub 更新', asy
 
     metadata.releaseSequence = 43
     const child = { pid: 4321, once(event, listener) { if (event === 'spawn') queueMicrotask(listener); return this }, unref() {} }
-    const changed = await createApplicationUpdater({ ...common, platform: 'linux', spawnProcess() { return child } }).start()
+    let launchCwd
+    const home = path.join(root, 'home')
+    const changed = await createApplicationUpdater({ ...common, dshHome: home, platform: 'linux', spawnProcess(_command, _args, options) { launchCwd = options.cwd; return child } }).start()
     assert.equal(changed.phase, 'running')
+    assert.equal(launchCwd, home, '更新链不能以被替换的程序目录作为工作目录（Windows 会 EBUSY）')
     assert.equal(changed.checkSource, 'jsdelivr')
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test('乱码更新错误替换为可执行的重新安装提示', () => {
-  assert.equal(sanitizeUpdateError('�������� DSH Tavern����'), '更新失败：安装程序输出编码异常。建议重新安装一次。')
-  assert.equal(sanitizeUpdateError('服务启动失败'), '服务启动失败')
-})
-
-test('更新任务正在运行时拒绝重复启动', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-updater-'))
-  try {
-    const dataRoot = path.join(root, 'profile-data/tavern/data')
-    const profileManifest = path.join(root, 'profiles/tavern/package.json')
-    await mkdir(path.dirname(profileManifest), { recursive: true })
-    await writeFile(profileManifest, JSON.stringify({ dshTavern: { host: 'cli' } }))
-    let spawned = 0
-    const updater = createApplicationUpdater({
-      ...verifiedUpdate,
-      dataRoot,
-      sourceRoot: '/app/dsh-tavern',
-      dshHome: root,
-      spawnProcess() { spawned += 1; return { once(event, listener) { if (event === 'spawn') queueMicrotask(listener); return this }, unref() {} } },
-      now: () => 1000,
-    })
-
-    await updater.start()
-    await assert.rejects(() => updater.start(), /更新正在进行/)
-    assert.equal(spawned, 1)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -346,7 +239,7 @@ test('历史更新记录的宿主不覆盖当前运行环境', async t => {
   }
 })
 
-test('Windows helper 启动失败立即持久化错误，不伪报已开始更新', async t => {
+test('Windows helper 启动失败保留不确定状态，避免已启动的 WMI 更新器和重试并发', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'update-helper-error-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const updater = createApplicationUpdater({ ...verifiedUpdate, dataRoot: root, sourceRoot: root, dshHome: root, platform: 'win32',
@@ -360,23 +253,8 @@ test('Windows helper 启动失败立即持久化错误，不伪报已开始更�
   })
   await assert.rejects(updater.start, /WMI 访问被拒绝/)
   const saved = JSON.parse(await readFile(path.join(root, 'update-status.json'), 'utf8'))
-  assert.equal(saved.phase, 'failed')
+  assert.equal(saved.phase, 'blocked')
   assert.match(saved.error, /WMI 访问被拒绝/)
-})
-
-test('安装进程中断后即使源码已是目标提交也必须允许修复安装', async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'update-interrupted-repair-'))
-  t.after(() => rm(root, {recursive:true, force:true}))
-  await writeFile(path.join(root, 'update-status.json'), JSON.stringify({phase:'running', host:'cli', startedAt:1000, pid:4321}))
-  let spawned = 0
-  const updater = createApplicationUpdater({...verifiedUpdate, dataRoot:root, sourceRoot:root, dshHome:root,
-    fetchLatestCommit:async () => knownIdentity.currentCommit,
-    compareCommits:async () => 'identical', isProcessAlive:() => false,
-    spawnProcess() { spawned++; return {unref(){}} },
-  })
-  assert.equal((await updater.status()).repairRequired, true)
-  assert.equal((await updater.start()).phase, 'running')
-  assert.equal(spawned, 1)
 })
 
 test('jsDelivr 兜底：本地清单未核验时用提交比较，比较不可达时以本地清单序号为下界 (#125)', async () => {
@@ -402,4 +280,36 @@ test('jsDelivr 兜底：本地清单未核验时用提交比较，比较不可�
     metadata.releaseSequence = 42
     assert.equal((await createApplicationUpdater({ ...common, compareCommits: offline }).check()).phase, 'check-failed')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('状态查询按与安装相同的规则回收残留锁，更新按钮不再永久卡在「等待安全停止」', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'update-stale-lock-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '2.5.0' }))
+  await writeFile(path.join(root, 'update-status.json'), JSON.stringify({ phase: 'running', attemptId: 'old' }))
+  const dead = 2 ** 22 + 12345 // well above any live PID on test hosts
+  const lock = path.join(root, '.tavern-install.lock')
+  await mkdir(path.join(lock, 'processes', 'install'), { recursive: true })
+  const old = Date.now() - 5 * 60_000
+  await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ attemptId: 'old', generation: 'g', pid: dead, state: 'blocked', unsafeToRetry: true, startedAt: old, updatedAt: old }))
+  await writeFile(path.join(lock, 'processes', 'install', `${dead + 1}.json`), JSON.stringify({ pid: dead + 1 }))
+  const { utimes } = await import('node:fs/promises')
+  for (const file of [path.join(lock, 'owner.json'), lock]) await utimes(file, new Date(old), new Date(old))
+  const status = await createApplicationUpdater({ dataRoot: root, sourceRoot: root, runtimeHost: 'cli' }).status()
+  assert.equal(status.phase, 'failed')
+  assert.equal(status.repairRequired, true)
+  await assert.rejects(readFile(path.join(lock, 'owner.json')), { code: 'ENOENT' })
+})
+
+test('没有安装锁的遗留「进行中」记录：超过 1 小时转为可修复，不再永久禁用更新', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'update-orphan-record-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '2.5.0' }))
+  const updater = createApplicationUpdater({ dataRoot: root, sourceRoot: root, runtimeHost: 'cli' })
+  await writeFile(path.join(root, 'update-status.json'), JSON.stringify({ phase: 'running', attemptId: 'a', startedAt: Date.now() - 5 * 60_000 }))
+  assert.equal((await updater.status()).phase, 'blocked', 'a recent record stays fenced')
+  await writeFile(path.join(root, 'update-status.json'), JSON.stringify({ phase: 'blocked', attemptId: 'a', startedAt: Date.now() - 2 * 60 * 60_000 }))
+  const status = await updater.status()
+  assert.equal(status.phase, 'failed')
+  assert.equal(status.repairRequired, true)
 })

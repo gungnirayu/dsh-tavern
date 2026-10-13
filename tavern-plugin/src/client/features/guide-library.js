@@ -7,6 +7,7 @@
             const [busy, setBusy] = React.useState(false);
             const [notice, setNotice] = React.useState("");
             const [error, setError] = React.useState("");
+            const askConfirm = useTavernConfirm(sessionId);
             async function refresh() {
                 setError("");
                 try { setItems((await rpc("listGuideLibrary", {}, sessionId)).items); }
@@ -37,6 +38,17 @@
                 } catch (err) { setError(String(err.message || err)); }
                 finally { setBusy(false); }
             }
+            async function remove(item) {
+                if (!await askConfirm("删除 Guide 方案“" + item.name + "”吗？\n已加载到游戏的指导不受影响。")) return;
+                setBusy(true); setError(""); setNotice("");
+                try {
+                    await rpc("deleteGuideLibrary", { id: item.id, expected: item }, sessionId);
+                    await refresh();
+                    notifyTavernDataChanged(["guide-library"], "guide-library");
+                    setNotice("已从 Guide 库删除该方案。");
+                } catch (err) { setError(String(err.message || err)); }
+                finally { setBusy(false); }
+            }
             async function rename(item) {
                 const name = await askTavernText({ title: "重命名 Guide 方案", initialValue: item.name, maxLength: 80 });
                 if (name && name !== item.name) await update(item, { name });
@@ -61,5 +73,6 @@
                                     h("button", { className: "dsh-tavern-btn", disabled: busy || !drafts.length || drafts.some(text => !text.trim()), onClick: () => update(editing, { guides: drafts }) }, "保存修改"),
                                     h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: () => setEditing(null) }, "取消"))) : h("div", { className: "dsh-tavern-guide-actions" },
                                 h("button", { className: "dsh-tavern-btn primary", disabled: busy || !!editing || !sessionId, onClick: () => load(item.id) }, "加载到本局"),
-                                h("button", { className: "dsh-tavern-btn", disabled: busy || !!editing, onClick: () => { setEditing(item); setDrafts([...item.guides]); setError(""); setNotice(""); } }, "修改"))))));
+                                h("button", { className: "dsh-tavern-btn", disabled: busy || !!editing, onClick: () => { setEditing(item); setDrafts([...item.guides]); setError(""); setNotice(""); } }, "修改"),
+                                h("button", { className: "dsh-tavern-btn danger", disabled: busy || !!editing, onClick: () => remove(item) }, "删除方案"))))));
         }

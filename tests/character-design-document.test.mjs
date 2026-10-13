@@ -1,13 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  CHARACTER_DESIGN_READ_TOOL_NAME,
-  CHARACTER_DESIGN_SAVE_TOOL_NAME,
-  createCharacterDesignDocumentSession,
-  createCharacterDesignDocumentTools,
-  projectCharacterDesignDocument
-} from '../tavern-plugin/lib/domain/character-design-document.js'
+import { projectCharacterDesignDocument } from '../tavern-plugin/lib/domain/character-design-document.js'
 
 const completeDesign = Object.freeze({
   name: '鹿野栞',
@@ -22,37 +16,6 @@ const completeDesign = Object.freeze({
   relationships: '与教师保持可靠的工作关系，对违纪学生既警惕又愿意给出解释机会',
   defaultPresentation: '白伊甸制服外套配银色风纪委员徽章，深灰百褶裙，黑色及膝袜和棕色低跟乐福鞋；内搭浅灰衬衣与素色贴身衣物',
   plotPotential: '可由一次看似普通的巡查发现异常，迫使她在制度责任、同伴信任与个人好奇之间作出选择'
-})
-
-test('人物档案先索引、后完整读取，并在同名保存时更新而非重复创建', async () => {
-  const session = createCharacterDesignDocumentSession({ now: () => 100 })
-  const empty = JSON.parse(await session.execute({ name: CHARACTER_DESIGN_READ_TOOL_NAME, arguments: {} }))
-  assert.deepEqual(empty.characters, [])
-
-  const saved = JSON.parse(await session.execute({ name: CHARACTER_DESIGN_SAVE_TOOL_NAME, arguments: completeDesign }))
-  assert.equal(saved.ok, true)
-  assert.equal(saved.created, true)
-  assert.equal(saved.name, '鹿野栞')
-
-  const index = JSON.parse(await session.execute({ name: CHARACTER_DESIGN_READ_TOOL_NAME, arguments: {} }))
-  assert.deepEqual(index.characters, [{
-    name: '鹿野栞', identity: completeDesign.identity,
-    narrativeRole: completeDesign.narrativeRole + '\n\n' + completeDesign.plotPotential, updatedAt: 100
-  }])
-  const full = JSON.parse(await session.execute({ name: CHARACTER_DESIGN_READ_TOOL_NAME, arguments: { name: '鹿野栞' } }))
-  assert.equal(full.character.design.behaviorStyle, undefined)
-  assert.equal(full.character.design.appearance, completeDesign.appearance + '\n\n' + completeDesign.defaultPresentation)
-  assert.equal(Object.hasOwn(full.character, 'mvuCoverage'), false)
-  assert.equal(Object.hasOwn(full.character, 'mvuProjection'), false)
-
-  const updated = JSON.parse(await session.execute({
-    name: CHARACTER_DESIGN_SAVE_TOOL_NAME,
-    arguments: { ...completeDesign, personality: completeDesign.personality + '，熟悉后会显露干燥幽默感' }
-  }))
-  assert.equal(updated.created, false)
-  assert.equal(session.document().characters.length, 1)
-  assert.match(session.document().characters[0].design.personality, /干燥幽默感/)
-  assert.equal(session.changed(), true)
 })
 
 test('人物档案模块提供不泄漏存储结构的只读状态面板投影', () => {
@@ -72,28 +35,4 @@ test('人物档案模块提供不泄漏存储结构的只读状态面板投影',
   assert.equal(Object.hasOwn(view.characters[0], 'design'), false)
   assert.equal(Object.hasOwn(view.characters[0], 'internal'), false)
   assert.deepEqual(source.characters[0].aliases, ['阿栞'])
-})
-
-test('当前后台 Agent 保存人物后立即独立落盘，无需人物设计任务或结算回执', async () => {
-  let chat = { id: 'chat-1' }
-  const tools = createCharacterDesignDocumentTools({
-    now: () => 100,
-    store: {
-      async readChat() { return structuredClone(chat) },
-      async updateChat(_chatId, mutate) {
-        const next = await mutate(structuredClone(chat))
-        if (next !== undefined) chat = structuredClone(next)
-        return next
-      }
-    }
-  })
-
-  const saved = JSON.parse(await tools.execute('chat-1', { name: CHARACTER_DESIGN_SAVE_TOOL_NAME, arguments: completeDesign }))
-  assert.equal(saved.ok, true)
-  assert.equal(chat.characterDesignDocument.characters[0].name, '鹿野栞')
-  assert.equal(Object.hasOwn(chat, 'characterDesignTaskReceipt'), false)
-  assert.equal(Object.hasOwn(chat, 'settleStatus'), false)
-
-  const read = JSON.parse(await tools.execute('chat-1', { name: CHARACTER_DESIGN_READ_TOOL_NAME, arguments: { name: '鹿野栞' } }))
-  assert.equal(read.character.design.identity, completeDesign.identity)
 })

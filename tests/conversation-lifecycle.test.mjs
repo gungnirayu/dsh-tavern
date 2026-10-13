@@ -13,7 +13,7 @@ async function loadExports() {
 
 const client = await loadExports()
 const createConversationLifecycleModule = client.createConversationLifecycleModule
-const createConversationPrewarmModule = client.createConversationPrewarmModule
+
 const createPlayWorkspaceResolver = client.createPlayWorkspaceResolver
 
 test('预热与正式启动并发解析时只创建一个 Tavern 资源 Workspace', async function () {
@@ -42,28 +42,6 @@ function harness(overrides = {}) {
   }
   return { calls, module: createConversationLifecycleModule(Object.assign(adapters, overrides)) }
 }
-
-function prewarmHarness(overrides = {}) {
-  const calls = []
-  const reports = []
-  const adapters = {
-    sessionIds: function () { return [] },
-    resolveWorkspace: async function () { calls.push('resolve'); return 'workspace-1' },
-    connectWorkspace: async function () { calls.push('connect'); return 'session-warm' },
-    archiveSession: async function (sessionId) { calls.push('archive:' + sessionId) },
-    report: function (event) { reports.push(event) },
-    now: function () { return 100 }
-  }
-  return { calls, reports, module: createConversationPrewarmModule(Object.assign(adapters, overrides)) }
-}
-
-test('游戏准备只解析 Workspace，认领后才创建 Session', async () => {
-  const { calls, module } = prewarmHarness()
-  await module.begin({ key: 'card' })
-  assert.equal(await module.claim('card'), 'workspace-1')
-  assert.deepEqual(calls, ['resolve'])
-  assert.equal(await module.claim('card'), '')
-})
 
 test('刷新页面后可复用失败 Session，打开失败不重复初始化，成功后下次新建', async () => {
   const values = new Map()

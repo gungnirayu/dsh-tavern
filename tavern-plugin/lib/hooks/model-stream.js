@@ -1,8 +1,9 @@
 import { createImportContextPreparation, needsImportContextPreparation } from '../domain/import-context-preparation.js'
-import { createStoryCompactionRequest, usesStoryCompaction } from '../domain/story-compaction.js'
+import { createStoryCompactionRequest, nativelyRetainedRounds, retainRecentStoryRounds, usesStoryCompaction } from '../domain/story-compaction.js'
 import { installCompactionRequestProjection } from '../domain/compaction-request.js'
 import { installWorkspaceInstructionPresentation } from '../domain/workspace-instruction-presentation.js'
 import { presentModelError } from '../domain/model-error-presentation.js'
+import { markRequestHandled, requestHandledBy } from '../domain/request-lineage.js'
 
 export function registerModelStreamHooks({
   agentRegistry,
@@ -13,17 +14,19 @@ export function registerModelStreamHooks({
   foregroundStrategies,
   fullTemplateRuntime,
   modelRequestLog,
+  pluginCompactionNotes,
+  pluginSettlementProgress,
   requestCoordinates,
+  storyRetention,
   runtimePrompt,
   sessionStateForSession,
   sessionStore,
-  storyCompactionRequests,
   str,
   updateChat,
   worldbookRecallLog,
 }) {
   const importContextPreparation = createImportContextPreparation({
-    readChat: chatForSession, updateChat,
+    readChat: chatForSession, readHeader: chatHeaderForSession, updateChat,
     getSession: id => sessionStore.get(id) || agentRegistry.get(id)?.session,
     flush: session => sessionStore.flush(session),
     modelInfo: request => ctx.llm.resolveModelInfo(request.provider, request.model, request.signal),
@@ -38,14 +41,35 @@ export function registerModelStreamHooks({
       return Math.max(native, Math.ceil((text.length - nonAscii) / 4) + nonAscii * 2 + 8)
     }
   })
-  const fullTemplateRequests = new WeakMap()
   installWorkspaceInstructionPresentation(ctx, async sessionId => {
     if (backgroundAgentRunner.owns(sessionId)) return true
     const chat = await sessionStateForSession(sessionId)
     return Boolean(chat)
   })
-  installCompactionRequestProjection(ctx, async sessionId => backgroundAgentRunner.owns(sessionId) || Boolean(await sessionStateForSession(sessionId)))
+  installCompactionRequestProjection(ctx, async sessionId => backgroundAgentRunner.owns(sessionId) || Boolean(await sessionStateForSession(sessionId)), async request => {
+    // Story/script chats summarize with the story prompt and keep the latest rounds
+    // verbatim after the summary; other sessions keep DSH's prompt.
+    const chat = await chatForSession(str(request.sessionId))
+    if (!usesStoryCompaction(chat)) return { request }
+    if (needsImportContextPreparation(chat)) throw new Error('导入对话尚未完成首次上下文容量检查，暂不调用摘要模型')
+    // Seam to the plugin layer: plugins may add what the summary must keep.
+    const notes = pluginCompactionNotes ? await pluginCompactionNotes({ gameId: str(request.sessionId) }).catch(() => []) : []
+    const instruction = [runtimePrompt('story-compaction'), ...(notes.length ? ['【插件附加的摘要要求】', ...notes.map(note => note.text)] : [])].join('\n\n')
+    const story = createStoryCompactionRequest(request, instruction)
+    const session = sessionStore.get(story.sessionId) || agentRegistry.get(story.sessionId)?.session
+    const retention = await storyRetention(story)
+    return retainRecentStoryRounds(story, retention.rounds - nativelyRetainedRounds(session, story), retention)
+  })
 
+  async function gameChildSession(sessionId) {
+    const parentSessionId = str((sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session)?.header?.parentSession)
+    if (!parentSessionId || parentSessionId === sessionId || backgroundAgentRunner.owns(parentSessionId)) return null
+    const chat = await chatHeaderForSession(parentSessionId, ['requestMode', 'compatibilityTraces', 'bypassPlanId', 'runtimePresetSnapshot'])
+    if (!chat || !['story', 'script'].includes(chat.mode)) return null
+    // The request carries no turn; file it under the game's latest turn so old bodies are pruned with the rest.
+    const turn = (await modelRequestLog.list(chat.id)).reduce((latest, entry) => Math.max(latest, Number(entry.turn) || 0), 0)
+    return { chat, context: { scope: 'background', task: 'subagent', parentSessionId, turn } }
+  }
   ctx.on('llm/stream', function (options, next) {
     const sessionId = str(options && options.sessionId)
     const coordinates = requestCoordinates.get(sessionId)
@@ -54,25 +78,7 @@ export function registerModelStreamHooks({
         source: { kind: 'model', provider: str(options.provider), model: str(options.model) }
       }))
     }
-    if (options !== null && typeof options === 'object' && options.purpose === 'compaction' && !storyCompactionRequests.has(options)) {
-      const fallback = next()
-      return (async function * () {
-        const chat = await chatForSession(sessionId)
-        if (!usesStoryCompaction(chat)) {
-          yield * fallback
-          return
-        }
-        if (needsImportContextPreparation(chat)) throw new Error('导入对话尚未完成首次上下文容量检查，暂不调用摘要模型')
-        const request = createStoryCompactionRequest(options, runtimePrompt('story-compaction'))
-        if (request === options) {
-          yield * fallback
-          return
-        }
-        storyCompactionRequests.add(request)
-        yield * ctx.llm.stream(request)
-      })()
-    }
-    const projectedRequest = (fullTemplateRequests.has(options) || importContextPreparation.isPrepared(options)) ? null : foregroundStrategies.projectRequest(options, coordinates)
+    const projectedRequest = (requestHandledBy(options, 'full-template') || importContextPreparation.isPrepared(options)) ? null : foregroundStrategies.projectRequest(options, coordinates)
     if (projectedRequest !== null) return ctx.llm.stream(projectedRequest)
     const stream = next()
     const backgroundContext = backgroundAgentRunner.requestContext(sessionId)
@@ -83,28 +89,34 @@ export function registerModelStreamHooks({
       const chat = ownerSessionId === '' ? undefined : await chatHeaderForSession(ownerSessionId, [
         'requestMode', 'compatibilityTraces', 'bypassPlanId', 'runtimePresetSnapshot', 'foregroundFrames'
       ])
-      if (chat && ['story', 'script'].includes(chat.mode) && options.purpose === undefined && chat.requestMode !== 'sillytavern' && !fullTemplateRequests.has(options)) {
+      if (chat && ['story', 'script'].includes(chat.mode) && options.purpose === undefined && chat.requestMode !== 'sillytavern' && !requestHandledBy(options, 'full-template')) {
         const projected = await fullTemplateRuntime.forSession(ownerSessionId).projectRequestProjection({ messages: options.messages, system: options.system, model: options.model })
-        const templated = { ...options, ...projected }
-        fullTemplateRequests.set(templated, options)
-        yield * ctx.llm.stream(templated)
+        yield * ctx.llm.stream(markRequestHandled({ ...options, ...projected }, 'full-template'))
         return
       }
       let requestRecord = null
-      if (options.purpose === undefined && chat !== undefined && ['story', 'script', 'card'].includes(chat.mode)) {
+      // Agents a plugin creates under a game are not Tavern's own sessions; log them
+      // as that game's background requests so 完整上下文 can show them.
+      const child = options.purpose === undefined && !backgroundContext && !chat ? await gameChildSession(sessionId) : null
+      if (child) requestRecord = await modelRequestLog.record({ chat: child.chat, context: child.context, coordinates: {}, options })
+      else if (options.purpose === undefined && chat !== undefined && ['story', 'script', 'card'].includes(chat.mode)) {
         const coordinates = requestCoordinates.get(sessionId) || {}
         requestRecord = await modelRequestLog.record({ chat, context: backgroundContext, coordinates, options })
         if (!backgroundContext && ['story', 'script'].includes(chat.mode)) {
-          try { await worldbookRecallLog.requested(chat, options, requestRecord.id) }
-          catch (error) { console.warn('dsh-tavern: 世界书请求日志关联失败', String(error?.message || error)) }
+          // Evidence only: scanning a multi-MB request must not delay the first token.
+          worldbookRecallLog.requested(chat, options, requestRecord.id)
+            .catch(error => console.warn('dsh-tavern: 世界书请求日志关联失败', String(error?.message || error)))
         }
       }
+      const progress = child ? event => pluginSettlementProgress?.model(child.context.parentSessionId, event) : () => {}
+      progress('start')
       let responseText = ''
       let finish = null
       let failure = null
       try {
         for await (const chunk of stream) {
           if (chunk && chunk.type === 'text-delta') responseText += str(chunk.text)
+          if (chunk && ['text-delta', 'reasoning-delta', 'tool-call-delta'].includes(chunk.type)) progress('output')
           if (chunk && chunk.type === 'finish') finish = chunk.reason === undefined ? chunk : chunk.reason
           yield chunk
         }
@@ -113,10 +125,12 @@ export function registerModelStreamHooks({
         failure = str(displayedError && displayedError.message || displayedError)
         throw displayedError
       } finally {
+        progress('end')
         const completed = finish && finish.kind !== 'error' && finish.kind !== 'aborted'
-        foregroundStrategies.completeRequest(fullTemplateRequests.get(options) || options, completed)
-        if (chat && requestRecord) {
-          try { await modelRequestLog.complete({ chatId: chat.id, id: requestRecord.id, text: responseText, finish, error: failure }) }
+        foregroundStrategies.completeRequest(options, completed)
+        const owner = child ? child.chat : chat
+        if (owner && requestRecord) {
+          try { await modelRequestLog.complete({ chatId: owner.id, id: requestRecord.id, text: responseText, finish, error: failure }) }
           catch (error) { console.error('dsh-tavern: 模型结果日志写入失败', str(error && error.message || error)) }
         }
       }

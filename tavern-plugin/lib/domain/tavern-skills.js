@@ -173,6 +173,38 @@ export function createTavernSkillModule(options = {}) {
     return { name, source: 'user', path: destination, content, chars: content.length, overwritten: present }
   }
 
+  // Import a skill folder (SKILL.md plus references/*.md) given as relative path → text.
+  // Accepts the folder at the archive root or as its single top-level directory.
+  async function importBundle({ files: entries, overwrite = false } = {}) {
+    const paths = Object.keys(entries || {})
+    const entry = paths.filter(item => /(^|\/)SKILL\.md$/i.test(item)).sort((a, b) => a.split('/').length - b.split('/').length)
+    if (!entry.length) throw new Error('没有找到 SKILL.md：请导入 Skill 的 SKILL.md，或包含它的 Skill 文件夹压缩包')
+    if (entry.length > 1 && entry[0].split('/').length === entry[1].split('/').length) throw new Error('压缩包里有多个 SKILL.md，请每次导入一个 Skill')
+    const base = entry[0].slice(0, entry[0].length - 'SKILL.md'.length)
+    const content = str(entries[entry[0]]).replace(/^\uFEFF/, '')
+    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+    if (!match) throw new Error('SKILL.md 开头缺少 --- 包围的 name 与 description')
+    let meta
+    try { meta = parse(match[1]) || {} } catch (error) { throw new Error('SKILL.md 开头的 YAML 无法解析：' + str(error && error.message || error)) }
+    const name = normalizeTavernSkillName(canonicalTavernSkillName(str(meta.name)))
+    const purpose = meta.metadata?.tavern?.purpose
+    const references = [], skipped = []
+    for (const item of paths) {
+      if (item === entry[0] || !item.startsWith(base)) continue
+      const relative = item.slice(base.length)
+      if (/^references\/[a-zA-Z0-9_./-]+\.md$/.test(relative) && !relative.split('/').some(part => part === '..' || part === '.' || !part)) references.push({ path: relative, content: str(entries[item]) })
+      else skipped.push(relative)
+    }
+    if (!overwrite && await exists(target(directory, name))) return { conflict: true, name }
+    const written = await write({
+      name, description: meta.description, body: content.slice(match[0].length),
+      ...(['card', 'writing', 'background', 'image'].includes(purpose) ? { purpose } : {}),
+      modelInvocable: meta['disable-model-invocation'] !== true, userInvocable: meta['user-invocable'] !== false,
+      references, overwrite
+    })
+    return { skill: written, skipped }
+  }
+
   async function list() {
     const names = new Set()
     for (const root of roots) {
@@ -232,5 +264,5 @@ export function createTavernSkillModule(options = {}) {
     await rm(path.dirname(skill.path), { recursive: true })
     await files.update(configPath, raw => { const data = raw ? JSON.parse(raw) : {}; delete data[skill.name]; return JSON.stringify(data) })
   }
-  return Object.freeze({ edit: input => mutate(() => edit(input)), read, list, readReference, referenceFiles, write: input => mutate(() => write(input)), assign: (name, agents) => mutate(() => assign(name, agents)), remove: name => mutate(() => remove(name)), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) } })
+  return Object.freeze({ edit: input => mutate(() => edit(input)), read, list, readReference, referenceFiles, write: input => mutate(() => write(input)), importBundle: input => mutate(() => importBundle(input)), assign: (name, agents) => mutate(() => assign(name, agents)), remove: name => mutate(() => remove(name)), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) } })
 }

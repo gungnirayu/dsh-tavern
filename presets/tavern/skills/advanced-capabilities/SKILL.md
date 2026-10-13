@@ -7,6 +7,8 @@ description: "在 Tavern 卡片工作台中创建或修改 Skill、通用工具�
 
 在用户要求创建或修改 Skill、通用工具、Cordis 插件等扩展时使用。它提供持久位置和加载约定，不限制 Agent 组合当前已有的 Shell、文件与 Tavern 工具。
 
+做生图、视频、配音等要把内容显示在正文里的插件时，改用 `tavern-plugin` Skill，按其中的接口编写，不要修改 Tavern 程序文件。
+
 ## 扩展位置
 
 系统提示词提供的 Tavern 资源根目录以 `resources` 结尾。其父目录是持久数据目录：

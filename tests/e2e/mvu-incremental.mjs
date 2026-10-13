@@ -6,10 +6,10 @@ import { join } from 'node:path'
 export async function incrementalMvuChecks({page,step,savedChat,output,report,restartServer}) {
   const initial = await savedChat()
   const prose = chat => chat.messages.map(m => [m.role, m.sourceText ?? m.text])
-  const status = target => target.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame').locator('#e2e-gold')
+  const status = target => target.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])').locator('#e2e-gold')
   const gold = (target, value) => status(target).filter({hasText:new RegExp(`^金币：${value}$`)}).waitFor()
   const helper = async (target, action, arg) => {
-    const handle = await target.locator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame').elementHandle()
+    const handle = await target.locator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])').elementHandle()
     const frame = await handle.contentFrame()
     return frame.evaluate(action, arg)
   }

@@ -4,7 +4,7 @@ import { createLegacyCompatibleStorage } from './legacy-compatible-storage.js'
 import { createSessionMessageIndex } from './session-message-index.js'
 import { copyLazyHistoryHeader } from './lazy-history-read.js'
 import { Worker } from 'node:worker_threads'
-import { createScopedMessages } from './scoped-messages.js'
+import { createScopedMessages, isScopedMessages } from './scoped-messages.js'
 import { createIndexedArrayApi } from './indexed-array.js'
 import { copyJsonTree } from './copy-json-tree.js'
 import { projectSceneImageState, projectChatSessionState, projectDisplayRuntimeState, projectChatBackgroundConfig, projectSettlementCheckpoint } from './chat-session-state.js'
@@ -157,7 +157,34 @@ export function createChatJournalStore(options = {}) {
   function indexChat(chat) {
     return Array.isArray(chat?.messages) ? {...chat,messages:indexedMessages.from(chat.messages)} : chat
   }
+  // Tail splices (append, truncate, replace the latest rows) and whole-row sets
+  // keep the indexed history: unchanged floors are shared, not re-indexed.
+  function applyTailChanges(chat, changes) {
+    if (!Array.isArray(chat.messages)) return undefined
+    let length = chat.messages.length
+    const rows = new Map(), head = []
+    for (const change of changes) {
+      if (change.path[0] !== 'messages') { head.push(change); continue }
+      if (change.path.length === 1 && change.op === 'splice') {
+        if (change.index !== length - change.deleteCount || change.index < 0 || !Array.isArray(change.items)) return undefined
+        for (let id = change.index; id < length; id++) rows.delete(id)
+        length = change.index
+        for (const item of change.items) rows.set(length++, item)
+        continue
+      }
+      const id = change.path[1]
+      if (change.path.length < 2 || !Number.isSafeInteger(id) || id < 0 || id >= length || (change.path.length === 2 && change.op !== 'set')) return undefined
+      const row = rows.has(id) ? rows.get(id) : chat.messages[id]
+      rows.set(id, change.path.length === 2 ? change.value : applyJsonChangesShared(row, [{ ...change, path: change.path.slice(2) }]))
+    }
+    const result = applyJsonChangesShared(chat, head)
+    return { ...result, messages: indexedMessages.update(chat.messages, [...rows].filter(([id]) => id < length), length) }
+  }
   function applyIndexedChanges(chat, changes) {
+    if (changes.some(c => c.path.length === 1 && c.path[0] === 'messages' && c.op === 'splice')) {
+      const tail = applyTailChanges(chat, changes)
+      if (tail) return tail
+    }
     const pointEdits = changes.every(c => c.path.length && (c.path[0] !== 'messages'
       || (c.path.length >= 2 && Number.isSafeInteger(c.path[1]) && c.path[1] >= 0 && c.path[1] < (chat.messages?.length || 0)
         && !(c.path.length === 2 && c.op === 'delete'))))
@@ -542,7 +569,7 @@ export function createChatJournalStore(options = {}) {
     const cached=readCache.get(chatId)
     if(!cached||cached.stamp!==await version(chatId)){
       const selected=await native.readSlice(chatId,[],['id','sessionId','mode','backgroundConfigVersion','conversationFeaturesVersion',
-       'backgroundModelSelection','backgroundModelRevision','backgroundTasks','webSearchEnabled','sceneImagesEnabled','cardContextRevision','timeline.participants.background.status'])
+       'backgroundModelSelection','backgroundModelRevision','imageModelSelection','backgroundTasks','webSearchEnabled','sceneImagesEnabled','cardContextRevision','timeline.participants.background.status'])
       if(selected!==null)return selected?projectChatBackgroundConfig(selected.chat):undefined
     }
     const state = await cachedState(chatId)
@@ -662,8 +689,8 @@ export function createChatJournalStore(options = {}) {
     if (!metadata) return null
     return readCache.get(chatId)?.stamp === metadata.stamp ? null : metadata
   }
-  async function readChangedIndices(chatId, revision) {
-    const selected = await native.readChangedSlice(chatId, revision, undefined, true)
+  async function readChangedIndices(chatId, revision, options = {}) {
+    const selected = await native.readChangedSlice(chatId, revision, undefined, true, options.limit)
     if (selected !== null) return selected
     const metadata = await missingNativeCoverage(chatId)
     if (metadata) return revision === metadata.revision ? {indices:[],baseRevision:revision,revision} : undefined
@@ -802,6 +829,7 @@ export function createChatJournalStore(options = {}) {
       if (produced === undefined) return copyJsonTree(current)
       // Normalize once before persistence. The already-JSON result can be
       // detached by copying its JSON containers without another full JSON string.
+      if (isScopedMessages(produced?.messages)) throw new Error('局部读取的对话不能整档保存')
       const next = jsonClone(produced)
       if (next === undefined || next === null || typeof next !== 'object' || Array.isArray(next)) throw new Error('Chat Journal 只能保存 JSON object')
       if (currentState == null && options.newConversations === true && next.mode !== 'card') {

@@ -8,11 +8,18 @@ function setup() {
   const events = []
   const deletedChatIds = new Set()
   const workers = new Map(['a', 'background'].map(id => [id, { cancel: () => events.push('cancel:' + id), whenIdle: async () => events.push('idle:' + id) }]))
-  const api = new Function('readChat', 'str', 'storyTimeline', 'agentRegistry', 'cancelSettlement', 'conversationRegistry', 'deletedChatIds', section + '; return { deleteChats };')(
+  const gameFootprint = {
+    describe: async chat => ({ foregroundSessionId: chat.sessionId, items: [{ category: 'log', path: 'log-' + chat.id }, { category: 'subsession', sessionId: 'background', path: 'live' }, { category: 'subsession', sessionId: 'gone', path: 'gone-' + chat.id }] }),
+    removeLeftovers: async footprint => { events.push('cleanup:' + footprint.items.map(item => item.path).join(',')); return { failures: [] } },
+    deferSessionDeletion: async items => { events.push('defer:' + items.map(item => item.path).join(',')) }
+  }
+  const backgroundAgentRunner = { releaseFor: async id => { events.push('release:' + id) } }
+  const api = new Function('readChat', 'str', 'storyTimeline', 'agentRegistry', 'cancelSettlement', 'conversationRegistry', 'deletedChatIds', 'gameFootprint', 'backgroundAgentRunner', 'deletedSessionIds', 'apiDiagnostics', 'pluginMedia', 'pluginData', 'pluginApi', section + '; return { deleteChats };')(
     async id => ({ id, sessionId: id }), String,
     { inspect: () => ({ participants: { worker: { sessionId: 'background' } } }) }, workers,
     async id => { events.push('settlement:' + id) },
-    { remove: async id => { events.push('remove:' + id); if (id === 'bad') throw new Error('disk error') } }, deletedChatIds)
+    { remove: async id => { events.push('remove:' + id); if (id === 'bad') throw new Error('disk error') } }, deletedChatIds, gameFootprint, backgroundAgentRunner, new Set(), { forget: async id => { events.push('forget:' + id) } },
+    { removeChat: async id => { events.push('media:' + id) } }, { removeChat: async () => {} }, { gameRemoved: id => events.push('removed:' + id) })
   return { ...api, events, deletedChatIds }
 }
 test('batch deletion stops foreground and background before removing, deduplicates, and continues after a failure', async () => {
@@ -22,11 +29,12 @@ test('batch deletion stops foreground and background before removing, deduplicat
   assert.ok(api.events.indexOf('idle:a') < api.events.indexOf('remove:a'))
   assert.ok(api.events.indexOf('idle:background') < api.events.indexOf('remove:a'))
   assert.deepEqual([...api.deletedChatIds], ['a', 'c'])
-})
-test('preparation only stops work without deleting, invalid selection cannot delete anything', async () => {
-  const api = setup()
-  await api.deleteChats(['a'], true)
-  assert.ok(!api.events.some(event => event.startsWith('remove:')))
-  await assert.rejects(api.deleteChats(['a', '']), /有效/)
-  assert.deepEqual(await api.deleteChats([]), { results: [] })
+  // Leftovers go only after the save is removed; a session DSH still holds live stays archived.
+  assert.ok(api.events.indexOf('remove:a') < api.events.indexOf('release:a'))
+  assert.ok(api.events.includes('cleanup:log-a,gone-a'))
+  assert.ok(api.events.includes('defer:live'), '仍被 DSH 持有的会话下次启动时再删')
+  assert.ok(api.events.includes('forget:a'), '已删局的调用诊断不再写回')
+  assert.ok(api.events.includes('media:a') && api.events.includes('removed:a'), '清理插件媒体并通知插件')
+  assert.ok(!api.events.includes('removed:bad'), '删除失败的局不通知')
+  assert.ok(!api.events.some(event => event.startsWith('cleanup:log-bad')))
 })

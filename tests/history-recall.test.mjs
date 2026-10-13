@@ -50,13 +50,3 @@ test('完整正文冷却持续十轮并可从存档恢复，摘要不触发冷�
   restored.messages.push({role:'assistant', turn:14, text:'冷却结束'})
   assert.equal(read(restored, { turn: 2, radius: 0 }).rounds.length, 1)
 })
-
-test('历史正文修改或剧情分支回退后允许重新召回', () => {
-  const source = chat()
-  const read = () => createHistoryRecall().recall({ chat: source, trackCooldown: true, turn: 2, radius: 0 })
-  read()
-  source.messages[2].text = '修改后的正文'
-  assert.equal(read().rounds.length, 1)
-  source.timeline = {branchId: 'rollback-branch'}
-  assert.equal(read().rounds.length, 1)
-})

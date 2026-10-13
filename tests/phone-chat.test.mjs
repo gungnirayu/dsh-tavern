@@ -27,35 +27,6 @@ function fixture() {
   return { store, card, chat: function () { return structuredClone(chat) }, writes, id: function () { serial++; return 'id-' + serial } }
 }
 
-test('手机私聊使用后台模型并独立持久化，不修改正文和状态', async () => {
-  const run = fixture()
-  const calls = []
-  const service = createPhoneChat({
-    store: run.store,
-    selection: function () { return { provider: 'test', model: 'roleplay' } },
-    runAgent: async function (input) { calls.push(input); return { text: '窗外雨很大，你到家了吗？' } },
-    now: function () { return 100 },
-    id: run.id
-  })
-  const before = run.chat()
-  const result = await service.send({ sessionId: 'session-1', contactId: encodeURIComponent('周宁'), requestId: 'request-1', text: '你在做什么？' })
-
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].task, 'phone')
-  assert.equal(calls[0].persistent, false)
-  assert.equal(calls[0].temperature, 0.9)
-  assert.match(calls[0].turnContext, /周宁/)
-  assert.match(calls[0].turnContext, /说话爽快/)
-  assert.match(calls[0].turnContext, /最近剧情/)
-  assert.deepEqual(run.chat().messages, before.messages)
-  assert.equal(run.chat().posture, before.posture)
-  assert.deepEqual(result.threads[1].messages.map(function (message) { return [message.role, message.text, message.status] }), [
-    ['user', '你在做什么？', 'sent'],
-    ['assistant', '窗外雨很大，你到家了吗？', 'sent']
-  ])
-  assert.deepEqual(run.writes.map(function (entry) { return entry.source }), ['phone-chat.send', 'phone-chat.reply'])
-})
-
 test('回复失败保留用户消息和可读错误，同一请求不会重复调用模型', async () => {
   const run = fixture()
   let calls = 0

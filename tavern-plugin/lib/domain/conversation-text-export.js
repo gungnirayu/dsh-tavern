@@ -99,8 +99,6 @@ function exportMessageText(value, options = {}) {
   return cleanMessageText(htmlToPlainText(text))
 }
 
-const SECTION_DIVIDER = '------------------------------------------------------------'
-
 function safeFilename(value) {
   const name = str(value)
     .replace(/[\u0000-\u001f<>:"/\\|?*]/g, ' ')
@@ -108,30 +106,60 @@ function safeFilename(value) {
     .replace(/[. ]+$/g, '')
     .trim()
     .slice(0, 100)
-  return (name || '对话记录') + '.txt'
+  return name || '对话记录'
 }
 
-export function createConversationTextExport(chat, options = {}) {
-  const source = chat !== null && typeof chat === 'object' ? chat : {}
-  const sections = []
+function storyTurn(message) {
+  return Number(message.turn || (message.greeting ? 1 : 0))
+}
 
+/** Story turns whose illustration belongs in the export, in reading order. */
+import { pluginAnchorInsertion } from './plugin-text-segments.js'
+
+export function conversationStoryTurns(chat) {
+  const turns = []
+  for (const message of Array.isArray(chat?.messages) ? chat.messages : []) {
+    if (message?.role === 'assistant' && storyTurn(message) > 0 && !turns.includes(storyTurn(message))) turns.push(storyTurn(message))
+  }
+  return turns
+}
+
+/**
+ * The story as Markdown: player turns as quotes, story text as paragraphs, and each
+ * turn's illustration linked right after its text. `images` maps a story turn to the
+ * relative path the caller stores that picture under.
+ */
+export function createConversationMarkdownExport(chat, options = {}) {
+  const source = chat !== null && typeof chat === 'object' ? chat : {}
+  const images = options.images instanceof Map ? options.images : new Map()
+  const title = safeFilename(options.title || source.title || (source.cardName ? source.cardName + '的对话' : '对话记录'))
+  const sections = []
   for (const message of Array.isArray(source.messages) ? source.messages : []) {
     if (message === null || typeof message !== 'object') continue
-    let text
     if (message.role === 'user') {
-      text = exportMessageText(message.text)
+      const text = exportMessageText(message.text)
+      if (text !== '') sections.push(text.split('\n').map(line => line === '' ? '>' : '> ' + line).join('\n'))
     } else if (message.role === 'assistant') {
-      text = exportMessageText(message.text, { legacyPresentation: true })
-    } else {
-      continue
+      const text = exportMessageText(message.text, { legacyPresentation: true })
+      // An image is a path, { path, anchor }, or a list of them (pictures added to the
+      // turn): each placed after its anchor's paragraph as in play, else after the text.
+      const entry = images.get(storyTurn(message))
+      const pictures = (Array.isArray(entry) ? entry : entry ? [entry] : []).map(item => typeof item === 'string' ? { path: item, anchor: '' } : item)
+      if (text === '' && !pictures.length) continue
+      if (!pictures.length) { sections.push(text); continue }
+      const markdown = image => '![第 ' + storyTurn(message) + ' 轮配图](' + encodeURI(image.path) + ')'
+      const placed = pictures.map((image, order) => ({ image, order, at: image.anchor ? pluginAnchorInsertion(text, image.anchor) : -1 }))
+      const inline = placed.filter(item => item.at >= 0 && item.at < text.length).sort((a, b) => b.at - a.at || b.order - a.order)
+      let body = text
+      for (const item of inline) body = body.slice(0, item.at).trimEnd() + '\n\n' + markdown(item.image) + '\n\n' + body.slice(item.at).trimStart()
+      const trailing = placed.filter(item => !inline.includes(item)).map(item => markdown(item.image))
+      sections.push([body, ...trailing].filter(Boolean).join('\n\n'))
     }
-    if (text === '') continue
-    sections.push(text)
   }
-
   return {
-    filename: safeFilename(options.title || source.title || (source.cardName ? source.cardName + '的对话' : '对话记录')),
-    text: sections.join('\n\n' + SECTION_DIVIDER + '\n\n') + (sections.length > 0 ? '\n' : ''),
+    title,
+    filename: title + '.md',
+    text: sections.length ? '# ' + title + '\n\n' + sections.join('\n\n---\n\n') + '\n' : '',
     messageCount: sections.length
   }
 }

@@ -17,7 +17,12 @@ export function compactionFailureMessage(error) {
     if (cause.code === 'CONTEXT_WINDOW_EXCEEDED' || /context (?:window|length).*(?:exceed|overflow)|context overflow|maximum context length|上下文.*超限/i.test(String(cause.message || ''))) {
       return '压缩输入超出模型上下文窗口。请检查模型设置中的真实 contextWindow，或改用更大窗口的摘要模型后重试。'
     }
+    if (!cause.cause || seen.has(cause.cause)) break
     cause = cause.cause
   }
-  return String(error?.message || error || '上下文压缩失败').slice(0, 500)
+  // DSH wraps every manual failure in a generic summary message; the real reason
+  // is the innermost cause (issue #148 surfaced only the misleading wrapper).
+  const outer = String(error?.message || error || '上下文压缩失败')
+  const root = cause && cause !== error ? String(cause.message || cause).replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+  return (root && !outer.includes(root) ? outer + '（原因：' + root + '）' : outer).slice(0, 500)
 }

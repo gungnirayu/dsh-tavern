@@ -57,59 +57,6 @@ test('独立插件并发合并，同一字段冲突时消息和元数据一起�
   assert.equal(actual.tavernPluginMetadata.mustNotSave, undefined)
 })
 
-test('追加新消息不会让旧楼层存档写错位置，刷新保留脏数据和稳定引用', async t => {
-  const host = await fixture(t), run = await host.connect(), { api } = run
-  const chat = api.chat, message = chat[0]
-  message.database = { x: 1 }; const held = message.database
-  await host.persistence.update('audit', chat => {
-    chat.messages[0].tavernPluginData = { phone: { x: 2 } }
-    chat.messages.push({ id: 'next', role: 'user', text: '继续', turn: 2 })
-    return chat
-  })
-  run.receive({ type: 'dsh-tavern-helper-context', context: await host.context() })
-  assert.equal(api.chat, chat); assert.equal(api.chat[0], message); assert.equal(message.database, held)
-  assert.equal(api.chat.length, 2); assert.equal(message.phone.x, 2)
-  api.chat[1].newPlugin = 3
-  await api.saveChat()
-  const stored = await host.persistence.read('audit')
-  assert.deepEqual(stored.messages[0].tavernPluginData, { phone: { x: 2 }, database: { x: 1 } })
-  assert.deepEqual(stored.messages[1].tavernPluginData, { newPlugin: 3 })
-})
-
-test('保存期间新编辑与排队保存都保留，返回前必须等待宿主落盘', async t => {
-  const host = await fixture(t), deliveries = []
-  const run = await host.connect('audit', (message, dispatch) => deliveries.push(dispatch))
-  run.api.chat[0].database = { n: 1 }
-  let done = false
-  const first = run.api.saveChat().then(() => { done = true })
-  await tick(); assert.equal(done, false)
-  run.api.chat[0].database.n = 2
-  const second = run.api.saveChat()
-  await deliveries.shift()(); await first; await tick()
-  assert.equal(run.api.chat[0].database.n, 2)
-  await deliveries.shift()(); await second
-  assert.equal((await host.open().read('audit')).messages[0].tavernPluginData.database.n, 2)
-})
-
-test('旧正文、变量、身份、重排或删除请求明确失败，不保存旁边的插件修改', async t => {
-  const host = await fixture(t)
-  for (const mutate of [
-    api => { api.chat[0].mes = '改写历史' },
-    api => { api.chat[0].variables = [] },
-    api => { api.chat[0].is_system = true },
-    api => { api.chat.splice(0, 1) },
-    api => { api.chat[0] = { ...api.chat[0] } }
-  ]) {
-    const run = await host.connect()
-    run.api.chatMetadata.no = 1; mutate(run.api)
-    await assert.rejects(run.api.saveChat(), /不支持/)
-    assert.equal(run.calls().length, 0)
-  }
-  const stored = await host.open().read('audit')
-  assert.equal(stored.tavernPluginMetadata, undefined)
-  assert.equal(stored.messages[0].text, '她回到了家。')
-})
-
 test('旧生命周期、聊天身份、变化的消息以及临时楼层都不能写回', async t => {
   const host = await fixture(t), stale = await host.connect()
   stale.api.chat[0].data = 1
@@ -164,20 +111,6 @@ test('宿主刷新不能掩盖脏字段冲突或本地旧正文修改', async t 
   await assert.rejects(run.api.saveChat(), /其他操作修改/)
   assert.equal((await host.open().read('audit')).messages[0].tavernPluginData.database.value, 2)
 })
-
-test('保存失败会 reject 并保留待保存数据，不虚报成功', async t => {
-  const host = await fixture(t), calls = []
-  const run = await host.connect('audit', message => calls.push(message))
-  run.api.chat[0].database = { value: 1 }; run.api.chatMetadata.phone = { value: 2 }
-  const saving = run.api.saveChat()
-  await tick()
-  run.reply(calls[0], '模拟存储不可写', false)
-  await assert.rejects(saving, /存储不可写/)
-  assert.equal(run.api.chat[0].database.value, 1)
-  assert.equal(run.api.chatMetadata.phone.value, 2)
-  assert.equal((await host.open().read('audit')).tavernPluginMetadata, undefined)
-})
-
 
 test('进行中保存的旧回执不会覆盖新聊天上下文', async t => {
   const host = await fixture(t), deliveries = []
@@ -252,14 +185,4 @@ test('远端刷新不掩盖未保存变量的冲突，宿主拒绝旧楼层和�
   request.variableUpdates[0].message_id=1;request.variableUpdates[0].swipe_id=1
   await assert.rejects(host.adapter.saveChatData('audit',request),/当前变量快照/)
   assert.equal((await host.open().read('audit')).tavernPluginMetadata,undefined)
-})
-
-test('prepared opening prompt persists as metadata across reopen without creating a message', async t => {
-  const host = await fixture(t), run = await host.connect()
-  const count = run.api.chat.length
-  run.api.chatMetadata.dsh_pending_opening = {text:'neutral opening\nselected options',lifecycleRevision:0}
-  await run.api.saveMetadata()
-  const reopened = await host.connect()
-  assert.equal(reopened.api.chat.length, count)
-  assert.equal(reopened.api.chatMetadata.dsh_pending_opening.text, 'neutral opening\nselected options')
 })

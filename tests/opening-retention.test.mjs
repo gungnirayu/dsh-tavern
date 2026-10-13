@@ -23,25 +23,6 @@ function fixture() {
   return { ctx, state, draft }
 }
 
-const preview = readFileSync(new URL('../tavern-plugin/src/client/opening-preview.js', import.meta.url), 'utf8')
-test('隐藏期间续期不重建界面，卸载后停止；失败不会重复刷屏', async () => {
-  const retain = vm.runInNewContext(preview + '; retainOpeningPreparation')
-  let tick, focus, pending, calls = 0, errors = 0, cleared = false
-  const host = { setInterval(fn, ms) { tick = fn; assert.equal(ms, 60000); return 1 }, clearInterval() { cleared = true },
-    addEventListener(name, fn) { assert.equal(name, 'focus'); focus = fn }, removeEventListener(name, fn) { assert.equal(fn, focus); focus = null } }
-  const stop = retain('draft', { window: host, onError() { errors++ }, call(method, args) {
-    assert.equal(method, 'getOpeningPreparation'); assert.equal(args.touchOnly, true); assert.equal(args.id, 'draft'); calls++
-    return new Promise((resolve, reject) => { pending = { resolve, reject } })
-  } })
-  await tick(); assert.equal(calls, 1)
-  pending.resolve(); await new Promise(resolve => setImmediate(resolve))
-  const attempt = tick(); pending.reject(new Error('offline')); await attempt
-  const again = focus(); pending.reject(new Error('offline')); await again
-  assert.equal(errors, 1)
-  stop(); await tick()
-  assert.equal(calls, 3); assert.equal(cleared, true); assert.equal(focus, null)
-})
-
 for (const targetMode of ['card', 'story']) test(`完成 ${targetMode} 创建时只释放已经开局的准备页`, async () => {
   const { ctx, state, draft } = fixture()
   const calls = []

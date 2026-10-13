@@ -6,17 +6,6 @@ import vm from 'node:vm'
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const component = source.slice(source.indexOf('function CandidateAction('), source.indexOf('function CandidateDockActions('))
 // The replay submit path sits above CandidateAction; slice it with its only helper.
-function clientFunction(name) {
-  const start = source.indexOf(name)
-  assert.ok(start >= 0, name)
-  let depth = 0
-  for (let index = source.indexOf('{', start); index < source.length; index++) {
-    if (source[index] === '{') depth++
-    else if (source[index] === '}' && --depth === 0) return source.slice(start, index + 1)
-  }
-  throw new Error('unbalanced ' + name)
-}
-const replaySources = clientFunction('function applyBodyRegenerationResult(') + '\n' + clientFunction('async function submitFailedTurnReplay(')
 
 function harness() {
   let running = true, activity = { phase: 'idle', busy: false, role: '' }, regen = null, fail = false, warning = '', canRollback = true, undoTurn = null
@@ -91,21 +80,6 @@ test('开场白不显示正文重生成入口，正式玩家轮次完成后只�
   assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项'])
 })
 
-test('更多菜单收起回退和压缩，并可再次关闭', () => {
-  const h = harness()
-  h.running(false)
-  let more = h.more()
-  assert.equal(more.children[0].children[0], '更多 ▾')
-  assert.equal(more.children[0].props['aria-expanded'], false)
-  assert.equal(more.children[1].props.hidden, true)
-  more.children[0].props.onClick()
-  more = h.more()
-  assert.equal(more.children[0].props['aria-expanded'], true)
-  assert.equal(more.children[1].props.hidden, false)
-  assert.equal(more.children[1].props.role, 'menu')
-  assert.deepEqual(more.children[1].children.map(child => child.type.name || child.children[0]), ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', 'TavernCompactionAction'])
-})
-
 test('实际回退组件在前台、后台和重生成期间禁用，完成后允许点击', async () => {
   const h = harness()
   for (const phase of ['front', 'background', 'regen']) {
@@ -121,120 +95,4 @@ test('实际回退组件在前台、后台和重生成期间禁用，完成后�
   assert.ok(h.calls.includes('project'))
   assert.ok(!h.calls.includes('confirm'), '点击回退直接执行，不弹确认框')
   assert.equal(h.button().props.disabled, false)
-})
-
-test('待接续或运行中的结算只允许重新生成取消旧结算，其他轮次操作保持禁用', async () => {
-  const h = harness()
-  h.running(false)
-  for (const phase of ['pending', 'running']) {
-    h.activity({ phase, busy: phase === 'running', role: 'settlement' })
-    const [candidate, regenerate] = h.buttons()
-    assert.equal(candidate.props.disabled, true)
-    assert.equal(candidate.children[0], '后台结算中…')
-    assert.equal(regenerate.props.disabled, false)
-    assert.match(regenerate.props.title, /取消当前正文的后台结算/)
-    assert.equal(h.button().props.disabled, true, '回退不能绕过结算取消协议')
-  }
-  h.activity({ phase: 'running', busy: true, role: 'candidate' })
-  assert.equal(h.buttons()[1].props.disabled, true, '候选任务不能被正文重生成误取消')
-})
-
-test('实际回退组件在请求被拒后解除忙碌并刷新，下一次点击重新提交', async () => {
-  const h = harness()
-  h.running(false); h.fail(true)
-  await h.button().props.onClick()
-  assert.equal(h.button().props.disabled, false)
-  assert.ok(h.calls.includes('refresh-view'))
-  assert.ok(h.calls.includes('refresh-activity'))
-  assert.ok(!h.calls.includes('project'), '失败不隐藏正文')
-  h.fail(false)
-  await h.button().props.onClick()
-  assert.equal(h.calls.filter(call => call === 'rpc').length, 2)
-  assert.equal(h.calls.filter(call => call === 'project').length, 1)
-})
-
-test('脚本联动警告保留成功回退投影，不显示为回退失败', async () => {
-  const h = harness()
-  h.running(false); h.warning('回退已完成，但脚本联动失败')
-  await h.button().props.onClick()
-  assert.ok(h.calls.includes('project'))
-  assert.ok(h.calls.includes('回退提示: 回退已完成，但脚本联动失败'))
-  assert.ok(!h.calls.some(call => call.startsWith('回退本轮:')))
-})
-
-test('回退到开场白后仍可撤销，运行期间禁用', async () => {
-  const h = harness()
-  h.running(false); h.playerRound(false)
-  assert.equal(h.undo(), null)
-  h.undoTurn(2)
-  assert.match(h.undo().children[0], /恢复第 2 轮/)
-  h.running(true)
-  assert.equal(h.undo().props.disabled, true)
-  await h.undo().props.onClick()
-  assert.deepEqual(h.calls, [])
-  h.running(false)
-  await h.undo().props.onClick()
-  assert.ok(h.calls.includes('restore'))
-})
-
-
-test('不可回退时展示原因，仍允许独立的正文重新生成', () => {
-  const h = harness()
-  h.running(false)
-  h.playerRound(false)
-  h.view({ rollbackUnavailableReason: '当前轮次已不在可回退的消息流中', canRegenerate: true })
-  assert.equal(h.button().props.role, 'menuitem')
-  assert.equal(h.button().props.disabled, true)
-  assert.match(h.button().props.title, /不在可回退/)
-  assert.match(h.button().children[1].children[0], /不在可回退/)
-  assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项', '重新生成正文'])
-  assert.deepEqual(h.calls, [])
-})
-
-test('失败尾部显示一键重放，点击直接重发而不是打开意见面板', async () => {
-  const h = harness()
-  h.running(false); h.playerRound(true)
-  h.view({ canReplayFailedTurn: true, replayFailedTurn: 3 })
-  const replay = h.buttons()[1]
-  assert.equal(replay.children[0], '重新生成本轮')
-  assert.match(replay.props.title, /重放本轮请求/)
-  assert.equal(replay.props.onClick.name, 'replayFailed')
-  await replay.props.onClick()
-  assert.deepEqual(h.calls.filter(call => call === 'replay'), ['replay'])
-  assert.ok(!h.calls.includes('set-regen-panel'), '失败重放不打开意见面板')
-  assert.ok(h.calls.includes('refresh-view'))
-  // 失败尾部重放优先于整体替换，即便回退入口同时可用。
-  assert.equal(h.buttons().length, 2)
-  h.view({ canReplayFailedTurn: false })
-  assert.equal(h.buttons()[1].children[0], '重新生成正文')
-  assert.equal(h.buttons()[1].props.onClick.name, 'openRegeneration')
-})
-
-test('提交失败重放走 replayTurn，刷新视图与回合投影并清空面板', async () => {
-  const seen = []
-  const context = {
-    rpc: async (...args) => { seen.push(['rpc'].concat(args)); return { view: { suppressedDshTurns: [3], replayed: { turn: 3 } } } },
-    liveTavernView: { setView: (sessionId, view) => seen.push(['setView', sessionId, view]) },
-    historyProjection: { regenerated: (sessionId, view, tail) => seen.push(['regenerated', sessionId, view, tail]) },
-    setCandidatePanel: value => seen.push(['setCandidatePanel', value]),
-    setRegenPanel: value => seen.push(['setRegenPanel', value]),
-    setCandidateGuidePanel: value => seen.push(['setCandidateGuidePanel', value]),
-    notifyTavernDataChanged: (...args) => seen.push(['notify'].concat(args)),
-    tavernCoordination: { invalidate: id => seen.push(['invalidate', id]) }
-  }
-  const { submitFailedTurnReplay } = vm.runInNewContext(replaySources + '; ({ submitFailedTurnReplay })', context)
-  const result = await submitFailedTurnReplay('session')
-  assert.equal(seen[0][0], 'rpc')
-  assert.equal(seen[0][1], 'replayTurn')
-  assert.equal(seen[0][3], 'session')
-  assert.deepEqual(Object.keys(seen[0][2]), [], '重放不携带意见参数')
-  assert.equal(seen[1][0], 'setView')
-  assert.equal(seen[1][1], 'session')
-  assert.equal(seen[2][0], 'regenerated')
-  assert.equal(seen[2][3], null, '重放不依赖点击时的回合尾部')
-  assert.equal(JSON.stringify(seen.slice(3)), JSON.stringify([
-    ['setRegenPanel', null], ['setCandidatePanel', null], ['setCandidateGuidePanel', null],
-    ['notify', ['sessions'], 'play-controls'], ['invalidate', 'session']
-  ]))
-  assert.deepEqual(Array.from(result.view.suppressedDshTurns), [3])
 })

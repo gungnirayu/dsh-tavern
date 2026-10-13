@@ -5,7 +5,7 @@ import { copyLazyHistoryHeader } from './lazy-history-read.js'
 import { rollbackAvailability, hasRollbackMessages, failedTurnReplayAvailability, foregroundSuppressedTurns, supersededRegenerationErrorTurns } from './rollback-surface.js'
 import { isRescuedHistoryMessage } from './chat-history-rescue.js'
 import { canUndoRollback } from './surface-restoration.js'
-const str = value => String(value ?? '')
+import { failedErrorTurnStates } from './failed-error-visibility.js'
 
 export function pendingMvuSettlementState(chat) {
   if (Object.hasOwn(chat, 'pendingMvuSettlement')) return chat.pendingMvuSettlement
@@ -123,13 +123,16 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       canRollback: false, canClearIncompleteReply: false,
       reason: '当前会话的消息流尚未加载，请重新打开对话后重试；历史正文仍保留。'
     }
-    const replayTarget = Array.isArray(nodes) ? failedTurnReplayAvailability({ events: evidence.events || [], nodes }).target : null
+    const replayTarget = Array.isArray(nodes) ? failedTurnReplayAvailability({ events: evidence.events || [], nodes, cleared: chat.suppressedDshTurns || [] }).target : null
     const hasRound = hasRollbackMessages(chat.messages)
+    const failures = failedErrorTurnStates(evidence.events || [], chat.suppressedDshTurns)
     const result = {
       hiddenDshErrorTurns: chat.hiddenDshErrorTurns || [],
       suppressedDshTurns: foregroundSuppressedTurns(chat, evidence.events || []),
       regeneratedDshTurns: mappings,
       suppressedDshErrorTurns: supersededRegenerationErrorTurns({ events: evidence.events || [], suppressedDshTurns: chat.suppressedDshTurns }),
+      staleDshErrorTurns: failures.staleTurns,
+      filteredFailureStreak: failures.filteredStreak,
       canRegenerate: hasRound && !isRescuedHistoryMessage(chat, chat.messages?.findLast(message => message.role === 'assistant')),
       canEditBody: hasRound,
       rollbackTargetTurn: settlementTurn(chat),
@@ -208,7 +211,7 @@ export function projectDisplayRuntimeState(chat, requestedTurn) {
 export function projectChatBackgroundConfig(chat) {
   const selected = {}
   for (const key of ['id', 'sessionId', 'mode', 'backgroundConfigVersion', 'conversationFeaturesVersion',
-    'backgroundModelSelection', 'backgroundModelRevision', 'backgroundTasks', 'webSearchEnabled', 'sceneImagesEnabled', 'cardContextRevision']) {
+    'backgroundModelSelection', 'backgroundModelRevision', 'imageModelSelection', 'backgroundTasks', 'webSearchEnabled', 'sceneImagesEnabled', 'cardContextRevision']) {
     if (Object.hasOwn(chat, key)) selected[key] = chat[key]
   }
   selected.backgroundSessionStatus = chat.timeline?.participants?.background?.status

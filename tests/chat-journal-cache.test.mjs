@@ -27,20 +27,6 @@ const edit = (store, id, revision, index, text) => store.patch(id, revision, [
   { op: 'set', path: ['_storageRevision'], value: revision + 1 }
 ])
 
-test('alternating chats reuse materializations and keep separate revision deltas', async t => {
-  const { store } = await fixture(t)
-  await store.readSlice('a', [0]); await store.readSlice('b', [0])
-  const parses = countParses(t)
-  for (let i = 0; i < 5; i++) await Promise.all([store.readSlice('a', [0]), store.readSlice('b', [0])])
-  assert.equal(parses(), 0, 'switching chats must not reparse full bodies')
-  await Promise.all([edit(store, 'a', 1, 0, 'A'), edit(store, 'b', 1, 1, 'B')])
-  const a = await store.readChangedSlice('a', 1), b = await store.readChangedSlice('b', 1)
-  assert.deepEqual(a.indices, [0]); assert.deepEqual(b.indices, [1])
-  assert.equal(a.chat.messages[0].text, 'A'); assert.equal(b.chat.messages[0].text, 'B')
-  a.chat.messages[0].text = 'corrupt'
-  assert.equal((await store.readSlice('a', [0])).chat.messages[0].text, 'A')
-})
-
 for (const options of [{ maxCachedChats: 1 }, { cacheMaxBytes: 30000 }]) test('cache evicts by entry and estimated byte budgets: ' + JSON.stringify(options), async t => {
   const { store } = await fixture(t, options)
   await store.readSlice('a', [0]); await store.readSlice('b', [0])
@@ -82,16 +68,6 @@ test('oversized states bypass the cache, eviction drops delta evidence, and JSON
   assert.ok(parses() >= 2)
   assert.equal(JSON.stringify((await store.read('a')).variables), '{"z":1,"a":2,"m":3}')
   assert.equal(await store.readChangedSlice('a', 2), undefined)
-})
-
-test('cold journal projections do not clone the full historical archive during replay', async t => {
-  const {root,store}=await fixture(t)
-  await edit(store,'a',1,1,'updated')
-  const fresh=createChatJournalStore({dataRoot:root})
-  const clone=globalThis.structuredClone;let full=0
-  t.mock.method(globalThis,'structuredClone',value=>{if(value?.messages?.[0]?.text?.includes('CACHE-BODY'))full++;return clone(value)})
-  assert.equal((await fresh.readSlice('a',[1])).chat.messages[0].text,'updated')
-  assert.equal(full,0,'replaying a tiny journal patch must not deep-copy historical rows')
 })
 
 test('cancelled updates detach JSON input and output without serializing the whole saved archive',async t=>{

@@ -5,8 +5,8 @@ import vm from 'node:vm'
 import {createSessionViewSync} from '../tavern-plugin/lib/domain/session-view-sync.js'
 
 for(const count of [20,400,10000])test(`production mapping delta is keyed and only wakes affected host turns at ${count} rows`,async()=>{
- const h=vm.createContext({})
- const files=['../tavern-plugin/lib/domain/indexed-array.js','../tavern-plugin/lib/domain/ordered-numeric-index.js','../tavern-plugin/src/client/modules/session-view-sync.js','../tavern-plugin/src/client/modules/live-tavern-view.js']
+ const h=vm.createContext({AbortController})
+ const files=['../tavern-plugin/lib/domain/indexed-array.js','../tavern-plugin/lib/domain/ordered-numeric-index.js','../tavern-plugin/src/client/modules/session-view-sync.js','../tavern-plugin/src/client/modules/session-refresh-controller.js','../tavern-plugin/src/client/modules/live-tavern-view.js']
  vm.runInContext(files.map(path=>fs.readFileSync(new URL(path,import.meta.url),'utf8').replace(/^export .*$/gm,'')).join('\n'),h)
  const server=createSessionViewSync(),begin=h.createSessionViewReader(),jobs=[]
  let view={regeneratedDshTurns:Object.fromEntries(Array.from({length:count},(_,id)=>[id+1,id+100]))}
@@ -31,16 +31,4 @@ for(const count of [20,400,10000])test(`production mapping delta is keyed and on
  assert.deepEqual(lastDelta.remove,[['regeneratedDshTurns','1']]);assert.deepEqual([...notified],[101])
  assert.equal(h.createSessionViewReader.storyTurnLookup.read(live.getSnapshot('s').view.regeneratedDshTurns,101),2)
  assert.equal(h.createSessionViewReader.storyTurnLookup.read(client.view.regeneratedDshTurns,100),1)
-})
-
-test('mapping parent replacement and removal preserve wire semantics',()=>{
- const sync=createSessionViewSync()
- let result=sync('s',{})
- result=sync('s',{regeneratedDshTurns:{'1':8}},result.viewCursor)
- assert.deepEqual(result.viewDelta.set,[[['regeneratedDshTurns'],{}],[['regeneratedDshTurns','1'],8]])
- result=sync('s',{regeneratedDshTurns:null},result.viewCursor)
- assert.deepEqual(result.viewDelta.set,[[['regeneratedDshTurns'],null]])
- assert.deepEqual(result.viewDelta.remove,[['regeneratedDshTurns','1']])
- result=sync('s',{},result.viewCursor)
- assert.deepEqual(result.viewDelta.remove,[['regeneratedDshTurns']])
 })

@@ -6,7 +6,7 @@ export const TAVERN_COMPATIBILITY_CAPABILITIES = Object.freeze([
   ...['scrollChatToBottom', 'showLoader', 'hideLoader', 'unregisterMacro'].map(name => ({ surface: 'SillyTavern', name, policy: 'noop' })),
   ...['registerMacro', 'getRequestHeaders', 'getChatCompletionModel'].map(name => ({ surface: 'SillyTavern', name, policy: 'reject' })),
   ...['generate', 'generateRaw', 'stopGeneration', 'deleteLastMessage', 'deleteMessage', 'clearChat', 'reloadCurrentChat', 'openCharacterChat', 'openGroupChat', 'executeSlashCommandsWithOptions'].map(name => ({ surface: 'SillyTavern', name, policy: 'missing' })),
-  ...['generate', 'triggerSlash'].map(name => ({ surface: 'TavernHelper', name, policy: 'missing' }))
+  ...['getPreset'].map(name => ({ surface: 'TavernHelper', name, policy: 'missing' }))
 ].map(entry => Object.freeze({ ...entry, id: entry.surface + '.' + entry.name })))
 
 const catalog = new Map(TAVERN_COMPATIBILITY_CAPABILITIES.map(entry => [entry.id, entry]))

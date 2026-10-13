@@ -65,6 +65,15 @@ export function createPlayCardSnapshots({ worldBooks, planner, readCard, writeCh
     return patch.cardContextSnapshot
   }
 
+  /** The stored snapshot when ensure() would neither rebuild nor rewrite it. */
+  function settled(header) {
+    if (!usesFixedContext(header)) return ''
+    const existing = str(header.cardContextSnapshot)
+    if ((existing !== '' || preferenceOnly(header)) && Number(header.cardContextSnapshotVersion) >= VERSION
+      && sanitizeAgentProjectionText(existing) === existing && !pending.has(header.id)) return existing
+    return undefined
+  }
+
   async function ensure(chat, card) {
     if (!usesFixedContext(chat)) return ''
     const key = chat.id || chat
@@ -181,5 +190,5 @@ export function createPlayCardSnapshots({ worldBooks, planner, readCard, writeCh
     }
   }
 
-  return Object.freeze({ prepare, ensure, constantContext, updateStatus, replacement, preferenceReplacement })
+  return Object.freeze({ prepare, ensure, settled, constantContext, updateStatus, replacement, preferenceReplacement })
 }

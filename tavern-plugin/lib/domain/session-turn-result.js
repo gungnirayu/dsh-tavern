@@ -1,14 +1,7 @@
 import { sessionEvents } from './session-events.js'
+import { turnStartIndex } from './session-turn-input.js'
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
-}
-
-function turnStartIndex(events, turn) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event && event.type === 'turn/start' && Number(event.data && event.data.turn) === Number(turn)) return index
-  }
-  return -1
 }
 
 function blockText(message, type) {

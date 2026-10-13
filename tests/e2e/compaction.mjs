@@ -22,7 +22,7 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
     await composer.fill(`E2E_C_ROUND_${round} 继续领取任务奖励。`)
     await composer.press('Enter')
     await page.getByText(`压缩验收第 ${round} 轮，金币 ${round * 10}。`, { exact: false }).filter({ visible: true }).first().waitFor()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: new RegExp(`^金币：${round * 10}$`) }).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: new RegExp(`^金币：${round * 10}$`) }).waitFor()
     const chat = await until(savedChat, chat => chat.messages.at(-1)?.mvu?.receipt?.status === 'updated' && chat.posture === '站在柜台前，收下奖励。', 'settlement')
     assert.equal(chat.id, initial.id); assert.equal(chat.sessionId, sessionId)
     assert.equal(chat.messages.filter(m => m.role === 'user').length, round)
@@ -36,8 +36,19 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
     await page.getByRole('menuitem', { name: /压缩上下文|前台和后台已压缩|前台已压缩/ }).click()
     return (await until(savedChat, chat => chat.contextCompaction?.operation?.id !== previous && chat.contextCompaction?.operation?.status === status, `compaction ${status}`)).contextCompaction.operation
   }
+  // Same messages as the provider sees them (ids and request-only metadata aside).
+  const visible = message => JSON.stringify({ role: message.role, content: message.content })
+  const sharedPrefix = (a, b) => { let n = 0; while (n < a.length && n < b.length && visible(a[n]) === visible(b[n])) n++; return n }
   if (scenario === 'manual') {
-    await step('积累三轮真实剧情，为摘要及保留尾部留出空间', async () => { await play(); await play() })
+    await step('选用本局预设 A，积累三轮真实剧情，为摘要及保留轮次留出空间', async () => {
+      await page.getByText('本局设置', { exact: true }).filter({ visible: true }).first().click()
+      const selector = page.getByRole('combobox', { name: '本局预设', exact: true })
+      await selector.selectOption('presets/E2E-A.json')
+      await page.getByRole('complementary', { name: '本局设置', exact: true })
+        .locator('.dsh-local-field').filter({ has: selector }).getByRole('status').filter({ hasText: /^已保存$/ }).waitFor()
+      await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).first().click()
+      await play(); await play()
+    })
     let previous = await savedChat()
     for (let cycle = 1; cycle <= 2; cycle++) {
       await step(`第 ${cycle} 次手动联合压缩，随后继续游玩`, async () => {
@@ -48,6 +59,17 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
         assert.deepEqual(history(await savedChat()), history(before), '压缩不能改变历史正文和变量')
         const compactions = (await requests()).slice(count).filter(row => row.purpose === 'compaction')
         assert.deepEqual(compactions.map(row => row.side).sort(), ['background', 'foreground'])
+        // Prefix cache: the preset front lives in the recorded system message, so the
+        // summary request replays the foreground request's opening byte for byte.
+        const summarizer = compactions.find(row => row.side === 'foreground')
+        const lastForeground = (await requests()).slice(0, count).findLast(row => row.purpose === 'generation' && row.side === 'foreground')
+        assert.match(visible(lastForeground.messages[0]), /E2E_PRESET_A_ACTIVE/, '预设前段必须在系统消息中')
+        const shared = sharedPrefix(summarizer.messages, lastForeground.messages)
+        assert.ok(shared >= 3, `压缩请求必须与前台请求共享开头（系统消息与早期历史），实际共享 ${shared} 条`)
+        // The latest two rounds stay verbatim: the summarizer must not see them.
+        assert.ok(!summarizer.rawRounds.includes(round) && !summarizer.rawRounds.includes(round - 1), '最近两轮不交给总结模型')
+        report[`manual-${cycle}-cache`] = { sharedMessages: shared, summarizerMessages: summarizer.messages.length, foregroundMessages: lastForeground.messages.length }
+        const kept = [round - 1, round]
         if (cycle === 2) for (const row of compactions.filter(item => item.side === 'foreground')) {
           assert.ok(row.summaryPresent, '第二次压缩必须包含上一次摘要')
           assert.ok(!row.rawRounds.includes(1), '第二次压缩不能复活首轮旧正文')
@@ -60,7 +82,10 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
           assert.ok(row, '继续游玩必须调用 ' + side)
           // Settlement intentionally rewinds its previous task (rewindTo: -1)
           // and receives the current authoritative state, not past summaries.
-          if (side === 'foreground') assert.ok(row.summaryPresent, '前台下一轮必须携带摘要')
+          if (side === 'foreground') {
+            assert.ok(row.summaryPresent, '前台下一轮必须携带摘要')
+            assert.ok(kept.every(n => row.rawRounds.includes(n)), '最近两轮原文必须原样保留在上下文中')
+          }
           assert.ok(!row.rawRounds.includes(1), '压缩后的请求不得重新包含首轮旧正文')
         }
         report[`manual-${cycle}`] = operation
@@ -156,7 +181,8 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
         assert.equal(chat.contextCompaction.operation.background.status, 'succeeded')
       }
       await play()
-      if (scenario === 'both') assert.deepEqual([...new Set((await requests()).slice(start).filter(row => row.purpose === 'compaction').map(row => row.side))].sort(), ['background', 'foreground'])
+      // Foreground compaction runs at the next idle point once retention leaves history to summarize.
+      if (scenario === 'both') await until(requests, rows => ['background', 'foreground'].every(side => rows.slice(start).some(row => row.purpose === 'compaction' && row.side === side)), 'both sides compacted')
       if (['foreground', 'both'].includes(scenario)) {
         const chat = await until(savedChat, chat => chat.contextCompaction?.operation?.status === 'completed', 'percent policy completion')
         assert.equal(chat.contextCompaction.operation.reason, 'percent')
@@ -171,7 +197,7 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
     const before = await savedChat()
     await restartServer()
     await page.getByText(`压缩验收第 ${round} 轮，金币 ${round * 10}。`, { exact: false }).filter({ visible: true }).first().waitFor()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: new RegExp(`^金币：${round * 10}$`) }).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: new RegExp(`^金币：${round * 10}$`) }).waitFor()
     const after = await savedChat()
     assert.deepEqual(history(after), history(before))
     assert.equal(after.timeline.participants.background.sessionId, before.timeline.participants.background.sessionId)

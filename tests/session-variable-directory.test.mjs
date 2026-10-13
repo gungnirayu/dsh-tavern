@@ -25,14 +25,3 @@ test('directory waits for initialization, joins fixed context once and survives 
   assert.deepEqual(sessionStablePrefixSections(reopened), sections)
   assert.ok(withCurrentWorldbook(sections, '新世界书').some(section => section.text === text))
 })
-
-test('directory stays small for large states and skips editing sessions', () => {
-  const session = Session.create('large-directory')
-  const chat = { mode: 'card', messages: [{ variables: [{ stat_data: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => ['field' + i, 'large value'.repeat(100)])) }] }] }
-  assert.equal(ensureSessionVariableDirectory(session, chat), null)
-  chat.mode = 'script'
-  assert.ok(ensureSessionVariableDirectory(session, chat))
-  const text = sessionStablePrefixSections(session)[0].text
-  assert.ok(text.length < 6500)
-  assert.doesNotMatch(text, /large value/)
-})

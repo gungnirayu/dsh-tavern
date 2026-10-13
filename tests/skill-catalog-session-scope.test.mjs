@@ -9,15 +9,6 @@ const hostRequire = createRequire(pluginRequire.resolve('@deepseek-ai/dsh-tools'
 const { SessionSkillCatalog } = await import(pathToFileURL(hostRequire.resolve('@deepseek-ai/dsh-api-session-controller')))
 const { scopeChainOf } = await import(pathToFileURL(hostRequire.resolve('@deepseek-ai/dsh-scope')))
 
-function fixture() {
-  const standing = {}, live = new Map()
-  const catalog = Object.create(SessionSkillCatalog.prototype)
-  Object.defineProperty(catalog, 'ctx', { value: { agents: { get: id => live.get(id) }, get: () => ({ standingKeyFor: async () => standing }) } })
-  const skill = { name: 'debug-card', path: '/skills/debug-card/SKILL.md', agents: ['card'], userInvocable: true, modelInvocable: true }
-  const provider = createTavernSkillProvider({ providers: [{ list: async () => [skill] }], library: { read: async () => skill }, roleFor: async scope => scope?.session?.id === 'card' ? 'card' : 'foreground' })
-  return { standing, live, catalog, provider }
-}
-
 test('native skills/list works for concurrent cold card and story sessions and reuses separate keys', async () => {
   const standing = {}, keys = new Map()
   const catalog = Object.create(SessionSkillCatalog.prototype)
@@ -41,15 +32,4 @@ test('native skills/list works for concurrent cold card and story sessions and r
   await catalog.list({ sessionId: 'card' })
   assert.equal(keys.get('card'), before)
   restore()
-})
-
-test('preset changes replace cold cache identity and installation can be disposed', async () => {
-  const { catalog } = fixture()
-  const original = catalog.scopeFor
-  const restore = installSkillCatalogSessionScope(catalog)
-  const first = await catalog.scopeFor('card', 'tavern')
-  assert.equal(await catalog.scopeFor('card', 'tavern'), first)
-  assert.notEqual(await catalog.scopeFor('card', 'other-preset'), first)
-  restore()
-  assert.equal(catalog.scopeFor, original)
 })

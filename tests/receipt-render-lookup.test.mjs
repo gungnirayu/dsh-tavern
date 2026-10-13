@@ -42,7 +42,7 @@ test('receipt lookup retains legacy duplicate, unusual turn and missing-turn sem
  }
 })
 
-test('turn changes, truncation and concurrent receipt views preserve their own lookup',()=>{
+test('superseded receipt views use current lookup without mutating earlier published versions',()=>{
  const h=harness(),row=(turn,summary)=>({turn,receipt:{summary}})
  const first=h.begin('s').accept({viewCursor:'a',view:{mvuReceipts:[row(1,'one'),row(2,'two')]}}).view
  const slow=h.begin('s'),fast=h.begin('s')
@@ -50,8 +50,9 @@ test('turn changes, truncation and concurrent receipt views preserve their own l
  const older=slow.accept({viewCursor:'old',viewDelta:{baseCursor:'a',set:[[['mvuReceipts','length'],1]],remove:[['mvuReceipts',1]]}}).view
  assert.equal(h.context.tavernMvuReceiptForTurn(newer,1),null)
  assert.equal(h.context.tavernMvuReceiptForTurn(newer,3).summary,'three')
- assert.equal(h.context.tavernMvuReceiptForTurn(older,1).summary,'one')
- assert.equal(h.context.tavernMvuReceiptForTurn(older,2),null)
+ assert.equal(older,newer)
+ assert.equal(h.context.tavernMvuReceiptForTurn(older,1),null)
+ assert.equal(h.context.tavernMvuReceiptForTurn(older,2).summary,'two')
  assert.equal(h.context.tavernMvuReceiptForTurn(first,2).summary,'two')
  assert.equal(h.begin('s').cursor,'new')
 })

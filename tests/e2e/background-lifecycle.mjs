@@ -46,7 +46,7 @@ export async function backgroundLifecycleChecks({page,step,savedChat,data,output
     assert.notEqual(report.currentBackground,report.retiredSession)
     assert.notEqual(report.currentBackground,report.secondRetiredSession)
     await page.getByText('酒馆状态',{exact:true}).filter({visible:true}).first().click()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({hasText:/^金币：40$/}).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({hasText:/^金币：40$/}).waitFor()
     await page.screenshot({path:join(output,'background-retried.png'),fullPage:true})
     await writeFile(join(output,'background-ui-retried.txt'),await page.locator('body').innerText())
     const trigger=page.getByText(/^\d+ subagents?$/).filter({visible:true}).first()

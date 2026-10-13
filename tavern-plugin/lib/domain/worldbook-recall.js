@@ -1,3 +1,4 @@
+import { isScopedMessages } from './scoped-messages.js'
 import { worldbookPlacement } from './worldbook-placement.js'
 import { entryRandom, renderWorldbookRandom } from './worldbook-random.js'
 import { projectAgentContent } from './runtime-content-projection.js'
@@ -18,7 +19,7 @@ function charCount(value) {
   return Array.from(str(value).trim()).length
 }
 
-function fingerprint(value) {
+export function fingerprint(value) {
   const text = str(value)
   let hash = 2166136261
   for (let index = 0; index < text.length; index++) {
@@ -68,6 +69,8 @@ function templateResource(entry, book) {
 }
 
 function transcriptOf(chat) {
+  // Only a runtime that reads its own session history accepts a partial Chat.
+  if (isScopedMessages(chat?.messages)) throw new Error('世界书模板需要完整历史，但只读取了最近楼层')
   return (Array.isArray(chat && chat.messages) ? chat.messages : []).filter(Boolean).map(function (message) {
     return {
       role: message.role === 'user' ? 'user' : 'assistant',
@@ -100,7 +103,10 @@ function isCoolingDown(chat, entry, turn) {
   const currentTurn = Number(turn)
   if (!Number.isSafeInteger(readTurn) || !Number.isSafeInteger(currentTurn)) return false
   const elapsed = currentTurn - readTurn
-  return elapsed > 0 && elapsed <= READ_COOLDOWN_TURNS
+  // A read is recorded while sending its turn; a screening verdict after the reply,
+  // so the very next send already counts as its first cooled turn.
+  if (record.kind === 'screened') return elapsed >= 0 && elapsed < READ_COOLDOWN_TURNS ? 'screened' : false
+  return elapsed > 0 && elapsed <= READ_COOLDOWN_TURNS ? 'read' : false
 }
 
 function readRecorder(entries, turn) {
@@ -111,6 +117,13 @@ function readRecorder(entries, turn) {
     }
     return next
   }
+}
+
+/** Entries the filter model excluded after a reply stay excluded for the next ten turns. */
+export function recordScreenedExclusions(existing, entries, turn) {
+  const next = clone(existing !== null && typeof existing === 'object' && !Array.isArray(existing) ? existing : {})
+  for (const entry of entries) next[str(entry.ref)] = { turn: Number(turn) || 0, fingerprint: fingerprint(entry.content), kind: 'screened' }
+  return next
 }
 
 /** Snapshot constant content; request projection partitions mixed positions separately. */

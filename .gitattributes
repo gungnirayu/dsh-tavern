@@ -27,3 +27,6 @@ docs export-ignore
 **/__tests__ export-ignore
 
 tavern-plugin/packages/dsh-dream-skin/lib/*.js -text -whitespace linguist-vendored
+
+# Shell scripts run under sh/bash; CRLF breaks them and the installer checks.
+*.sh text eol=lf

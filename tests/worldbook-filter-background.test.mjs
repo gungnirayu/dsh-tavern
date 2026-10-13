@@ -9,7 +9,7 @@ import { createTurnOrchestrator } from '../tavern-plugin/lib/domain/turn-orchest
 import { createForegroundFrameBuilder } from '../tavern-plugin/lib/domain/agent-input-frame.js'
 
 const selection = { provider: 'test', model: 'scripted' }
-const candidates = Array.from({ length: 6 }, (_, n) => ({ ref: 'entry:' + n, text: '候选资料' + n, tokenCost: 10 }))
+const candidates = Array.from({ length: 6 }, (_, n) => ({ ref: 'entry:' + n, text: '候选资料' + n, tokenCost: 1100 }))
 
 function harness(runnerOptions = {}) {
   let value = { id: 'game', sessionId: 'parent', mode: 'story', cardPath: 'card.json', messages: [], _storageRevision: 1 }
@@ -81,6 +81,10 @@ test('小候选池不创建后台任务；压缩和其他后台工作期间禁�
   const h = harness(); t.after(h.dispose)
   const input = await h.input()
   assert.equal((await h.filter({ ...input, candidates: candidates.slice(0, 1) })).ran, false)
+  const long = candidates.slice(0, 5).map(item => ({ ...item, tokenCost: 5000 }))
+  assert.equal((await h.filter({ ...input, candidates: long })).ran, false, '少量长条目交给预算截断，不等待模型')
+  const short = candidates.map(item => ({ ...item, tokenCost: 400 }))
+  assert.equal((await h.filter({ ...input, candidates: short })).ran, false, '条目多但总量不大时直接注入')
   assert.equal((await h.store.readChat()).timeline, undefined)
   h.block(true)
   await assert.rejects(h.filter(input), error => error.code === 'COMPACTION_RUNNING')

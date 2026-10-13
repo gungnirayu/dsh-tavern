@@ -108,7 +108,7 @@ function agentEvidence(value, label) {
 }
 
 export function createPlayChatDebugReference(editorChat, sourceChat, requestedTurn) {
-  if (!editorChat || str(editorChat.mode) !== 'card') throw new Error('游玩记录只能挂载到卡片工作台')
+  if (!editorChat || str(editorChat.mode) !== 'card') throw new Error('游玩记录只能关联到卡片工作台')
   if (!sourceChat || !playMode(sourceChat)) throw new Error('只能引用游玩模式对话')
   if (str(editorChat.cardPath) === '' || str(editorChat.cardPath) !== str(sourceChat.cardPath)) throw new Error('游玩记录与当前人物卡不一致')
   const turn = latestAssistantTurn(sourceChat)
@@ -129,7 +129,7 @@ export function createPlayChatDebugReference(editorChat, sourceChat, requestedTu
 export function readPlayChatDebugTurn(editorChat, sourceChat, reference, request = {}, currentProjection = null, evidence = {}) {
   if (!editorChat || str(editorChat.mode) !== 'card') throw new Error('游玩记录只能在卡片工作台中读取')
   if (!sourceChat || !playMode(sourceChat)) throw new Error('游玩记录不存在或不是游玩对话')
-  if (!reference || reference.kind !== 'play-chat' || str(reference.chatId) !== str(sourceChat.id)) throw new Error('该游玩记录尚未挂载到当前对话')
+  if (!reference || reference.kind !== 'play-chat' || str(reference.chatId) !== str(sourceChat.id)) throw new Error('该游玩记录未关联到当前对话')
   if (str(editorChat.cardPath) !== str(sourceChat.cardPath)) throw new Error('游玩记录与当前人物卡不一致')
 
   const turn = Math.max(1, Number(request.turn) || latestAssistantTurn(sourceChat))

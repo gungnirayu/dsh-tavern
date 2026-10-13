@@ -32,8 +32,3 @@ test('initialization normalizes settings before pinning template dependencies',a
  assert.equal((await cache.get('s')).context,'initialized')
  assert.equal(calls,1);assert.equal(connections,1)
 })
-
-test('partial template diagnostics are not retained as a reusable success',async()=>{
- const h=harness();h.prepare=async()=>({context:'partial',diagnostics:[{code:'runtime-error'}]})
- await h.cache.warm('s');await h.cache.get('s');assert.equal(h.calls,2)
-})

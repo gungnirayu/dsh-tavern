@@ -117,3 +117,22 @@ test('runtime input deletion and replacement keep user override precedence',()=>
  const restored=projector.project({...chat,_storageRevision:3,messages:[{role:'user',text:'plain'},chat.messages[1]]},{baseRevision:2,indices:[0],changedHeaderFields:[]})
  assert.equal(restored.inputSources[2],'new')
 })
+
+test('重新生成、回退或停止占用的原生轮次不会让历史输入错位',()=>{
+ const projector=createInputFieldsProjection()
+ const user=text=>({role:'user',text,templateInputSource:true})
+ // Native turn 3 was consumed by a regeneration; the second exchange belongs to turn 4.
+ let chat={id:'drift',_storageRevision:1,runtimeInputs:{},messages:[{role:'assistant',text:'opening',turn:1},user('a'),{role:'assistant',text:'r1',turn:2},user('b'),{role:'assistant',text:'r2',turn:4}]}
+ const first=projector.project(chat)
+ assert.equal(first.inputSources[4],'b');assert.equal(Object.hasOwn(first.inputSources,'3'),false)
+ chat={...chat,_storageRevision:2,messages:[...chat.messages,user('c'),{role:'assistant',text:'r3',turn:6}]}
+ const appended=projector.project(chat,{baseRevision:1,indices:[],changedHeaderFields:[]})
+ assert.equal(appended.inputSources[6],'c')
+ chat={...chat,_storageRevision:3,messages:[...chat.messages.slice(0,4),{...chat.messages[4],turn:5},...chat.messages.slice(5)]}
+ const moved=projector.project(chat,{baseRevision:2,indices:[4],changedHeaderFields:[]})
+ assert.equal(moved.inputSources[5],'b');assert.equal(Object.hasOwn(moved.inputSources,'4'),false)
+ chat={...chat,_storageRevision:4,messages:chat.messages.slice(0,5)}
+ const truncated=projector.project(chat,{baseRevision:3,indices:[],changedHeaderFields:[]})
+ assert.equal(Object.hasOwn(truncated.inputSources,'6'),false)
+ assert.deepEqual(JSON.parse(JSON.stringify(truncated)),JSON.parse(JSON.stringify(createInputFieldsProjection().project(chat))))
+})

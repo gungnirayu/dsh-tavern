@@ -92,10 +92,11 @@ DSH Tavern 功能清单（纯文本审阅版）
 3. 用自然语言分析、修改人物卡、世界书、预设和剧本。
 4. 将一个或多个资源引用到工作台对话中，作为修改材料。
 5. 保留人物卡导入原版与工作版，可通过 Agent 恢复原版。
-6. 将普通人物卡转换为独立 MVU 版，转换时保留原卡图片资源。
+6. 给人物卡加上 MVU 变量（各开场初值、后台更新规则、状态栏面板），可在副本上改以保留原卡。
 7. 调试游玩中的人物表现、正文、正则或状态异常。
 8. 调试任务中显示已关联游玩记录的简短引用，Agent 可按需读取记录概览、日志和状态。
 9. 工作台对话与游玩对话分别管理，可继续、重命名和移除。
+10. “新建人物卡”任务：逐题问答确定角色与开场，可选 MVU 变量和前端美化；美化先在对话中以 HTML 草图预览。
 
 七、资源库
 人物卡库：
@@ -147,7 +148,7 @@ DSH Tavern 功能清单（纯文本审阅版）
 5. 在支持的渠道中，将图片绑定为人物造型参考，也可解除绑定。
 6. 查看生成进度、取消任务、失败重试；生成成功但保存失败时可重试保存。
 7. 检查渠道连接，部分渠道支持读取模型列表。
-8. 渠道入口包括 OpenAI Images、Gemini 原生、Gemini 聊天兼容、Grok、Seedream、Qwen-Image、NovelAI、ComfyUI、SD WebUI / Forge。
+8. 渠道入口包括 OpenAI（gpt-image 及兼容接口）、Google Gemini（官方）、Grok（xAI）、Seedream（火山方舟）、Qwen-Image（阿里百炼）、NovelAI（官方或自定义渠道）、ComfyUI（自建）、SD WebUI / Forge（自建）。
 9. 实际模型、参考图和参数能力因渠道而异；本地绘图渠道连接已有服务，不负责安装模型。
 
 十一、诊断、维护与数据
@@ -189,10 +190,11 @@ DSH Tavern 功能清单（纯文本审阅版）
 
 1. 读取剧本：tavern_read_script，按需取得剧本内容，辅助剧本推进或工作台分析。
 2. 读取游玩记录：tavern_read_play_chat，供调试工作台读取已关联记录的概览及相关证据；与正文 Agent 回忆剧情的 recall 工具分工不同。
-3. 人物卡读写：tavern_read_card、tavern_read_card_raw、tavern_update_card，读取结构化设定或原始卡片，按要求修改。
-4. 人物卡检查与恢复：tavern_validate_card、tavern_restore_card，检查卡片结构，按要求恢复导入原版。
+3. 人物卡读写：tavern_read_card、tavern_read_card_raw、tavern_search_card、tavern_replace_card_text、tavern_update_card，读取结构化设定或原始卡片、全卡定位与批量替换文字，按要求修改。
+4. 人物卡检查与恢复：tavern_validate_card、tavern_restore_card，检查卡片结构，按要求恢复导入原版；tavern_update_card 与修改内置世界书的保存结果自动附带同样的校验。
 5. 世界书读写：tavern_read_worldbook、tavern_update_worldbook，检查并修改世界书内容。
 6. 预设读写：tavern_read_preset、tavern_update_preset，检查和修改提示词及相关配置。
+   正则库：tavern_read_regex_library，读取用户导入的正则，按要求写入人物卡或预设；正则库本身不生效。
 7. 用户画像：tavern_user_profile_read、tavern_user_profile_save_draft、tavern_user_profile_confirm，分别读取、保存草案和确认画像。
 8. Skill 保存与资料读取：tavern_save_skill、tavern_read_skill_reference，保存可复用的方法，按需加载配套资料。
 9. 调试验证：tavern_test_response，供 Agent 在调试流程中测试响应；不能仅凭一次测试保证所有场景正确。
@@ -205,9 +207,9 @@ Skill 是 Agent 在特定任务中使用的工作方法；工具负责实际读�
 示例：“这局状态栏不刷新，请结合关联记录检查原因。”
 结合日志、提示词和状态证据排查，适用于显示异常、结算失败、提示词未生效和生成缓慢。
 
-2. card-to-mvu：将普通状态栏人物卡转换为 MVU 版。
-示例：“把这张卡转换为独立 MVU 版，保留图片。”
-拆分变量初值、后台更新规则与状态展示，并验证转换结果；不是所有卡都需要转换。
+2. card-to-mvu：给人物卡加上 MVU 变量。
+示例：“把这张卡转成 MVU 版，原卡保留。”
+写各开场初值、后台更新规则与状态栏面板，按格式约定直接改卡，改完校验；不是所有卡都需要转换。
 
 3. user-profile：建立和修订长期用户画像。
 通过分批访谈整理偏好，先出草案，经过确认后保存。具体操作见下一节。
@@ -226,7 +228,10 @@ Skill 是 Agent 在特定任务中使用的工作方法；工具负责实际读�
 7. gentle-rewrite：现有人物卡的特定改写流程。
 它用于制作独立副本，不是剧情生成或记忆管理功能；具体处理范围应在任务中明确，不能理解为通用的一键修复。
 
-8. 自定义 Skill 管理
+8. create-card：逐题问答从零新建原创人物卡。
+从起始任务“新建人物卡”进入。确认设定后创建并校验；选择 MVU 时直接在这张卡上加变量与状态栏，选择美化时先给出 2–3 种 HTML 草图供挑选。草图仅为静态示意，脚本不运行。
+
+9. 自定义 Skill 管理
 在 Skill 库查看、调整用途或删除已保存的 Skill。写作 Skill 用于指导表达，不代替人物卡事实、玩家选择或工具权限。
 
 十五、用户画像：保存长期偏好

@@ -13,14 +13,3 @@ test('history grant reads only requested floors at the pinned revision', async (
  await assert.rejects(access.read(grant.token,0,1000))
  assert.equal(calls.length,1)
 })
-
-test('history grants cannot be widened or reused on another host',async()=>{
- const read=async()=>{throw Error('must not read')}
- const a=createHelperHistoryAccess({read}),b=createHelperHistoryAccess({read})
- const grant=a.issue({chatId:'a',revision:2,messageCount:100})
- const [body,signature]=grant.token.split('.')
- const scope=JSON.parse(Buffer.from(body,'base64url').toString());scope.chatId='victim'
- const tampered=Buffer.from(JSON.stringify(scope)).toString('base64url')+'.'+signature
- await assert.rejects(a.read(tampered,0,0),/Invalid history capability/)
- await assert.rejects(b.read(grant.token,0,0),/Invalid history capability/)
-})

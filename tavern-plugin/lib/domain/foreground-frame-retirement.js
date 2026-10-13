@@ -1,6 +1,6 @@
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { randomUUID } from 'node:crypto'
-import { appendSessionEvent, sessionEvents } from './session-events.js'
+import { sessionEvents } from './session-events.js'
 
 /** Retire request scaffolding only; story and append-only evidence stay intact. */
 export function retireForegroundFrames(session, { keepTurn } = {}) {

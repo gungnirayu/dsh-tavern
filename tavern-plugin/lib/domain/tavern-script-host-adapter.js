@@ -135,10 +135,10 @@ export function createTavernScriptHostAdapter(options = {}) {
 
   function assertTransactionEvent(transaction, eventId) {
     const id = str(eventId)
-    if (transaction !== undefined && transaction.eventId !== id) {
-      const error = new Error(id === ''
-        ? '脚本异步写入未携带当前 MVU 结算事件身份，已拒绝'
-        : '脚本写入不属于当前 MVU 结算事件')
+    // Scripts lose the event identity after an await or timer. SillyTavern applies
+    // such writes to the current state, so they join the running settlement too.
+    if (transaction !== undefined && id !== '' && transaction.eventId !== id) {
+      const error = new Error('脚本写入不属于当前 MVU 结算事件')
       error.code = 'MVU_SETTLEMENT_EVENT_MISMATCH'
       throw error
     }
@@ -613,22 +613,47 @@ export function createTavernScriptHostAdapter(options = {}) {
     if(request.changes.some(c=>!Array.isArray(c.path) || !(c.path[0]==='chat_metadata' || c.path[0]==='chat' && Number.isSafeInteger(c.path[1]) && c.path[1]>=0 && allowed.includes(c.path[2]))))return undefined
     const indices=[...new Set(request.changes.filter(c=>c.path[0]==='chat').map(c=>c.path[1]))].sort((a,b)=>a-b)
     const head=await options.resolveChatSlice(sessionId,[])
-    if(!head?.denseMessages || head.chat._storageRevision!==request.stateRevision)return undefined
+    if(!head?.denseMessages)return undefined
+    const revision=head.chat._storageRevision, stale=revision!==request.stateRevision
+    // A reader behind the latest revision merges only the floors it edits plus the
+    // floors changed since its read, against those floors as they were then. The
+    // receipt then carries every change since its read, as a complete merge would.
+    const changed=stale ? await options.resolveChangedIndices?.(sessionId,request.stateRevision) : {indices:[],revision}
+    if(!changed || changed.revision!==revision)return undefined
     const virtual=head.chat.promptTemplateInput?.message ? head.messageCount : -1
-    if(indices.some(i=>i>=head.messageCount && i!==virtual))return undefined
-    const storedIndices=indices.filter(i=>i<head.messageCount)
+    const lengthConflict=async()=>{
+      // The complete merge refuses a reader whose history length differs; say so
+      // without reading the whole history first.
+      const read=await options.resolveChatSliceAt?.(sessionId,request.stateRevision,[])
+      const length=chat=>chat.messageCount+(chat.chat.promptTemplateInput?.message?1:0)
+      if(!read || read.chat._storageRevision!==request.stateRevision || length(read)===length(head))return false
+      const error=new Error('聊天楼层已变化，模板存档未保存')
+      error.code='PROMPT_TEMPLATE_STATE_CONFLICT'
+      throw error
+    }
+    if(indices.some(i=>i>=head.messageCount && i!==virtual) || changed.indices.some(i=>i>=head.messageCount)){
+      if(stale)await lengthConflict()
+      return undefined
+    }
+    const storedIndices=[...new Set([...indices.filter(i=>i<head.messageCount),...changed.indices])].sort((a,b)=>a-b)
     const selected=storedIndices.length ? await options.resolveChatSlice(sessionId,storedIndices) : head
-    if(!selected?.denseMessages || selected.chat._storageRevision!==request.stateRevision)return undefined
+    if(!selected?.denseMessages || selected.chat._storageRevision!==revision)return undefined
+    const before=stale ? await options.resolveChatSliceAt?.(sessionId,request.stateRevision,storedIndices) : selected
+    if(!before?.denseMessages || before.chat._storageRevision!==request.stateRevision)return undefined
+    if(stale && before.messageCount!==head.messageCount){
+      await lengthConflict()
+      return undefined
+    }
     const projectedIndices=[...storedIndices,...(virtual>=0?[virtual]:[])]
-    const baseline=selected.chat
-    assertTemplateChat(baseline)
+    const baseline=before.chat, latest=selected.chat
+    assertTemplateChat(latest)
     if(settlementTransactions.has(str(sessionId)))throw new Error('MVU 结算进行中，模板存档不能覆盖结算事务')
     const compact={...request,changes:request.changes.map(c=>c.path[0]==='chat'?{...c,path:['chat',projectedIndices.indexOf(c.path[1]),...c.path.slice(2)]}:c)}
     const expanded=expandFullPromptTemplatePatch(baseline,compact)
-    const next=applyFullPromptTemplateState(baseline,baseline,expanded)
+    const next=applyFullPromptTemplateState(latest,baseline,expanded)
     // No body rewrites on this path: native message history needs no resynchronization.
-    const changes=diffJson(baseline,next).map(c=>c.path[0]==='messages'?{...c,path:['messages',storedIndices[c.path[1]],...c.path.slice(2)]}:c)
-    const saved=await options.patchChat(baseline.id,request.stateRevision,changes,{source:'prompt-template.state',assertCurrent:()=>{if(settlementTransactions.has(str(sessionId)))throw new Error('MVU 结算进行中，模板存档不能覆盖结算事务')}})
+    const changes=diffJson(latest,next).map(c=>c.path[0]==='messages'?{...c,path:['messages',storedIndices[c.path[1]],...c.path.slice(2)]}:c)
+    const saved=await options.patchChat(latest.id,revision,changes,{source:'prompt-template.state',assertCurrent:()=>{if(settlementTransactions.has(str(sessionId)))throw new Error('MVU 结算进行中，模板存档不能覆盖结算事务')}})
     if(!saved)return undefined
     const receipt=diffJson(expanded,{...projectFullPromptTemplateState(next),stateRevision:saved._storageRevision})
     return {updated:true,statePatch:receipt.map(c=>c.path[0]==='chat'?{...c,path:['chat',projectedIndices[c.path[1]],...c.path.slice(2)]}:c)}
@@ -700,7 +725,10 @@ export function createTavernScriptHostAdapter(options = {}) {
   }
 
   async function dispatchEvent(input = {}) {
-    const eventContext = input.context || await context(input.sessionId, input.chat, input.transientUserText)
+    // `recent`: the browser keeps its history lease, so send the recent window
+    // instead of projecting every floor into the event.
+    const recent = !input.context && input.recent === true ? await options.resolveHelperWindow?.(input.sessionId) : undefined
+    const eventContext = input.context || (recent ? { contextWindow: recent } : await context(input.sessionId, input.chat, input.transientUserText))
     // Context preparation can await I/O before MVU has queued its dispatch.
     // Respect that reservation just as dispatch respects an executing event.
     if (settlementTransactions.has(str(input.sessionId))) return { handled: false, busy: true, args: structuredClone(input.args || []) }

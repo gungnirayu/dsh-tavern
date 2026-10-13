@@ -18,7 +18,7 @@ function fixture() {
     listCards: async () => [{ path: 'cards/public.json', name: 'Public' }],
     chatForSession: async id => chats.get(id),
     requiresBrowser: async () => script,
-    requests: async () => [{ sessionId: 'child-1' }], native: async id => [{ id }],
+    requestIndex: async () => [{ sessionId: 'child-1' }], native: async id => [{ id }],
     async dispatch(method, args) {
       calls.push([method, args])
       if (method === 'startChat') chats.set(args.sessionId, { id: 'chat', sessionId: args.sessionId, mode: 'story', messages: [] })

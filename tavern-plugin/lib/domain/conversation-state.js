@@ -208,15 +208,3 @@ export function createConversationState({store}){
  return Object.freeze({create,open,readWorld,readSettlementDelta,commitForeground,submitSettlement,prepareSettlement,calculateSettlement,commitSettlement,readOperation,readMessageState,
   failSettlement:(id,input)=>finishUnsuccessfully(id,input,'failed'),cancelSettlement:(id,input)=>finishUnsuccessfully(id,input,'cancelled')})
 }
-
-/** Receiver for a replica already synchronized to the foreground basis.
- * A gap or lifecycle change requests resynchronization; never guess a base.
- */
-export async function receiveConversationDelta({tree,root,basis:current},delta){
- if(delta?.version!==1||!['delta','snapshot'].includes(delta.mode)||!delta.nextBasis)throw error('CONVERSATION_INPUT','Invalid settlement delta')
- const expected={...delta.basis,worldRevision:delta.basis?.worldRevision+1}
- if(!isDeepStrictEqual(expected,delta.nextBasis))throw error('CONVERSATION_INPUT','Invalid delta revision')
- if(root===delta.nextRoot&&isDeepStrictEqual(current,delta.nextBasis))return {root,basis:current}
- if(root!==delta.baseRoot||!isDeepStrictEqual(current,delta.basis))throw error('CONVERSATION_STALE','Replica must resynchronize')
- return {root:await tree.receive(root,delta),basis:delta.nextBasis}
-}

@@ -467,7 +467,7 @@
 			}
 			// Both entry points reference the same functions; plugin wrappers stay visible to each other.
 			const helper = {};
-			const helperNames = ["generateRaw", "injectPrompts", "uninjectPrompts", "getScriptId", "getScriptName", "getScriptInfo", "replaceScriptInfo", "getScriptButtons", "replaceScriptButtons", "updateScriptButtonsWith", "appendInexistentScriptButtons", "getButtonEvent", "getCharData", "getCurrentCharacterName", "getCurrentMessageId", "getLastMessageId", "getChatMessages", "setChatMessages", "createChatMessages", "getVariables", "getAllVariables", "replaceVariables", "insertOrAssignVariables", "insertVariables", "updateVariablesWith", "deleteVariable", "getTavernRegexes", "replaceTavernRegexes", "updateTavernRegexesWith", "importRawTavernRegex", "replaceWorldbook", "createWorldbookEntries", "deleteWorldbookEntries", "setLorebookEntries", "createLorebookEntries", "deleteLorebookEntries", "getLorebooks", "getWorldbookNames", "getCharWorldbookNames", "getWorldbook", "getLorebookEntries", "getCharLorebooks", "getCurrentCharPrimaryLorebook", "getLorebookSettings", "setLorebookSettings", "updateWorldbookWith", "getTavernHelperVersion", "substitudeMacros", "iframe_events", "tavern_events"];
+			const helperNames = ["formatAsTavernRegexedString", "isCharacterTavernRegexesEnabled", "getMessageId", "getIframeName", "errorCatched", "retrieveDisplayedMessage", "initializeGlobal", "waitGlobalInitialized", "triggerSlash", "generateRaw", "injectPrompts", "uninjectPrompts", "getScriptId", "getScriptName", "getScriptInfo", "replaceScriptInfo", "getScriptButtons", "getAllEnabledScriptButtons", "replaceScriptButtons", "updateScriptButtonsWith", "appendInexistentScriptButtons", "getButtonEvent", "getCharData", "getCurrentCharacterName", "getCurrentMessageId", "getLastMessageId", "getChatMessages", "setChatMessages", "createChatMessages", "getVariables", "getAllVariables", "replaceVariables", "insertOrAssignVariables", "insertVariables", "updateVariablesWith", "deleteVariable", "getTavernRegexes", "replaceTavernRegexes", "updateTavernRegexesWith", "importRawTavernRegex", "replaceWorldbook", "createWorldbookEntries", "deleteWorldbookEntries", "setLorebookEntries", "createLorebookEntries", "deleteLorebookEntries", "getLorebooks", "getWorldbookNames", "getCharWorldbookNames", "getWorldbook", "getLorebookEntries", "getCharLorebooks", "getCurrentCharPrimaryLorebook", "getLorebookSettings", "setLorebookSettings", "updateWorldbookWith", "getTavernHelperVersion", "substitudeMacros", "iframe_events", "tavern_events"];
 			for (const name of helperNames) Object.defineProperty(helper, name, { enumerable: true, configurable: true, get: function () { return window[name]; }, set: function (value) { window[name] = value; } });
 			window.TavernHelper = helper;
 			const eventSource = { on: window.eventOn, once: window.eventOnce, off: window.eventOff, removeListener: window.eventOff, makeFirst: window.eventMakeFirst, makeLast: window.eventMakeLast, emit: window.eventEmit };
@@ -549,7 +549,12 @@
 				saveMetadata: saveChatData,
 				saveMetadataDebounced: saveChatData,
 				updateChatMetadata: chatData.updateMetadata,
-				saveSettingsDebounced: saveExtensionSettings
+				saveSettingsDebounced: saveExtensionSettings,
+				// ST answers from the device class; scripts use it to pick a layout.
+				isMobile: function () {
+					try { return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.matchMedia("(pointer: coarse) and (max-width: 1000px)").matches; }
+					catch (_) { return false; }
+				}
 			};
 			Object.defineProperties(sillyTavern, {
 				chatId: { enumerable: true, get: function () { return String(context().chatId || ""); } },
@@ -562,7 +567,16 @@
 			window.SillyTavern = Object.freeze(sillyTavern);
 			window.getContext = sillyTavern.getContext;
 			window.errorCatched = function (factory) { return function () { try { return factory.apply(this, arguments); } catch (error) { console.error(error); return {}; } }; };
-			window.retrieveDisplayedMessage = function () { return window.jQuery ? window.jQuery() : []; };
+			// Trusted card scripts reach the displayed message like in SillyTavern.
+			window.retrieveDisplayedMessage = function (messageId) {
+				let found = [];
+				try {
+					const frame = window.frameElement, host = window.parent;
+					// Copy into this realm: jQuery treats another realm's array as one object.
+					if (frame && host && host !== window && typeof host.__dshTavernScriptLayers === "function") found = Array.prototype.slice.call(host.__dshTavernScriptLayers(frame.__dshTavernSessionId, Number(messageId)));
+				} catch (_) { /* Sandboxed scripts cannot reach the host page. */ }
+				return window.jQuery ? window.jQuery(found) : found;
+			};
 			window.toastr = { success: console.info, info: console.info, warning: console.warn, error: console.error };
 			return { sync: function (value, variableDelta) { chatData.sync(value, undefined, variableDelta); localVariables.sync(); }, flushVariables: localVariables.flush };
 		}

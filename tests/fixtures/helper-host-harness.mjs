@@ -10,7 +10,7 @@ vm.runInNewContext(await readFile(new URL('../../tavern-plugin/lib/client.js', i
 export const helperClient = descriptor.factory(() => ({}))
 
 export function helperHostHarness(context = {}, options = {}) {
-  const scripts = [{ id: 'a', content: '' }, { id: 'b', content: '' }]
+  const scripts = options.scripts || [{ id: 'a', content: '' }, { id: 'b', content: '' }]
   const html = helperClient.buildTavernHelperScriptDocument({ token: 'host-test', scripts, context: { compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, ...context } })
   let source = html.match(/<script data-dsh-tavern-helper-script>([\s\S]*?)<\/script>/)[1]
   const downloads = [

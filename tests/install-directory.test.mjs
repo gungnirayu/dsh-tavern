@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -7,7 +7,7 @@ import test from 'node:test'
 
 const source = readFileSync(new URL('../install.sh', import.meta.url), 'utf8')
 const selection = source.slice(source.indexOf('  # CLI directory selection:'), source.indexOf('  DSH_TAVERN_CLI_HOME=${DSH_ROOT}'))
-test('CLI directory selection accepts explicit paths, refuses collisions and permits retry', { skip: process.platform === 'win32' }, t => {
+test('CLI directory selection is read-only, refuses collisions and permits established installations', { skip: process.platform === 'win32' }, t => {
   const root = mkdtempSync(path.join(tmpdir(), 'tavern-location-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const target = path.join(root, '中文 space')
@@ -18,6 +18,9 @@ test('CLI directory selection accepts explicit paths, refuses collisions and per
   assert.equal(readFileSync(path.join(target, 'runtime', 'keep'), 'utf8'), 'user data')
   rmSync(path.join(target, 'runtime'), { recursive: true })
   assert.equal(run().status, 0)
+  assert.equal(existsSync(path.join(target, '.dsh-tavern-install-root')), false)
+  // The bootstrap writes this marker only after acquiring installation ownership.
+  writeFileSync(path.join(target, '.dsh-tavern-install-root'), 'cli-v1\n')
   mkdirSync(path.join(target, 'runtime'))
   assert.equal(run().status, 0)
   assert.equal(readFileSync(path.join(target, '.dsh-tavern-install-root'), 'utf8').trim(), 'cli-v1')
@@ -34,7 +37,7 @@ test('Desktop 宿主版本不兼容时在覆盖旧安装前停止', { skip: proc
   assert.ok(end < source.indexOf('cp -R "${SOURCE_DIR}/."'))
   const preflight = source.slice(start, end)
   for (const version of ['0.1.2-rc.1', 'unknown', '0.1.5-rc.2']) {
-    const script = 'dsh() { echo "$TEST_VERSION"; }\n' + preflight + '\nprintf replaced > "$SENTINEL"\n'
+    const script = 'dsh() { echo "$TEST_VERSION"; }\nrun_install() { shift 2; "$@"; }\n' + preflight + '\nprintf replaced > "$SENTINEL"\n'
     const result = spawnSync('sh', ['-ec', script], { encoding: 'utf8', env: {
       ...process.env, INSTALL_HOST: 'desktop', SOURCE_DIR: path.resolve(new URL('..', import.meta.url).pathname),
       TEST_VERSION: version, SENTINEL: sentinel,

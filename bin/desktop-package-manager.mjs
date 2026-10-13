@@ -4,7 +4,7 @@
 import { desktopHostAnchors } from './desktop-host-paths.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,7 +101,11 @@ export async function prepareDesktopPackageManager(options = {}) {
   return { bin, node, runner: path.join(bin, 'pnpm-runner.cjs') }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Installers run this from a temp directory whose path may be a symlink (macOS
+// /var -> /private/var); compare real paths or the command silently does nothing.
+let isEntryPoint = false
+try { isEntryPoint = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (isEntryPoint) {
   try {
     const result = await prepareDesktopPackageManager({ onProgress: message => console.error("DSH_STATUS " + message) })
     if (result) console.log(result.bin)

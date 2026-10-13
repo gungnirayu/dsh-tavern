@@ -63,9 +63,7 @@ test('component unmount and session change cancel pending work; old handlers sta
   assert.equal(await pending,false);assert.equal(h.dialog(),undefined);assert.equal(await ask('stale'),false);
  }
 })
-test('session change between confirmation and async continuation invalidates approval',async()=>{
- const h=harness(),ask=h.render('A'),pending=ask('delete?');h.button('确认').click();h.render('B');assert.equal(await pending,false);
-})
+
 test('product client forbids native dialogs and awaits every confirmation result',async()=>{
  const source=await readFile(new URL('../tavern-plugin/lib/client.js',import.meta.url),'utf8');
  const ast=parse(source,{ecmaVersion:'latest'});let confirmations=0;

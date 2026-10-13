@@ -96,7 +96,7 @@ export async function createInitializationNative(bootPath, { preset, contextWind
       cards: { read: async () => card, readChat: async () => card, script: async () => undefined, extensions: async () => ({}) },
       chats: { resolve: registry.resolve, publish: registry.publish, write }, snapshots, timeline, userPreferenceProfile,
       presets: { fullSnapshot: async () => null }, settings: async () => ({}),
-      logger: { warn() {} }, cardGreeting: () => '工作台', emptyCardWorkspace: () => ({}), id: () => randomUUID(), present: async chat => structuredClone(chat),
+      logger: { warn() {} }, emptyCardWorkspace: () => ({}), id: () => randomUUID(), present: async chat => structuredClone(chat),
       native: { wait: async () => target, selection: () => selection, ensurePrefix: (session, text) => ensureSessionStablePrefix(session, text, storage),
         flush: session => target.agent ? ctx.sessions.flush(session) : flush(session) }
     })

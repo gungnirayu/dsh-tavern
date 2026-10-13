@@ -19,7 +19,7 @@ Helper iframe 将 `console.warn/error`（含 `toastr.warning/error`）关联到�
 
 ## 导出
 
-Tavern 对话顶部的“日志”及下载图标替换原生 Session 日志按钮。仍保留纯对话 TXT；DSH 原生 `/export` 命令保持不变。
+Tavern 对话顶部的“日志”及下载图标替换原生 Session 日志按钮。仍保留故事正文导出；DSH 原生 `/export` 命令保持不变。
 
 ZIP 包含前台 `session.jsonl`、后台/子任务日志、日志引用的图片、`mvu/diagnostics.json`、运行时版本信息及 README。活跃 Session 导出前 flush。缺失资源、容量裁剪会写进 README，不悄悄宣称日志完整。
 

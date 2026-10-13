@@ -6,16 +6,21 @@ import { TAVERN_RUNTIME_ASSET_PREFIX, readTavernRuntimeAsset } from '../domain/t
 import { observeHttpRequests } from '../domain/http-performance-diagnostics.js'
 import { projectCachedResourceBody } from '../domain/tavern-static-resource-cache.js'
 import { redactMvuLoadError } from '../domain/mvu-diagnostics.js'
+import { pluginMediaRange, slicePluginMediaStream } from '../domain/plugin-media.js'
+import { PLUGIN_ASSET_PREFIX } from '../domain/plugin-assets.js'
 
 export function registerTavernHttpRoutes({
   ctx,
   dispatch,
   fileResources,
   helperHistoryAccess,
+  mobileCardImport,
   performanceDiagnostics,
   runtimeGeneration,
   runtimeReadiness,
   sceneIllustrations,
+  readPluginMediaFile,
+  pluginAssets,
   sessionResources,
   str,
   tavernRemoteAssets,
@@ -49,6 +54,7 @@ export function registerTavernHttpRoutes({
         const readsOfficialMvu = req.method === 'GET' && pathname === OFFICIAL_MVU_VERSION.assetUrl
         const readsRuntimeAsset = req.method === 'GET' && pathname.startsWith(TAVERN_RUNTIME_ASSET_PREFIX)
         const readsClientAsset = req.method === 'GET' && pathname.startsWith(TAVERN_CLIENT_ASSET_PREFIX)
+        const readsPluginAsset = (req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith(PLUGIN_ASSET_PREFIX)
         const origin = req.headers.origin
         if (pathname === '/api/dsh-tavern/session-resource' && req.method === 'GET') {
           const headers = {'Content-Type':'application/json; charset=utf-8','Cache-Control':'private, max-age=600',
@@ -75,8 +81,14 @@ export function registerTavernHttpRoutes({
         if (gameplayRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host) {
           res.writeHead(403); res.end('forbidden'); return
         }
-        const sceneImageRoute = TAVERN_RELEASE_CAPABILITIES.sceneImages && /^\/api\/dsh-tavern\/(?:scene-image|getSceneImageSettings|saveSceneImageSettings|testSceneImageConnection|listSceneImageModels|sceneImageStatus|recordSceneImageInteraction|generateSceneImage|retrySceneImageSave|cancelSceneImage|removeSceneImage|setSceneImageReference)$/.test(pathname)
-        const sceneSameOrigin = sceneImageRoute && (origin === 'http://' + req.headers.host || origin === 'https://' + req.headers.host)
+        const sceneImageRoute = TAVERN_RELEASE_CAPABILITIES.sceneImages && /^\/api\/dsh-tavern\/(?:scene-image|scene-image-artist-preview|scene-image-stored|listSceneImageHistory|removeSceneImageHistory|getSceneImageSettings|saveSceneImageSettings|testSceneImageConnection|listSceneImageModels|testSceneImageGeneration|sceneImageStatus|recordSceneImageInteraction|generateSceneImage|retrySceneImageSave|cancelSceneImage|removeSceneImage|setSceneImageReference)$/.test(pathname)
+        const pluginMediaRoute = /^\/api\/dsh-tavern\/(?:plugin-media|pluginMediaForTurn|pluginMediaTurns)$/.test(pathname)
+        if (pluginMediaRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+          res.writeHead(403)
+          res.end('forbidden')
+          return
+        }
+        const sceneSameOrigin = (sceneImageRoute || pluginMediaRoute) && (origin === 'http://' + req.headers.host || origin === 'https://' + req.headers.host)
         if (sceneImageRoute && origin && !sceneSameOrigin) {
           res.writeHead(403)
           res.end('forbidden')
@@ -89,7 +101,7 @@ export function registerTavernHttpRoutes({
           res.end('forbidden')
           return
         }
-        if (!readsCachedAsset && !readsStaticAsset && !readsOfficialMvu && !readsFullTemplate && !readsRuntimeAsset && !readsClientAsset && !sceneSameOrigin && typeof origin === 'string' && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+        if (!readsCachedAsset && !readsStaticAsset && !readsOfficialMvu && !readsFullTemplate && !readsRuntimeAsset && !readsClientAsset && !readsPluginAsset && !sceneSameOrigin && typeof origin === 'string' && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
           res.writeHead(403)
           res.end('forbidden')
           return
@@ -128,6 +140,24 @@ export function registerTavernHttpRoutes({
             res.end(asset.body)
             return
           }
+          if (readsPluginAsset) {
+            const asset = pluginAssets ? await pluginAssets.read(pathname) : undefined
+            if (asset === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
+            // Opened directly (an SVG, say), an asset runs no script with the page's rights.
+            const headers = { 'Content-Type': asset.mediaType, 'Accept-Ranges': 'bytes', ETag: asset.etag, 'Cache-Control': 'no-cache',
+              'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': 'sandbox' }
+            if (req.headers['if-none-match'] === asset.etag) { res.writeHead(304, headers); res.end(); return }
+            const range = pluginMediaRange(req.headers.range, asset.length)
+            if (range && range.invalid) { res.writeHead(416, { ...headers, 'Content-Range': 'bytes */' + asset.length }); res.end(); return }
+            const start = range ? range.start : 0, end = range ? range.end : asset.length - 1
+            res.writeHead(range ? 206 : 200, { ...headers, 'Content-Length': Math.max(0, end - start + 1), ...(range ? { 'Content-Range': 'bytes ' + start + '-' + end + '/' + asset.length } : {}) })
+            if (req.method === 'HEAD' || end < start) { res.end(); return }
+            const stream = asset.stream(start, end)
+            res.on('close', () => stream.destroy())
+            stream.on('error', () => res.destroy())
+            stream.pipe(res)
+            return
+          }
           if (readsRuntimeAsset) {
             const asset = await readTavernRuntimeAsset(pathname)
             res.writeHead(200, {
@@ -162,11 +192,68 @@ export function registerTavernHttpRoutes({
             res.end(body)
             return
           }
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/mobile-card-thumbnail') {
+            const query = new URL(req.url, 'http://x').searchParams
+            let thumbnail
+            try { thumbnail = await mobileCardImport.thumbnail(query.get('id')) } catch { thumbnail = undefined }
+            // JSON cards, unreadable images and unusual PNG variants fall back to a text placeholder.
+            if (thumbnail === undefined) {
+              res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' })
+              res.end('not found')
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': thumbnail.body.byteLength, 'Cache-Control': 'private, max-age=600', 'X-Content-Type-Options': 'nosniff' })
+            res.end(thumbnail.body)
+            return
+          }
+          if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-artist-preview') {
+            const image = await sceneIllustrations.readArtistPreview(new URL(req.url, 'http://x').searchParams.get('id'))
+            // The URL carries the preview revision, so a replaced image gets a new URL.
+            res.writeHead(200, { 'Content-Type': image.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' })
+            res.end(image.data)
+            return
+          }
           if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image') {
             const query = new URL(req.url, 'http://x').searchParams
             const image = await sceneIllustrations.readImage(query.get('sessionId'), Number(query.get('turn')), query.get('key'), query.get('versionId'))
             res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
             res.end(image.data)
+            return
+          }
+          if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-stored') {
+            const query = new URL(req.url, 'http://x').searchParams
+            const image = await sceneIllustrations.readStoredImage(query.get('chatId'), query.get('key'), query.get('versionId'))
+            res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
+            res.end(image.data)
+            return
+          }
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/plugin-media') {
+            const query = new URL(req.url, 'http://x').searchParams
+            const file = await readPluginMediaFile(query.get('sessionId'), query.get('id'))
+            const headers = { 'Content-Type': file.mediaType, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" }
+            if (file.mediaType === 'application/octet-stream') headers['Content-Disposition'] = 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(file.name || 'file')
+            if (file.data) {
+              res.writeHead(200, { ...headers, 'Content-Length': file.length })
+              res.end(file.data)
+              return
+            }
+            const range = pluginMediaRange(req.headers.range, file.length)
+            if (range && range.invalid) {
+              res.writeHead(416, { ...headers, 'Content-Range': 'bytes */' + file.length })
+              res.end()
+              return
+            }
+            const aborter = new AbortController()
+            res.on('close', () => aborter.abort())
+            const start = range ? range.start : 0, end = range ? range.end : file.length - 1
+            res.writeHead(range ? 206 : 200, { ...headers, 'Accept-Ranges': 'bytes', 'Content-Length': Math.max(0, end - start + 1), ...(range ? { 'Content-Range': 'bytes ' + start + '-' + end + '/' + file.length } : {}) })
+            try {
+              for await (const chunk of slicePluginMediaStream(file.stream(aborter.signal), start, end)) {
+                if (!res.write(chunk)) await new Promise(resolve => { res.once('drain', resolve); res.once('close', resolve) })
+                if (aborter.signal.aborted) return
+              }
+              res.end()
+            } catch { res.destroy() }
             return
           }
           if (readsOfficialMvu) {
@@ -225,7 +312,9 @@ export function registerTavernHttpRoutes({
             res.end()
             return
           }
-          const sceneImageBodyLimit = method === 'saveSceneImageSettings' ? 2 * 1024 * 1024 : 16384
+          // Ordinary scene-image calls carry ids and text: a hand-written prompt may be
+          // 12000 characters (36 KB of Chinese) and a gallery batch delete 500 items.
+          const sceneImageBodyLimit = method === 'saveSceneImageSettings' ? 2 * 1024 * 1024 : 256 * 1024
           const bodyChunks = []
           let bodyBytes = 0
           for await (const chunk of req) {
@@ -235,7 +324,7 @@ export function registerTavernHttpRoutes({
             if (sceneImageRoute && bodyBytes > sceneImageBodyLimit) {
               throw new Error(method === 'saveSceneImageSettings'
                 ? '无法保存生图配置：工作流与配置数据超过当前 2 MB 请求大小限制。请精简工作流后重试；这不是图片尺寸或显存不足。'
-                : '生图请求数据超过当前 16 KB 大小限制，请减少输入数据后重试；这不是图片尺寸或显存不足。')
+                : '生图请求数据超过 256 KB 大小限制，请缩短提示词或减少一次批量删除的图片后重试；这不是图片尺寸或显存不足。')
             }
             bodyChunks.push(bytes)
           }

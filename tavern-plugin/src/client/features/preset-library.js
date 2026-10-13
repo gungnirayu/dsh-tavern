@@ -16,7 +16,7 @@
 			function usePresetCatalog(sessionId, errorSink, visible) {
 				const [catalog, setCatalog] = React.useState({ presets: [], activePresetPath: "", activePresetTitle: "", sessionMode: "" });
 				function refresh() {
-					return Promise.all([rpc("listPresets", {}, sessionId), rpc("getSession", { sessionId: sessionId }, sessionId)]).then(function (all) {
+					return Promise.all([rpc("listPresets", {}, sessionId), readSessionViewAfterLive(sessionId)]).then(function (all) {
 						const result = all[0] || {}; const view = all[1] && all[1].view;
 						const next = { presets: result.presets || [], activePresetPath: result.activePresetPath || "", activePresetTitle: result.activePresetTitle || "", sessionMode: view && view.mode || "", runtimePreset: view && view.runtimePreset || null };
 						setCatalog(next); if (errorSink) errorSink(""); return next;

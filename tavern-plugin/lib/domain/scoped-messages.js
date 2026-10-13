@@ -1,6 +1,10 @@
 // Internal transaction facade. Array algorithms and JSON projections can read
 // it, but structuredClone must never receive it. Construction and point writes
 // allocate only owned rows, not an array backing store proportional to history.
+const scoped = new WeakSet()
+/** A partial history must never be persisted as a complete Chat. */
+export function isScopedMessages(value) { return scoped.has(value) }
+
 export function createScopedMessages(length, entries = [], readBase) {
   if (!Number.isSafeInteger(length) || length < 0 || length > 0xffffffff) throw new Error('Invalid message count')
   const owned = new Map()
@@ -9,7 +13,7 @@ export function createScopedMessages(length, entries = [], readBase) {
     owned.set(String(id), row)
   }
   const index = key => typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key) && Number(key) < length
-  return new Proxy([], {
+  const proxy = new Proxy([], {
     get(target, key, receiver) {
       if (key === 'length') return length
       if (index(key)) return owned.has(key) ? owned.get(key) : readBase?.(Number(key))
@@ -30,4 +34,6 @@ export function createScopedMessages(length, entries = [], readBase) {
     },
     deleteProperty() { throw new Error('Scoped messages cannot delete history') }
   })
+  scoped.add(proxy)
+  return proxy
 }

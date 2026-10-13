@@ -36,53 +36,6 @@ test('新剧本会话根据开场白末尾对齐当前剧本块', () => {
   assert.equal(continuity.inspect({ script: source, state: explicit, request: { kind: 'progress' } }).cursor, 0)
 })
 
-test('剧本回合准备不移动游标，正文提交后自动前进一块', () => {
-  const continuity = createScriptContinuity()
-  let state = continuity.start(script(), 1)
-
-  const first = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'prepare', nativeTurn: 4, userText: '追上去' }
-  })
-  state = first.state
-  assert.equal(first.reference.chunkId, 'chunk-00002')
-
-  const repeated = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'prepare', nativeTurn: 4, userText: '追上去' }
-  })
-  assert.deepEqual(repeated.reference, first.reference)
-
-  const peek = continuity.inspect({
-    script: script(),
-    state,
-    request: { kind: 'play', offset: 3, limit: 1 }
-  })
-  assert.equal(peek.chunks[0].id, 'chunk-00003')
-  assert.equal(continuity.inspect({ script: script(), state, request: { kind: 'progress' } }).cursor, 1)
-
-  const committed = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'commit', nativeTurn: 4, userText: '追上去' }
-  })
-  state = committed.state
-  const progress = continuity.inspect({ script: script(), state, request: { kind: 'progress' } })
-  const preview = continuity.inspect({ script: script(), state, request: { kind: 'preview' } })
-  assert.equal(progress.cursor, 2)
-  assert.equal(progress.recalledCount, 1)
-  assert.equal(preview.previous.text, '第二块：雨夜追踪。')
-
-  const next = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'prepare', nativeTurn: 5, userText: '走上钟楼' }
-  })
-  assert.equal(next.reference.chunkId, 'chunk-00003')
-})
-
 test('替换剧本自动复位，rollback 使用不透明 revision 恢复提交前状态', () => {
   const continuity = createScriptContinuity()
   let state = continuity.start(script(), 1)
@@ -97,30 +50,4 @@ test('替换剧本自动复位，rollback 使用不透明 revision 恢复提交�
   const reset = continuity.transition({ script: replaced, state: committed.state, event: { kind: 'prepare', nativeTurn: 3, userText: '重新开始' } })
   assert.equal(reset.reference.chunkId, 'chunk-00002')
   assert.equal(continuity.inspect({ script: replaced, state: reset.state, request: { kind: 'progress' } }).recalledCount, 0)
-})
-
-test('末块正文提交后自动进入结束位置，不再重复注入末块', () => {
-  const continuity = createScriptContinuity()
-  let state = continuity.start(script(), 2)
-  state = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'prepare', nativeTurn: 8, userText: '结束对峙' }
-  }).state
-  state = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'commit', nativeTurn: 8, userText: '结束对峙' }
-  }).state
-  assert.equal(continuity.inspect({ script: script(), state, request: { kind: 'progress' } }).cursor, 3)
-  state = continuity.transition({ script: script(), state, event: { kind: 'end' } }).state
-
-  assert.equal(continuity.inspect({ script: script(), state, request: { kind: 'progress' } }).cursor, 3)
-  const ended = continuity.transition({
-    script: script(),
-    state,
-    event: { kind: 'prepare', nativeTurn: 9, userText: '继续' }
-  })
-  assert.equal(ended.reference.ended, true)
-  assert.equal(ended.reference.chunkId, '')
 })

@@ -9,16 +9,20 @@ import { randomUUID } from 'node:crypto'
 import { cardOpeningChoices } from './card-openings.js'
 import { inspectWorldBookDocument, updateWorldBookDocument, exportSillyTavernWorldBook } from './worldbook-resource.js'
 import { projectTavernHelperWorldbook, replaceTavernHelperWorldbookOperations } from './tavern-helper-worldbook.js'
+import { createHelperGenerationTasks } from './helper-generation-tasks.js'
+import { helperGenerationHistory } from './helper-generation-prompts.js'
 
 const copy = value => structuredClone(value)
 
 /** Private pre-game state; explicit plugin-setting saves use the profile store. */
-export function createOpeningPreparation({ readCard, worldBooks, generateRaw, readRuntimeExtensions, extensionSettings, now = Date.now }) {
+export function createOpeningPreparation({ readCard, worldBooks, generate, generateRaw, readRuntimeExtensions, extensionSettings, now = Date.now }) {
   const drafts = new Map()
+  const generations = createHelperGenerationTasks()
   const lifetime = 2 * 60 * 60 * 1000
   function requireDraft(id) {
     const draft = drafts.get(id)
     if (!draft || now() - draft.touchedAt > lifetime) {
+      generations.stopAll('opening:' + id)
       drafts.delete(id)
       throw new Error('开局准备已过期，请重新打开人物卡')
     }
@@ -39,7 +43,7 @@ export function createOpeningPreparation({ readCard, worldBooks, generateRaw, re
   }
   return {
     async create(cardPath, settings = {}) {
-      for (const [id, draft] of drafts) if (now() - draft.touchedAt > lifetime) drafts.delete(id)
+      for (const [id, draft] of drafts) if (now() - draft.touchedAt > lifetime) { generations.stopAll('opening:' + id); drafts.delete(id) }
       if (drafts.size >= 64) throw new Error('打开的游戏准备页过多，请稍后重试')
       const card = settings.card || await readCard(cardPath)
       if (!card) throw new Error('人物卡不存在')
@@ -49,13 +53,16 @@ export function createOpeningPreparation({ readCard, worldBooks, generateRaw, re
       draft.libraryDigest = settings.sourceChat?.worldbookLibraryDigest ?? settings.sourceChat?.openingWorldbookSnapshot?.libraryDigest
         ?? (settings.sourceChat?.openingWorldbookSnapshot ? undefined : worldbookContentDigest(record))
       draft.sourceSessionId = settings.sourceChat?.sessionId || ''
+      draft.presetSnapshot = settings.sourceChat ? copy(settings.sourceChat.runtimePresetSnapshot || null) : undefined
       draft.sourceLifecycleRevision = Number(settings.sourceChat?.tavernHelperLifecycleRevision) || 0
       draft.card = copy(card)
-      draft.userName = settings.userName || '你'
+      draft.userName = settings.userName || settings.sourceChat?.macroState?.userName || '你'
       const swipes = draft.openings.map(opening => opening.text)
       draft.chat = { id: draft.id, cardPath, mode: 'story', mvu: { enabled: settings.runtime === true }, _storageRevision: 0,
+        macroState: { userName: draft.userName, local: {}, global: {} },
         variables: {}, messages: [{ role: 'assistant', text: swipes[0], sourceText: swipes[0], greeting: true, turn: 1, swipeId: 0, swipes, variables: swipes.map(() => ({})) }] }
       const extensions = settings.extensions || (readRuntimeExtensions ? await readRuntimeExtensions(cardPath) : {})
+      draft.characterVariables = copy(extensions.variables || {})
       const projected = projectTavernHelperScripts(extensions.helperScripts)
       draft.helperScripts = projected.scripts
       draft.regexScripts = { global: extensions.globalRegexScripts || [], character: extensions.characterRegexScripts || extensions.regexScripts || [] }
@@ -100,13 +107,22 @@ export function createOpeningPreparation({ readCard, worldBooks, generateRaw, re
     },
     get(id) { return present(requireDraft(id)) },
     retain(id) { requireDraft(id); return { retained: true } },
-    release(id) { return { released: drafts.delete(id) } },
+    release(id) { generations.stopAll('opening:' + id); return { released: drafts.delete(id) } },
+    dispose() { generations.dispose(); drafts.clear() },
     async callRuntime(id, method, args = {}) {
       const draft = requireDraft(id)
-      if (method === 'generateTavernHelperRaw') {
-        if (!generateRaw) throw new Error('独立生成服务尚未就绪')
-        return { text: await generateRaw(args.config, { sessionId: draft.sourceSessionId,
-          history: projectTavernHelperContext(draft.chat).messages.map(message => ({ role: message.role, text: message.message })) }) }
+      if (method === 'stopTavernHelperGeneration') return { stopped: generations.stop(draft.chat.sessionId, args.generationId, { generationToken: args.generationToken, pending: args.pending }) }
+      if (method === 'stopAllTavernHelperGeneration') return { stopped: true, generationIds: generations.stopAll(draft.chat.sessionId, args.pendingGenerations) }
+      if (method === 'generateTavernHelperRaw' || method === 'generateTavernHelper') {
+        const callback = method === 'generateTavernHelper' ? generate : generateRaw
+        if (!callback) throw new Error('独立生成服务尚未就绪')
+        return await generations.run(draft.chat.sessionId, args.config?.generation_id, async signal => ({ text: await callback(args.config, {
+          sessionId: draft.sourceSessionId, signal, chat: { ...copy(draft.chat), macroState: { ...copy(draft.chat.macroState), global: copy(draft.globalVariables || {}) } }, card: copy(draft.card),
+          worldBook: draft.document ? { view: inspectWorldBookDocument(copy(draft.document)) } : null,
+          presetSnapshot: copy(draft.presetSnapshot), characterVariables: copy(draft.characterVariables || {}),
+          extensions: { globalRegexScripts: copy(draft.regexScripts.global), characterRegexScripts: copy(draft.regexScripts.character), regexScripts: copy([...draft.regexScripts.global, ...draft.regexScripts.character]) },
+          history: helperGenerationHistory(draft.chat)
+        }) }), args.generationToken)
       }
       if (method === 'prepareOpeningCommand') {
         const command = parseOpeningCommand(args.line)

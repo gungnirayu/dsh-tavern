@@ -58,7 +58,7 @@ export async function backgroundFailureChecks({page,step,savedChat,output,report
       assert.equal(chat.timeline.participants.background.sessionId,background)
     })
     await page.getByText('酒馆状态',{exact:true}).filter({visible:true}).first().click()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({hasText:/^金币：10$/}).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({hasText:/^金币：10$/}).waitFor()
     await page.screenshot({path:join(output,'first-background-recovered.png'),fullPage:true})
   })
   await step('恢复后继续两轮，MVU 不连续失败',async()=>{

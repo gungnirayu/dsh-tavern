@@ -24,7 +24,7 @@
 			const closedEventIds = new Set();
 			const closedEventOrder = [];
 			const structuralMutationMethods = new Set(["updateTavernHelperPrompts", "updateTavernHelperMessages", "createTavernHelperMessages", "replaceTavernHelperWorldbook", "saveTavernExtensionSettings", "saveTavernWorldInfo", "saveTavernChatData"]);
-			const allowedMethods = new Set(["getTavernHelperContext", "generateTavernHelperRaw", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "createTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook", "saveTavernExtensionSettings", "loadTavernWorldInfo", "saveTavernWorldInfo", "saveTavernChatData"]);
+			const allowedMethods = new Set(["getTavernHelperContext", "generateTavernHelper", "generateTavernHelperRaw", "stopTavernHelperGeneration", "stopAllTavernHelperGeneration", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "createTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook", "saveTavernExtensionSettings", "loadTavernWorldInfo", "saveTavernWorldInfo", "saveTavernChatData"]);
 			let activeSessionId = "";
 			let root = null;
 			let previous = null;
@@ -209,6 +209,10 @@
 				const record = records.get(id);
 				if (!record) return;
 				void flushCompatibility(record);
+                for (const [generationId, job] of record.helperGenerations || []) {
+                    job.cancel();
+                    if (job.started) void Promise.resolve(invoke("stopTavernHelperGeneration", {generationId, generationToken:job.generationToken, pending:true}, record.sessionId)).catch(function () {});
+                }
 				for (const [eventId, pending] of pendingEvents) {
 					if (pending.record !== record) continue;
 					hostWindow.clearTimeout(pending.timer);
@@ -283,6 +287,14 @@
 				}
 				if (diagnostics) diagnostics.push({ kind: "dispatch", name: name, ready: record.subscriptionsReady, initializationFailed: record.initializationFailed, subscribed: record.subscriptions.has(String(name)) });
 				if (!record.loaded || !record.subscriptionsReady || record.initializationFailed) return Promise.resolve(args);
+				if (context && typeof context === "object" && context.contextWindow) {
+                    // A bounded event context: recent rows at their absolute ids; older
+                    // rows stay stubs that the history lease reads on demand.
+                    const range = context.contextWindow.historyWindow, helper = context.contextWindow.tavernHelper || {};
+                    const messages = Array.from({ length: Number(range && range.messageCount) || 0 }, function (_, message_id) { return { message_id: message_id, stub: true }; });
+                    for (const row of Array.isArray(helper.messages) ? helper.messages : []) messages[row.message_id] = row;
+                    context = Object.assign({}, helper, { messages: messages });
+                }
 				if (context && typeof context === "object") {
                     if (context.contextDelta) {
                         const next = applyTavernVariableReceipt(record.context, context.contextDelta);
@@ -331,6 +343,15 @@
                     post(record, envelope);
 				});
 			}
+			// The host renderer announces a settled message DOM; scripts that decorate
+			// messages (SillyTavern CHARACTER_MESSAGE_RENDERED) apply their edits then.
+			if (typeof hostWindow.addEventListener === "function") hostWindow.addEventListener("dsh-tavern-message-rendered", function (event) {
+				const detail = event && event.detail || {};
+				for (const record of records.values()) {
+					if (record.sessionId !== String(detail.sessionId || "") || !record.trustedCardMode) continue;
+					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {});
+				}
+			});
 			async function emit(name, args, context, diagnostics, hostEventId) {
 				let current = clone(Array.isArray(args) ? args : []);
 				for (const record of records.values()) current = await emitToRecord(record, name, current, context, diagnostics, hostEventId);
@@ -681,6 +702,26 @@
 					}
 					return;
 				}
+                if (data.type === "dsh-tavern-helper-call" && data.method === "triggerTavernSlash") {
+                    // Wait for earlier persistence, but do not put generation on the
+                    // RPC tail: its MVU events must be able to issue their own writes.
+                    Promise.resolve(record.rpcTail).catch(function () {}).then(function () {
+                        if (!foreground || records.get(record.id) !== record) throw new Error("对话已切换，人物卡命令未执行；请返回原对话重试");
+                        if (data.lifecycleRevision !== undefined && Number(data.lifecycleRevision) !== Number(record.context?.lifecycleRevision || 0)) throw new Error("存档版本已变化，人物卡命令未执行");
+                        if (data.eventId && (closedEventIds.has(String(data.eventId)) || pendingEvents.get(String(data.eventId))?.finishing)) {
+                            throw Object.assign(new Error("事件已经结束，人物卡命令未执行"), { code: "TAVERN_SCRIPT_EVENT_CLOSED" });
+                        }
+                        if (typeof options.executeSlash !== "function") throw new Error("当前对话命令入口尚未就绪");
+                        return options.executeSlash(String(data.args?.line || ""), record.sessionId, data.eventId ? { waitForCompletion: false } : undefined);
+                    }).then(function (result) {
+                        post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: true,
+                            result: typeof result === "string" ? { pipe: result } : result });
+                    }, function (error) {
+                        post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: false,
+                            error: String(error.message || error), errorCode: String(error.code || "") });
+                    });
+                    return;
+                }
                 if (data.type === "dsh-tavern-helper-call" && data.method === "submitTavernHelperInput") {
                     Promise.resolve().then(function () {
                         if (!foreground || records.get(record.id) !== record) throw new Error("对话已切换，开局消息未发送；请返回原对话重试");
@@ -695,7 +736,32 @@
                     });
                     return;
                 }
-				if (data.type !== "dsh-tavern-helper-call" || !allowedMethods.has(data.method)) return;
+                if (data.type !== "dsh-tavern-helper-call") return;
+                if (!allowedMethods.has(data.method)) {
+                    post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: false,
+                        error: "当前人物卡不支持 Helper 方法: " + String(data.method || ""), errorCode: "UNSUPPORTED_HELPER_METHOD" });
+                    return;
+                }
+                if (data.method === "stopTavernHelperGeneration" || data.method === "stopAllTavernHelperGeneration") {
+                    const all = data.method === "stopAllTavernHelperGeneration", id = String(data.args?.generationId || "");
+                    let cancelledLocal = false;
+                    const stopArgs = Object.assign({}, data.args || {}), pendingGenerations = [];
+                    for (const [generationId, job] of record.helperGenerations || []) {
+                        if (!all && generationId !== id) continue;
+                        if (!all && stopArgs.generationToken && stopArgs.generationToken !== job.generationToken) continue;
+                        pendingGenerations.push({generationId, generationToken:job.generationToken});
+                        if (!all) Object.assign(stopArgs, {generationToken:job.generationToken, pending:true});
+                        job.cancel(); cancelledLocal = true;
+                    }
+                    if (all) stopArgs.pendingGenerations = (stopArgs.pendingGenerations || []).concat(pendingGenerations);
+                    Promise.resolve().then(() => invoke(data.method, stopArgs, record.sessionId)).then(function (result) {
+                        post(record, {type:"dsh-tavern-helper-response", requestId:data.requestId, ok:true,
+                            result:Object.assign({}, result, {stopped:cancelledLocal || result?.stopped === true})});
+                    }, function (error) {
+                        post(record, {type:"dsh-tavern-helper-response", requestId:data.requestId, ok:false, error:String(error.message || error)});
+                    });
+                    return;
+                }
 				if (data.eventId && (closedEventIds.has(String(data.eventId)) || pendingEvents.get(String(data.eventId))?.finishing)) {
 					post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: false, error: "事件已经结束，已拒绝迟到写入", errorCode: "TAVERN_SCRIPT_EVENT_CLOSED" });
 					return;
@@ -711,7 +777,31 @@
 				const batchKey = JSON.stringify([data.scriptId, data.eventId, mutationArgs.expectedLifecycleRevision]);
 				const queued = record.queuedPromptBatch;
 				let rpcTask;
-				if (promptOperation && queued && queued.key === batchKey && queued.operations.length < 64) {
+                if (data.method === "generateTavernHelper" || data.method === "generateTavernHelperRaw") {
+                    const config = mutationArgs.config || {}, generationId = String(config.generation_id || "dsh-rpc-" + token());
+                    mutationArgs = Object.assign({}, mutationArgs, {generationToken:mutationArgs.generationToken || token(), config:Object.assign({}, config, {generation_id:generationId})});
+                    const jobs = record.helperGenerations || (record.helperGenerations = new Map());
+                    if (jobs.has(generationId)) rpcTask = Promise.reject(new Error("生成编号正在使用: " + generationId));
+                    else {
+                        let rejectCancelled;
+                        const cancelled = new Promise(function (_resolve, reject) { rejectCancelled = reject; });
+                        const job = {started:false, cancelled:false, generationToken:mutationArgs.generationToken, cancel:function () {
+                            if (job.cancelled) return;
+                            job.cancelled = true;
+                            rejectCancelled(new Error("生成已取消"));
+                        }};
+                        jobs.set(generationId, job);
+                        // Respect earlier mutations, but don't put a long model job
+                        // in the mutation queue: cancellation must reach it immediately.
+                        const generation = (record.rpcTail || Promise.resolve()).catch(function () {}).then(function () {
+                            if (job.cancelled || records.get(record.id) !== record) throw new Error("生成已取消");
+                            if (data.lifecycleRevision !== undefined && Number(data.lifecycleRevision) !== Number(record.context?.lifecycleRevision || 0)) throw new Error("存档版本已变化，生成已取消");
+                            job.started = true;
+                            return invoke(data.method, mutationArgs, record.sessionId);
+                        });
+                        rpcTask = Promise.race([generation, cancelled]).finally(function () { if (jobs.get(generationId) === job) jobs.delete(generationId); });
+                    }
+                } else if (promptOperation && queued && queued.key === batchKey && queued.operations.length < 64) {
 					queued.operations.push(promptOperation);
 					// Every caller receives persistence confirmation, but refresh the host once.
 					rpcTask = queued.task.then(function (result) { return Object.assign({}, result, { updated: false }); });

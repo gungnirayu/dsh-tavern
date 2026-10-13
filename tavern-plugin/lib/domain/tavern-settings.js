@@ -12,7 +12,8 @@ function promptOverride(document, name) {
 
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false }
+  // variableFeedback: hand the last round's changed variables back to the foreground.
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, variableFeedback: tasks.variableFeedback !== false }
 }
 
 export function normalizePlayDefaults(value) {
@@ -31,7 +32,7 @@ export function applyTavernSettingsPatch(current, patch) {
     for (const key of ['webSearchEnabled', 'sceneImagesEnabled']) if (Object.hasOwn(patch, key) && typeof patch[key] !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['variables', 'posture']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['variables', 'posture', 'variableFeedback']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -41,7 +42,7 @@ export function applyTavernSettingsPatch(current, patch) {
     const disabled = Array.isArray(next.defaultDisabledWritingSkills) ? next.defaultDisabledWritingSkills : []
     next.defaultDisabledWritingSkills = enabled ? disabled.filter(value => value !== name) : [...new Set([...disabled, name])]
   }
-  for (const name of ['defaultForegroundModel', 'defaultBackgroundModel', 'defaultWorkbenchModel']) {
+  for (const name of ['defaultForegroundModel', 'defaultBackgroundModel', 'defaultWorkbenchModel', 'defaultImageModel']) {
     if (!Object.hasOwn(input, name)) continue
     const selection = normalizeBackgroundModel(input[name])
     if (input[name] !== null && !selection) throw new Error('默认模型配置无效')
@@ -121,9 +122,10 @@ export function presentTavernSettings(document, defaults) {
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
     defaultWorkbenchModel: normalizeBackgroundModel(object(document).defaultWorkbenchModel),
+    defaultImageModel: normalizeBackgroundModel(object(document).defaultImageModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
-    hideContextAndReasoning: object(document).hideContextAndReasoning === true,
-    candidateDismissMode: object(document).candidateDismissMode === 'after-send' ? 'after-send' : 'after-fill',
+    hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
+    candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
     compatibilityMode: false,
     sillyModeEnabled: false,
     webSearchEnabled: object(document).webSearchEnabled === true,

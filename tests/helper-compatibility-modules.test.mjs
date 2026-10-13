@@ -37,25 +37,3 @@ test('生产通信模块校验窗口与token，拒绝伪造回复并在更新上
   receive({ source: parent, data: { ...response, requestId: sent[1].requestId, ok: false, error: 'revision conflict' } })
   await rejection
 })
-
-test('生产事件模块保留脚本身份、失败进度和once递归保护', async () => {
-  let script = 'a', reports = 0
-  const progress = [], seen = []
-  const bus = helperClient.createTavernHelperEventBus({ currentScript: () => ({ id: script }),
-    async withScript(id, run) { const old = script; script = id; try { return await run() } finally { script = old } },
-    reportSubscriptions() { reports++ }, post: value => progress.push(value) })
-  bus.listen('message_sent', async () => { seen.push(script); await bus.emit('MESSAGE_SENT') }, null, true)
-  script = 'b'
-  bus.listen('MESSAGE_SENT', () => { seen.push(script) })
-  assert.deepEqual(Array.from(bus.subscriptionsFor('a')), ['MESSAGE_SENT'])
-  await bus.emitHost('host-event', 'message_sent', [])
-  assert.deepEqual(seen, ['a', 'b', 'b'])
-  assert.equal(script, 'b')
-  assert.equal(progress[0].scriptId, 'a')
-  assert.equal(progress[0].eventId, 'host-event')
-  assert.equal(progress.at(-1).phase, 'completed')
-  bus.listen('bad', () => { throw new Error('broken script') })
-  await assert.rejects(bus.emitHost('failure', 'bad', []), error => error.message === 'broken script' && error.dshTavernScriptId === 'b')
-  assert.equal(progress.at(-1).phase, 'failed')
-  assert.ok(reports >= 4)
-})

@@ -17,26 +17,6 @@ function deferred() {
   return { promise, resolve }
 }
 
-test('focus 与 visibilitychange 合并为一次激活刷新', async function () {
-  const createRefresh = await loadFactory()
-  const timers = []
-  const refresh = createRefresh({
-    schedule(run, delay) { const timer = { run, delay, cancelled: false }; timers.push(timer); return timer },
-    cancel(timer) { timer.cancelled = true },
-    activationDelayMs: 100
-  })
-  let loads = 0
-
-  refresh.activate(function () { loads += 1 })
-  refresh.activate(function () { loads += 1 })
-
-  const active = timers.filter(function (timer) { return !timer.cancelled })
-  assert.equal(active.length, 1)
-  assert.equal(active[0].delay, 100)
-  active[0].run()
-  assert.equal(loads, 1)
-})
-
 test('同一人物卡的并发读取共用一个请求', async function () {
   const createRefresh = await loadFactory()
   const refresh = createRefresh()

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createTavernScriptDispatch, TAVERN_SCRIPT_EXECUTION_TIMEOUT_MS } from '../tavern-plugin/lib/domain/tavern-script-dispatch.js'
+import { createTavernScriptDispatch } from '../tavern-plugin/lib/domain/tavern-script-dispatch.js'
 
 function claimAndStart(gate, sessionId, runtimeId = 'legacy') {
   const offer = gate.claim(sessionId, runtimeId, true)
@@ -9,10 +9,6 @@ function claimAndStart(gate, sessionId, runtimeId = 'legacy') {
   assert.equal(gate.start(sessionId, offer.event.id, offer.leaseToken, runtimeId).started, true)
   return offer
 }
-
-test('默认执行租约允许短暂断线，持续确认可续租', function () {
-  assert.equal(TAVERN_SCRIPT_EXECUTION_TIMEOUT_MS, 60000)
-})
 
 test('claim 响应丢失后重放同一 offer，显式 start 后才进入执行超时', async function () {
   const gate = createTavernScriptDispatch({ claimTimeoutMs: 500, executionTimeoutMs: 100 })

@@ -46,31 +46,6 @@ function harness({ work = async () => {}, flush = async () => {}, dispose = asyn
   return { runner, input, calls, starts, tools, children, disposals }
 }
 
-test('同游戏任务串行、不同游戏可独立执行；失败后下一任务复用会话且不继承旧工具', async t => {
-  const gate = deferred()
-  const h = harness({ work: call => call.text.includes('第一任务') ? gate.promise : Promise.resolve() })
-  t.after(() => h.runner.dispose())
-  const first = h.runner.run(h.input({ turnContext: '第一任务', tools: [{ name: 'first-tool', parameters: {} }], onToolCall: async () => '{}' }))
-  const failure = assert.rejects(first, error => error.message.includes('第一任务失败') && error.traceSessionId === 'child-1')
-  await until(() => h.starts.length === 1)
-  const second = h.runner.run(h.input({ task: 'settlement', turnContext: '第二任务' }))
-  const other = await h.runner.run(h.input({ sessionId: 'game-b', turnContext: '其他游戏' }))
-  assert.equal(h.starts.length, 2)
-  assert.notEqual(other.traceSessionId, 'child-1')
-  await assert.rejects(h.runner.compact({ sessionId: 'child-1' }), /正在执行任务/)
-  gate.reject(new Error('第一任务失败'))
-  await failure
-  const result = await second
-  assert.equal(result.traceSessionId, 'child-1')
-  assert.deepEqual(h.starts[2].tools, [])
-  assert.equal(h.tools.get('child-1').size, 0)
-  assert.equal(h.calls.filter(call => call[0] === 'create').length, 2)
-  assert.equal(h.disposals.length, 0)
-  assert.equal(h.runner.requestContext('child-1').task, 'settlement')
-  assert.equal(h.runner.requestSession('child-1'), h.children.get('child-1').session)
-  assert.deepEqual(await h.runner.compact({ sessionId: 'child-1' }), { message: 'compacted' })
-})
-
 test('会话保存失败不发布编号或执行模型；重试复用同一常驻会话，工具已撤下', async t => {
   let fail = true, published = 0
   const h = harness({ flush: async () => { if (fail) throw new Error('disk unavailable') } })

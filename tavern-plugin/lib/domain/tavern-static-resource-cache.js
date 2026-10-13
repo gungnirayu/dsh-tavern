@@ -83,7 +83,8 @@ function rewriteHtmlResourceAttributes(source, baseUrl) {
     .replace(/(<link\b[^>]*\shref\s*=\s*)(\/[^\s"'`<>]+|https:\/\/[^\s"'`<>]+)/gi, function (_match, prefix, specifier) {
       return prefix + '"' + absoluteCacheUrl(specifier, baseUrl) + '"'
     })
-  return rewritten.replace(/<(?:video|audio|source)\b[^>]*>/gi, function (tag) {
+  // Frames navigate to their own origin; only subresources go through the cache.
+  return rewritten.replace(/<(?:video|audio|source|iframe|frame)\b[^>]*>/gi, function (tag) {
     return tag.replace(/(\ssrc\s*=\s*)(["'])(\/api\/dsh-tavern\/static-assets\?url=([^"']+))\2/gi, function (_match, prefix, quote, proxy, url) {
       return prefix + quote + decodeURIComponent(url) + quote
     })

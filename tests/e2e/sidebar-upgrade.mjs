@@ -33,7 +33,7 @@ export async function sidebarUpgrade({ page, step, savedChat, output, report }) 
     assert.deepEqual((await savedChat()).messages, before.messages)
     await page.reload()
     await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).first().click()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: new RegExp('^金币：' + before.messages.at(-1).variables[before.messages.at(-1).swipeId || 0].stat_data.gold + '$') }).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: new RegExp('^金币：' + before.messages.at(-1).variables[before.messages.at(-1).swipeId || 0].stat_data.gold + '$') }).waitFor()
     await page.screenshot({ path: join(output, 'sidebar-return-to-play.png'), fullPage: true })
     report.sidebar = { repeatedOpen: true, debugPrompt: true, returnToPlay: true, reload: true }
   })

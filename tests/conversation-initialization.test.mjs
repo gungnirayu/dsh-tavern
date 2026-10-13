@@ -1,32 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { initializationFixture } from './fixtures/conversation-initialization.mjs'
-import { sessionSeedTrajectoryMessages } from '../tavern-plugin/lib/domain/session-seed-trajectory.js'
+
 import { createUserPreferenceProfile } from '../tavern-plugin/lib/domain/user-preference-profile.js'
 
 const messages = session => session.events.filter(event => event.type === 'assistant/message' && event.data?.message?.source?.model === 'character-card')
 
-test('带卡的卡片任务（含修改人物卡）沿用卡片 Agent 人设，并冻结与前台相同的人物卡快照', async () => {
-  const h = initializationFixture()
-  const foreground = await h.make().start({ ...h.input, sessionId: 'foreground' })
-  const input = { ...h.input, mode: 'card', cardTask: 'edit' }
-  const chat = await h.make().start(input)
-  // The retired edit experiment no longer applies to new sessions.
-  assert.equal(chat.cardEditContext, undefined)
-  assert.deepEqual(chat.cardReferenceContext, { version: 1 })
-  assert.notEqual(chat.openingText, '')
-  assert.equal(h.session().prefix, foreground.cardContextSnapshot)
-  assert.equal(h.session().events.some(event => event.data?.source?.workspaceContextVersion), false)
-  assert.deepEqual(seedMessages(h.session()).map(e => e.type === 'user/message' ? e.data.content[0].text : e.data.message.content[0].text), sessionSeedTrajectoryMessages(h.session().id, 'card').map(s => s.text))
-  h.card.description = '后续修改不重建开局快照'
-  const reopened = await h.make().start(input)
-  assert.equal(reopened.cardContextSnapshot, foreground.cardContextSnapshot)
-  for (const cardTask of ['mvu', 'extract', undefined]) {
-    const other = await h.make().start({ ...input, sessionId: 'other-' + cardTask, cardTask })
-    assert.equal(other.cardEditContext, undefined)
-    assert.deepEqual(other.cardReferenceContext, { version: 1 })
-  }
-})
 const seedMessages = session => session.events.filter(event => {
   const source = event.type === 'assistant/message' ? event.data?.message?.source : event.data?.source
   return source?.form === 'synthetic-trajectory' || source?.model === 'synthetic-trajectory'
@@ -57,11 +36,6 @@ test('画像开关和确认版本只影响新局，不改写已创建的游戏',
   assert.equal((await h.make().start({ ...h.input, sessionId: 'next' })).userProfileEnabled, false)
 })
 
-test('没有确认画像时，即使旧数据保存了开启标记，也不会注入', async () => {
-  const h = initializationFixture({ userPreferenceProfile: { read: async () => ({ hasConfirmed: false, defaultEnabled: true }) } })
-  assert.equal((await h.make().start(h.input)).userProfileEnabled, false)
-})
-
 test('原生游玩把固定会话种子写在人物卡背景之后、开场白之前，重入不重复', async () => {
   const h = initializationFixture()
   await h.make().start(h.input)
@@ -80,8 +54,8 @@ test('原生游玩把固定会话种子写在人物卡背景之后、开场白�
 
   const card = initializationFixture()
   await card.make().start({ ...card.input, mode: 'card', cardPath: '' })
-  assert.equal(seedMessages(card.session()).length, 3)
-  assert.match(seedMessages(card.session())[0].data.content[0].text, /待编辑素材/)
+  // The plain card workbench gets no scripted exchange; its role is in the system prompt.
+  assert.equal(seedMessages(card.session()).length, 0)
   const cardEvents = structuredClone(card.session().events)
   await card.make().start({ ...card.input, mode: 'card', cardPath: '' })
   assert.deepEqual(card.session().events, cardEvents)
@@ -147,21 +121,6 @@ test('开局草稿世界书在第一次保存前固化，再次打开不覆盖�
   assert.deepEqual(h.writes[0].chat.openingWorldbookSnapshot, snapshot)
   const reopened = await h.make().start({ ...h.input, preparation: { worldbookSnapshot: { version: 99 } } })
   assert.deepEqual(reopened.openingWorldbookSnapshot, snapshot)
-})
-
-test('prepared MVU initialization preserves every opening and never marks partial data complete', async () => {
-  for (const complete of [true, false]) {
-    const h = initializationFixture()
-    h.state.extensions = { mvuResources: [{ enabled: true }] }
-    const first = complete ? { stat_data: { hp: 10 }, schema: {} } : {}
-    const selected = { stat_data: { hp: 20 }, schema: {} }
-    const preparation = { worldbookSnapshot: { version: 1 }, openingVariables: { primary: first, 'alternate:0': selected }, messageVariables: selected }
-    const chat = await h.make().start({ ...h.input, openingId: 'alternate:0', preparation })
-    assert.deepEqual(chat.messages[0].variables, [first, selected])
-    assert.equal(chat.mvu.openingInitialization.status, complete ? 'complete' : 'pending')
-    selected.stat_data.hp = 0
-    assert.equal(chat.messages[0].variables[1].stat_data.hp, 20)
-  }
 })
 
 test('新局采用全局默认模型，重入不覆盖本局选择', async () => {

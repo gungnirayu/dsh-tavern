@@ -18,6 +18,13 @@ fs.mkdirSync(data,{recursive:true});
 let stage='准备安装';
 const INSTALLER_STEPS={'dependencies.install':'安装依赖','profile.install':'注册 Tavern','source.files':'下载代码','service.start':'启动服务'};
 const download=createRequire(import.meta.url)('./download.cjs');
+// The last lines a failed step printed usually carry its actual error (stack frames and
+// the diagnostics pointer excluded); without them the dialog only says which step failed.
+function failureReason(lines){
+  const kept=lines.map(line=>line.trim()).filter(line=>line&&!/^at\s/.test(line)&&!line.startsWith('诊断日志：')&&!line.startsWith('At ')&&!/^[+~]/.test(line)&&!/^(CategoryInfo|FullyQualifiedErrorId)\b/.test(line));
+  const tail=kept.slice(-6).join('\n');
+  return tail?'\n原因：'+(tail.length>600?'…'+tail.slice(-600):tail):'';
+}
 try {
   if(process.env.DSH_ONLINE_TEST_OFFLINE==='1')throw Error('测试：网络不可用');
   const env={...process.env,DSH_HOME:home,DSH_TAVERN_HOST:'desktop',DSH_TAVERN_RUNTIME_HOST:'desktop',
@@ -56,7 +63,7 @@ try {
     'catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',''].join('\r\n'));
   console.log('DSH_STATUS 正在检查更新与下载源…');
   const output=fs.openSync(log,'a');
-  let code,installerFailure='';
+  let code,installerFailure='';const failureDetail=[];
   try {
     const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',wrapper],
       {env,windowsHide:true,stdio:['ignore','pipe','pipe']});
@@ -68,6 +75,8 @@ try {
         if(line.startsWith('DSH_STATUS '))console.log(line);
         // install.ps1 ends with one curated summary line; later output never replaces it.
         if(!installerFailure&&line.startsWith('安装失败：'))installerFailure=line.slice(5);
+        // The summary line only names the step; the failed command's own output follows it.
+        else if(installerFailure)failureDetail.push(line);
         const progress=line.match(/Progress: resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)/);
         if(progress)console.log(`DSH_STATUS 安装依赖：已下载 ${progress[3]}，复用 ${progress[2]}，已安装 ${progress[4]}（已解析 ${progress[1]}）`);
         if(/WARN.*(?:retry|ETIMEDOUT|ECONNRESET|ENOTFOUND|ERR_SOCKET)/i.test(line))console.log('DSH_STATUS 依赖下载遇到网络错误，包管理器正在重试；详细原因见日志。');
@@ -76,7 +85,7 @@ try {
     code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});
   } finally {fs.closeSync(output);fs.rmSync(wrapper,{force:true})}
   if(code!==0)throw Error(installerFailure
-    ? installerFailure.replace(/步骤 ([a-z.-]+) 失败/,(match,step)=>INSTALLER_STEPS[step]?`${INSTALLER_STEPS[step]}（${step}）失败`:match).replace(/\/\/[^\s/@]+@/g,'//')
+    ? (installerFailure.replace(/步骤 ([a-z.-]+) 失败/,(match,step)=>INSTALLER_STEPS[step]?`${INSTALLER_STEPS[step]}（${step}）失败`:match)+failureReason(failureDetail)).replace(/\/\/[^\s/@]+@/g,'//')
     : '安装或更新失败');
   // Older online installers may have left a pending first-install marker.
   fs.rmSync(path.join(source,'.portable-install-pending.json'),{force:true});
@@ -85,6 +94,6 @@ try {
   const chain=[];for(let item=error,depth=0;item&&depth<5;item=item.cause,depth++)chain.push(depth?'Caused by: '+String(item.stack||item):String(item.stack||item));
   fs.appendFileSync(log,`[${stage}] `+chain.join('\n')+'\n');
   const reason=/[\u4e00-\u9fff]/.test(error.message)?error.message:download.describeFailure(error);
-  console.error(`${stage}失败：${reason.length>400?reason.slice(0,400)+'…':reason}\n详细日志：${log}`);
+  console.error(`${stage}失败：${reason.length>1200?reason.slice(0,1200)+'…':reason}\n详细日志：${log}`);
   process.exitCode=1;
 }

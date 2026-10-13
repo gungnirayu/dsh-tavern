@@ -1,6 +1,6 @@
 // Text-model requests from trusted card scripts use the session's background model.
 // No provider credentials are exposed to the script or sent to a card URL.
-function installTavernBackgroundModel({ window, request }) {
+function installTavernBackgroundModel({ window, request, context }) {
     const base = 'https://dsh-background.invalid/v1';
     const model = '本局后台模型';
     const nativeFetch = window.fetch && window.fetch.bind(window);
@@ -111,6 +111,9 @@ function installTavernBackgroundModel({ window, request }) {
         const empty = {};
         const proxy = new Proxy(value, { get(target, key) {
             if (key === 'toJSON') return () => ({ ...target });
+            // Tavern's background agent already settles this chat. MVU's own extra-model
+            // parse would request a second update set and append it to the reply.
+            if (key === '更新方式' && hostSettles()) return '随AI输出';
             if (key !== '额外模型解析配置') return target[key];
             const config = target[key] && typeof target[key] === 'object' ? target[key] : empty;
             if (!configViews.has(config)) configViews.set(config, new Proxy(config, {
@@ -124,8 +127,15 @@ function installTavernBackgroundModel({ window, request }) {
         views.set(value, proxy);
         return proxy;
     }
+    function hostSettles() {
+        try { return context?.()?.mvuSettlement === 'host'; } catch (_) { return false; }
+    }
     function normalizeMvuSettings(next, previous) {
         if (!next || typeof next !== 'object') return next;
+        if (hostSettles() && next.更新方式 === '随AI输出' && previous && typeof previous === 'object') {
+            next = { ...next };
+            if (Object.hasOwn(previous, '更新方式')) next.更新方式 = previous.更新方式; else delete next.更新方式;
+        }
         const config = next.额外模型解析配置;
         if (!config || typeof config !== 'object') return next;
         const restored = { ...config };

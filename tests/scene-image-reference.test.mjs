@@ -47,3 +47,11 @@ test('references survive restart; load checks membership, deletion, bytes and re
   assert.equal((await load()).images.length, 0)
   assert.equal((await f.select()).records.length, 0)
 })
+
+test('a picture added to a turn can be a reference source of that turn', async () => {
+  const { sceneSlotKey } = await import('../tavern-plugin/lib/domain/scene-slots.js')
+  const f = fixture()
+  await f.bind({ source: { key: sceneSlotKey('body-1', 2), turn: 1 } })
+  assert.equal((await f.select()).records.length, 1)
+  assert.equal((await f.select({ lineage: [{ key: 'other-branch', turn: 1 }, f.activation] })).records.length, 0)
+})

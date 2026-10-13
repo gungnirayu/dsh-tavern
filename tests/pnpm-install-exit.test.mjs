@@ -2,19 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runtimeEnvironment } from '../bin/launcher-environment.mjs'
-
-test('all bootstrap installers suppress pnpm version checks and PowerShell restores its caller', async () => {
-  const unix = await readFile(new URL('../install.sh', import.meta.url), 'utf8')
-  const windows = await readFile(new URL('../install.ps1', import.meta.url), 'utf8')
-  assert.match(unix, /export pnpm_config_update_notifier=false/)
-  assert.match(windows, /\$PreviousPnpmUpdateNotifier = \$env:pnpm_config_update_notifier/)
-  assert.match(windows, /\$env:pnpm_config_update_notifier = 'false'/)
-  assert.match(windows, /\$env:pnpm_config_update_notifier = \$PreviousPnpmUpdateNotifier/)
-})
 
 // Supply an installed pnpm CLI entry; no packages are fetched or installed globally.
 test('real pnpm exits after Done even when the registry never answers version checks', { skip: !process.env.TAVERN_PNPM_ENTRY }, async t => {

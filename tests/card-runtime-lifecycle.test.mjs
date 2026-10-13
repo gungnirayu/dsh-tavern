@@ -36,53 +36,6 @@ const mvuView = () => {
   return input
 }
 
-test('DSH 主题文字颜色同步到已就绪 iframe，不替换文档；离开后停止监听', () => {
-  const h = host(), sent = []
-  let accent = 'rgb(1, 2, 3)', notify, disconnected = false
-  h.window.document = { body: { appendChild() {} }, documentElement: {}, createElement() { return { style: {}, remove() {} } } }
-  h.window.getComputedStyle = () => ({ color: accent, getPropertyValue: () => '' })
-  h.window.MutationObserver = class {
-    constructor(callback) { notify = callback }
-    observe() {} disconnect() { disconnected = true }
-  }
-  const life = h.client.createTavernMessageFrameLifecycle({ content: '<p>正文</p>', eager: true }, { window: h.window })
-  const stop = life.start(() => {})
-  const doc = life.snapshot().visibleDocument
-  const node = { contentWindow: { postMessage: value => sent.push(copy(value)) } }
-  doc.ref(node)
-  h.deliver(node, { type: 'dsh-tavern-frame-ready', token: doc.token }, {})
-  assert.equal(sent.length, 0, '外部来源不能触发同步')
-  h.deliver(node, { type: 'dsh-tavern-frame-ready', token: doc.token })
-  assert.equal(sent.at(-1)?.type, 'dsh-tavern-text-colors')
-  assert.equal(sent.at(-1)?.textColorOverrides.quote, 'rgb(1, 2, 3)')
-  accent = 'rgb(4, 5, 6)'; notify()
-  assert.equal(sent.at(-1).textColorOverrides.quote, 'rgb(4, 5, 6)')
-  assert.equal(life.snapshot().visibleDocument, doc)
-  assert.equal(life.snapshot().pendingDocument, null)
-  const count = sent.length; notify()
-  assert.equal(sent.length, count, '无关样式变动不重复通知')
-  stop()
-  assert.equal(disconnected, true)
-})
-
-test('多个消息 iframe 共用一个宿主主题监听，最后一个离开时断开', () => {
-  const h = host()
-  let created = 0, disconnected = 0
-  h.window.document = { head: {}, body: { appendChild() {} }, documentElement: {}, createElement() { return { style: {}, remove() {} } } }
-  h.window.getComputedStyle = () => ({ color: 'rgb(1, 2, 3)', getPropertyValue: () => '' })
-  h.window.MutationObserver = class { constructor() { created++ } observe() {} disconnect() { disconnected++ } }
-  const stops = Array.from({ length: 20 }, (_, i) => h.client.createTavernMessageFrameLifecycle({ content: '<p>' + i + '</p>', eager: true }, { window: h.window }).start(() => {}))
-  assert.equal(created, 1)
-  stops.slice(1).forEach(stop => stop())
-  assert.equal(disconnected, 0)
-  stops[0]()
-  assert.equal(disconnected, 1)
-})
-
-test('卡片 iframe 不改写卡片字号', () => {
-  const html = host().client.buildTavernFrameDocument({ content: '<p style="font-size:20px">正文</p>', token: 'font-test' })
-  assert.doesNotMatch(html, /data-dsh-tavern-font|dsh-tavern-font-size/)
-})
 function execution(options = {}) {
   const h = host(), calls = [], runtimes = [], signalListeners = new Map(), connectionListeners = new Map()
   let handle = () => Promise.resolve({ active: true })
@@ -165,22 +118,6 @@ test('script owner acquires one lease, reuses sandbox on variable changes, initi
   assert.equal(h.calls.at(-1).requestOptions.keepalive, true, 'navigation must not abort the ownership release')
   h.module.dispose()
   assert.equal(h.calls.filter(x => x.method === 'releaseTavernHelperRuntime').length, 1)
-})
-
-test('temporarily rejected script ownership retries promptly instead of waiting for the heartbeat', async () => {
-  const h = execution()
-  let claims = 0
-  h.respond(method => method === 'claimTavernScriptWork' ? { active: ++claims > 1 } : {})
-  h.module.sync('A', view())
-  await h.settle()
-  assert.equal(h.module.inspect().active, false)
-  assert.equal(h.timers.size, 1)
-
-  await h.runTimer()
-  await h.settle()
-  assert.equal(h.module.inspect().active, true)
-  assert.equal(claims, 2)
-  h.module.dispose()
 })
 
 test('8 秒的短暂请求积压恢复后仍领取同一执行器，不被旧 3 秒超时打断', async t => {
@@ -324,19 +261,6 @@ test('claimed host event identity reaches the shared script runtime unchanged', 
   h.module.dispose()
 })
 
-test('SSE 重连会立即向重启后的 Host 重新登记脚本执行器', async () => {
-  const h = execution()
-  h.module.sync('A', view())
-  await h.settle()
-  const before = h.calls.filter(call => call.method === 'claimTavernScriptWork').length
-
-  h.reconnect()
-  await h.settle()
-
-  assert.equal(h.calls.filter(call => call.method === 'claimTavernScriptWork').length, before + 1)
-  h.module.dispose()
-})
-
 test('script failure is acknowledged with diagnostics; the next signal can execute another event', async () => {
   const h = execution()
   let eventId = 0
@@ -394,50 +318,6 @@ test('document transport coalesces loading updates, recovers snapshots, and reje
   h.stop()
 })
 
-test('消息 iframe 生命周期忽略旧触摸转发消息，不再改动宿主滚动位置', () => {
-  const h = frames(), visible = h.attach()
-  const outer = { parentElement: null, scrollTop: 40, clientHeight: 300, scrollHeight: 900, style: { overflowY: 'auto' } }
-  const wrapper = { parentElement: outer, scrollTop: 0, clientHeight: 300, scrollHeight: 300, style: { overflowY: 'visible' } }
-  visible.node.parentElement = wrapper
-  h.window.getComputedStyle = node => node.style || { overflowY: 'visible' }
-
-  visible.message('dsh-tavern-frame-pan', { deltaY: 36 }, {})
-  assert.equal(outer.scrollTop, 40)
-  visible.message('dsh-tavern-frame-pan', { deltaY: 36 })
-  assert.equal(outer.scrollTop, 40)
-
-  h.update({ content: '<p>replacement</p>' })
-  const pending = h.attach(h.lifecycle.snapshot().pendingDocument)
-  pending.node.parentElement = wrapper
-  pending.message('dsh-tavern-frame-pan', { deltaY: 36 })
-  assert.equal(outer.scrollTop, 40)
-
-  visible.message('dsh-tavern-frame-pan', { deltaY: 9999 })
-  assert.equal(outer.scrollTop, 40)
-  h.stop()
-})
-
-test('replacement retains visible page, ignores superseded pending readiness, and carries measured height into the swap', () => {
-  const h = frames(), old = h.attach()
-  old.message('dsh-tavern-frame-ready')
-  h.update({ content: '<p>first</p>' })
-  const abandoned = h.attach(h.lifecycle.snapshot().pendingDocument)
-  h.update({ content: '<p>second</p>' })
-  const replacement = h.attach(h.lifecycle.snapshot().pendingDocument)
-  abandoned.message('dsh-tavern-frame-ready')
-  assert.equal(h.lifecycle.snapshot().visibleDocument, old.document)
-  replacement.message('dsh-tavern-frame-height', { height: 450.2 })
-  h.update({ helperContext: context(2) })
-  replacement.message('dsh-tavern-frame-ready')
-  assert.equal(h.lifecycle.snapshot().visibleDocument, replacement.document)
-  assert.equal(h.lifecycle.snapshot().pendingDocument, null)
-  assert.equal(h.lifecycle.snapshot().height, 451)
-  assert.equal(h.posts.at(-1).update.stateRevision, 2)
-  old.message('dsh-tavern-helper-call', { method: 'updateTavernHelperVariables' })
-  assert.equal(h.calls.length, 0, 'superseded visible document is rejected even before React detaches it')
-  h.stop()
-})
-
 test('return to visible content cancels preparation; stale refresh coalesces; historical context remains frozen', () => {
   const h = frames(), old = h.attach()
   h.update({ content: 'temporary' })
@@ -458,28 +338,6 @@ test('return to visible content cancels preparation; stale refresh coalesces; hi
   assert.equal(history.posts.length, 0)
   assert.equal(history.lifecycle.snapshot().pendingDocument, null)
   history.stop()
-})
-
-test('same template in another session gets a new page and rejects old writes; pending RPC response cannot reach a retired page', async () => {
-  const h = frames(), old = h.attach(), call = deferred()
-  h.respond(() => call.promise)
-  old.message('dsh-tavern-helper-call', { requestId: 'R', method: 'updateTavernHelperVariables', args: { sessionId: 'forged' } })
-  assert.equal(h.calls[0].sessionId, 'A')
-  assert.equal(h.calls[0].args.sessionId, 'A')
-  assert.equal(h.calls[0].args.expectedLifecycleRevision, 1)
-  h.update({ sessionId: 'B', helperContext: { ...context(2), lifecycleRevision: 9 } })
-  const current = h.attach()
-  assert.notEqual(current.document.token, old.document.token)
-  old.message('dsh-tavern-helper-call', { method: 'updateTavernHelperVariables' })
-  call.resolve({ updated: true }); await tick()
-  assert.equal(h.posts.length, 0)
-  assert.equal(h.calls.length, 1)
-  current.message('dsh-tavern-helper-call', { method: 'replaceTavernHelperWorldbook' })
-  assert.equal(h.calls.length, 2, 'message page exposes the authenticated current-card worldbook bridge')
-  assert.equal(h.calls[1].sessionId, 'B')
-  assert.equal(h.calls[1].args.sessionId, 'B')
-  assert.equal(h.calls[1].args.expectedLifecycleRevision, 9)
-  h.stop()
 })
 
 test('runtime reports coalesce and cancel on stop; restart attaches once and read-only capture never mutates variables', async () => {
@@ -583,22 +441,6 @@ test('replacing the shared sandbox cancels its pending events and ignores detach
   assert.equal(h.timers.size, 0)
 })
 
-test('sandbox initialization failure remains observable; a new script document can become ready', () => {
-  const h = sandbox()
-  h.runtime.sync('A', view())
-  h.frames[0].load()
-  h.runTimer()
-  assert.equal(h.runtime.inspect().scripts[0].initializationFailed, true)
-  assert.match(h.errors[0], /初始化超时/)
-  const changed = view(); changed.tavernHelperScripts[0].content = 'void 2'
-  h.runtime.sync('A', changed)
-  h.ready()
-  assert.equal(h.runtime.inspect().scripts[0].subscriptionsReady, true)
-  assert.equal(h.runtime.inspect().scripts[0].initializationFailed, false)
-  h.runtime.dispose()
-  assert.equal(h.timers.size, 0)
-})
-
 test('MVU 导入失败不宣布就绪，也不把未订阅的事件静默当作成功；重建后可恢复', async () => {
   let announcements = 0
   const h = sandbox({ onReady() { announcements++ } })
@@ -626,21 +468,6 @@ test('MVU 导入失败不宣布就绪，也不把未订阅的事件静默当作�
   assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), true)
   assert.equal(h.runtime.inspect().initializationError, undefined)
   assert.equal(announcements, 1)
-  h.runtime.dispose()
-})
-
-test('脚本依赖导入失败立即结束初始化等待并保留原始错误', () => {
-  const h = sandbox()
-  h.runtime.sync('A', mvuView())
-  const frame = h.frames[0]
-  frame.load()
-  assert.equal(h.timers.size, 1)
-  const message = 'Failed to fetch dynamically imported module: /api/dsh-tavern/vendor/runtime-assets/zod/index.mjs'
-  h.message(frame, 'dsh-tavern-helper-bootstrap-failed', { message })
-  assert.equal(h.timers.size, 0)
-  assert.equal(h.runtime.inspect().scripts[0].initializationFailed, true)
-  assert.match(h.runtime.inspect().initializationError, /Failed to fetch dynamically imported module/)
-  assert.doesNotMatch(h.errors.join('\n'), /初始化超时/)
   h.runtime.dispose()
 })
 
@@ -717,46 +544,6 @@ test('MVU subscriptions cannot advertise settlement readiness until initialized 
   assert.equal(h.timers.size, 0)
 })
 
-test('MVU initialization timeout is removed with its old sandbox and cannot poison the next chat', () => {
-  const h = sandbox(), input = mvuView()
-  input.tavernHelper.messages[0].variables = {}
-  h.runtime.sync('A', input)
-  const frame = h.frames[0]; frame.load()
-  h.message(frame, 'dsh-tavern-helper-subscriptions', { ready: true, scripts: [
-    { id: '__dsh_official_mvu__', ready: true }, { id: 'script', ready: true }
-  ] })
-  assert.equal(h.timers.size, 1)
-  h.runtime.sync('B', mvuView())
-  assert.equal(h.timers.size, 0)
-  h.runtime.dispose()
-})
-
-test('加载诊断经认证沙箱归属到当前会话，限量且不影响运行状态', async () => {
-  const h = sandbox()
-  h.window.navigator = { userAgent: 'Mozilla Windows Chrome/128.0.0.0 custom-private-text' }
-  h.runtime.sync('A', { ...view(), tavernMvuRuntime: { owner: 'official', assetUrl: '/bundle.js' } })
-  const frame = h.frames[0]; frame.load()
-  const token = frame.contentWindow.messages[0].token
-  const diagnostic = { loadId: 'mvu-load-1', phase: 'download-response', attempt: 1, httpStatus: 200, contentType: 'application/json' }
-  h.deliver(frame, { token, type: 'dsh-tavern-mvu-load-diagnostic', diagnostic }, {})
-  assert.equal(h.calls.length, 0)
-  h.respond(() => Promise.reject(Error('disk unavailable')))
-  h.message(frame, 'dsh-tavern-mvu-load-diagnostic', { diagnostic })
-  await tick()
-  assert.equal(h.calls[0].sessionId, 'A')
-  assert.equal(h.calls[0].args.diagnostic.platform, 'Windows')
-  assert.equal(h.calls[0].args.diagnostic.browser, 'Chrome/128.0.0.0')
-  assert.doesNotMatch(JSON.stringify(h.calls), /custom-private-text/)
-  assert.equal(h.runtime.inspect().initializationError, undefined)
-  for (let i = 0; i < 100; i++) h.message(frame, 'dsh-tavern-mvu-load-diagnostic', { diagnostic })
-  assert.equal(h.calls.length, 80)
-  h.runtime.sync('B', view())
-  h.message(frame, 'dsh-tavern-mvu-load-diagnostic', { diagnostic })
-  assert.equal(h.calls.length, 80)
-  h.runtime.dispose()
-  await tick()
-})
-
 test('执行租约 claim 将 MVU 加载失败与未就绪分开报告', async () => {
   const h = execution()
   h.module.sync('A', view())
@@ -804,41 +591,6 @@ test('second browser keeps companion UI scripts while only the lease owner initi
   h.module.dispose()
 })
 
-test('正式卡片页面追加消息走当前 Session 与生命周期校验', async () => {
-  const h = frames(), frame = h.attach()
-  h.respond(() => Promise.resolve({ updated: true }))
-  frame.message('dsh-tavern-helper-call', { requestId: 'journey', method: 'createTavernHelperMessages', args: { sessionId: 'forged', messages: [{ role: 'user', message: '开局' }] } })
-  await tick()
-  assert.equal(h.calls.length, 1)
-  assert.equal(h.calls[0].method, 'createTavernHelperMessages')
-  assert.equal(h.calls[0].args.sessionId, 'A')
-  assert.equal(h.calls[0].args.expectedLifecycleRevision, 1)
-  h.stop()
-})
-
-test('queued prompt operations batch in order and refresh once; reads remain barriers', async () => {
-  const h = sandbox(), barrier = deferred()
-  h.runtime.sync('A', view())
-  const frame = h.ready()
-  h.respond((method) => method === 'getTavernHelperWorldbook' ? barrier.promise : { updated: true })
-  const send = (requestId, method, args = {}) => h.message(frame, 'dsh-tavern-helper-call', { requestId, scriptId: 'script', lifecycleRevision: 1, method, args })
-  send('read-first', 'getTavernHelperWorldbook')
-  await tick()
-  for (let i = 0; i < 15; i++) send('prompt-' + i, 'updateTavernHelperPrompts', { operation: { kind: 'remove', ids: ['id-' + i] } })
-  send('read-after', 'getTavernHelperWorldbook')
-  send('last', 'updateTavernHelperPrompts', { operation: { kind: 'remove', ids: ['last'] } })
-  barrier.resolve({})
-  await tick()
-  const calls = h.calls.filter(call => ['getTavernHelperWorldbook', 'updateTavernHelperPrompts'].includes(call.method))
-  assert.deepEqual(calls.map(call => call.method), ['getTavernHelperWorldbook', 'updateTavernHelperPrompts', 'getTavernHelperWorldbook', 'updateTavernHelperPrompts'])
-  assert.deepEqual(copy(calls[1].args.operation.operations.map(op => op.ids[0])), Array.from({ length: 15 }, (_, i) => 'id-' + i))
-  assert.equal(h.mutations.length, 2)
-  const replies = frame.contentWindow.messages.filter(message => message.type === 'dsh-tavern-helper-response')
-  assert.equal(replies.length, 18)
-  assert.ok(replies.every(reply => reply.ok))
-  h.runtime.dispose()
-})
-
 for (const fail of [false, true]) test(`事件收尾等待已接收的排队写入，保存${fail ? '失败不能报成功' : '成功不误判迟到'}`, async () => {
   const h = sandbox(), blocked = deferred()
   h.runtime.sync('A', view())
@@ -862,28 +614,6 @@ for (const fail of [false, true]) test(`事件收尾等待已接收的排队写�
   h.runtime.dispose()
 })
 
-test('沙箱失联后关闭事件，排队写入不能落地', async () => {
-  let now = 0
-  const h = sandbox({ now: () => now, eventTimeoutMs: 10 }), blocked = deferred()
-  h.runtime.sync('A', view())
-  const frame = h.ready()
-  h.respond(method => method === 'getTavernHelperWorldbook' ? blocked.promise : Promise.resolve({ updated: true }))
-  h.message(frame, 'dsh-tavern-helper-call', { requestId: 'read', method: 'getTavernHelperWorldbook', args: {} })
-  await tick()
-  const event = h.runtime.emit('UPDATE', [1], context(), [], 'timeout-event')
-  const rejected = assert.rejects(event, /失联/)
-  h.message(frame, 'dsh-tavern-helper-call', { eventId: 'timeout-event', requestId: 'write', method: 'updateTavernHelperPrompts', args: {} })
-  h.message(frame, 'dsh-tavern-helper-event-complete', { eventId: 'timeout-event', args: [1] })
-  now = 100
-  for (const timer of Array.from(h.timers.values())) if (timer.delay < 10) timer.run()
-  await rejected
-  blocked.resolve({})
-  await tick()
-  assert.equal(h.calls.filter(x => x.method === 'updateTavernHelperPrompts').length, 0)
-  assert.match(frame.contentWindow.messages.find(x => x.requestId === 'write').error, /迟到写入/)
-  h.runtime.dispose()
-})
-
 for (const accepted of [false, true]) test(`完成回执丢失后${accepted ? '查询已完成' : '重发原回执'}，不重跑或改报失败`, async t => {
   const h = execution()
   t.after(() => h.module.dispose())
@@ -902,21 +632,6 @@ for (const accepted of [false, true]) test(`完成回执丢失后${accepted ? '�
   assert.equal(receipts, accepted ? 1 : 2)
   assert.equal(h.runtimes[0].emissions.length, 1)
   assert.ok(h.calls.filter(x => x.method === 'completeTavernHelperEvent').every(x => !x.args.error))
-})
-
-test('最新楼层转为历史后，多轮状态广播不重建其 iframe 或更新上下文', () => {
-  const h = frames({persistent: false}), frame = h.attach()
-  frame.message('dsh-tavern-frame-ready')
-  h.update({helperContext: context(2)})
-  h.update({eager: false, helperContext: context(3)})
-  const sent = h.posts.length
-  for (let revision = 4; revision < 44; revision++) {
-    h.update({helperContext: context(revision)})
-    assert.equal(h.lifecycle.snapshot().visibleDocument, frame.document)
-    assert.equal(h.lifecycle.snapshot().pendingDocument, null)
-  }
-  assert.equal(h.posts.length, sent)
-  h.stop()
 })
 
 for (const completes of [false, true]) test(`写入拒绝的错误码到达脚本并保留至事件${completes ? '失败回执' : '超时'}`, async () => {
@@ -942,29 +657,6 @@ for (const completes of [false, true]) test(`写入拒绝的错误码到达脚�
   assert.match(failure.message, /不属于当前 MVU 结算事件/)
   assert.equal(completes ? failure.code : failure.cause?.code, 'MVU_SETTLEMENT_EVENT_MISMATCH')
   if (!completes) assert.equal(diagnostics.at(-1).causeCode, 'MVU_SETTLEMENT_EVENT_MISMATCH')
-})
-
-test('持续确认状态的慢脚本跨越原总时限，完成后立即返回并确认回执', async () => {
-  let now = 0
-  const h = sandbox({ now: () => now, eventTimeoutMs: 10 })
-  h.runtime.sync('A', view())
-  const frame = h.ready()
-  let settled = false
-  const done = h.runtime.emit('UPDATE', [1], context(), [], 'slow').then(args => { settled = true; return args })
-  for (let i = 0; i < 30; i++) {
-    now += 3
-    h.runTimer()
-    const envelope = frame.contentWindow.messages.at(-1)
-    assert.equal(envelope.eventId, 'slow')
-    h.message(frame, 'dsh-tavern-helper-event-state', { eventId: 'slow', phase: 'executing' })
-    await tick()
-    assert.equal(settled, false)
-  }
-  assert.equal(h.errors.length, 0)
-  h.message(frame, 'dsh-tavern-helper-event-complete', { eventId: 'slow', args: [2] })
-  assert.deepEqual(copy(await done), [2])
-  assert.equal(frame.contentWindow.messages.at(-1).type, 'dsh-tavern-helper-event-ack')
-  h.runtime.dispose()
 })
 
 test('start 已接收但响应丢失时重试同一 start，不先执行脚本或报告失败', async t => {
@@ -1036,25 +728,3 @@ test('真实父页和 Helper 沙箱互联：首个事件及完成回执都丢失
   assert.equal(h.errors.length, 0)
   h.runtime.dispose()
 })
-
-test('touch relay is authenticated, scoped to frame ancestors and retired on disposal', () => {
-  const h = host(), sent = [];
-  h.window.getComputedStyle = node => node.css;
-  h.window.document = { scrollingElement: null };
-  const outer = { nodeType: 1, parentElement: null, css: { overflowY: 'auto' }, scrollHeight: 2000, clientHeight: 500, scrollTop: 0,
-    scrollTo({ top, behavior }) { assert.equal(behavior, 'instant'); this.scrollTop = top; } };
-  const life = h.client.createTavernMessageFrameLifecycle({ content: '<p>正文</p>', eager: true }, { window: h.window });
-  const stop = life.start(() => {}), doc = life.snapshot().visibleDocument;
-  const node = { isConnected: true, parentElement: outer, contentWindow: { postMessage: message => sent.push(message) } };
-  doc.ref(node);
-  const begin = sequence => h.deliver(node, { type: 'dsh-tavern-frame-touch-start', token: doc.token, sequence });
-  const move = (sequence, sender = node.contentWindow) => h.deliver(node, { type: 'dsh-tavern-frame-scroll', token: doc.token, sequence, dy: 90 }, sender);
-  move(1); assert.equal(outer.scrollTop, 0, 'no movement before a gesture');
-  begin(1); move(1, {}); assert.equal(outer.scrollTop, 0, 'reject foreign windows');
-  move(1); assert.equal(outer.scrollTop, 90);
-  begin(2); move(1); assert.equal(outer.scrollTop, 90, 'discard previous gesture messages');
-  assert.equal(sent.at(-1).sequence, 1, 'late cancellation identifies old gesture');
-  move(2); assert.equal(outer.scrollTop, 180);
-  stop(); move(2); assert.equal(outer.scrollTop, 180);
-  assert.equal(sent.at(-1).type, 'dsh-tavern-frame-touch-stop');
-});

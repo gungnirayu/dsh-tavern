@@ -1,6 +1,6 @@
-import { replaceSessionSurface } from './session-surface-mutations.js'
 import { sessionEvents } from './session-events.js'
-import { clearRegenerationAttemptSurface, regenerationAttemptTurns, locateRegenerationSurface } from './rollback-surface.js'
+import { inputKind, isNewTurnInput, storyPlayerInputs } from './session-turn-input.js'
+import { clearRegenerationAttemptSurface, regenerationAttemptTurns, locateRegenerationSurface, applyRegenerationProjection } from './rollback-surface.js'
 
 /** Recover an uncommitted replacement from its durable pre-rollback revision. */
 export function createRegenerationRecovery({ chats, sessions, timeline, isActive }) {
@@ -28,8 +28,7 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
     const assistant = before.messages?.findLast(message => message.role === 'assistant' && !message.greeting)
     const target = locateRegenerationSurface({ events, nodes: session.surface?.nodes || [], turn: assistant?.turn })
     if (!target) throw new Error('找不到原正文的原生消息，未修改当前对话')
-    const attempt = events.find(event => event.seq > target.assistantSeq && event.type === 'user/message' &&
-      event.data?.source?.plugin === 'dsh-tavern-regen')
+    const attempt = events.find(event => event.seq > target.assistantSeq && isNewTurnInput(event) && inputKind(event.data) === 'regenerate')
     return attempt ? attempt.seq : events.length
   }
 
@@ -41,7 +40,9 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
           (operationId && current.regenRecovery?.id !== operationId) ||
           Number(current.tavernHelperLifecycleRevision || 0) > Number(originalChat.tavernHelperLifecycleRevision || 0) + 1) return
       const events = sessionEvents(session)
-      if (events.some(event => event.seq >= eventStart && event.type === 'user/message' && event.data?.source?.kind === 'user')) {
+      // A send rejected while the marker was set failed its own turn; only real
+      // story after the attempt stops the cleanup, or recovery would never succeed.
+      if (storyPlayerInputs(events, eventStart).length) {
         throw new Error('重新生成后已有新的玩家输入，未清理或覆盖后续对话')
       }
       const abortedTurns = regenerationAttemptTurns({ events, eventStart })
@@ -66,7 +67,7 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
       if (saved.sessionId !== session.id) throw new Error('重新生成恢复会话不匹配')
       const projection = saved.projection
       if (!projection) throw new Error('重新生成缺少已提交正文的投影记录')
-      replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
+      applyRegenerationProjection(session, projection)
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       delete current.regenRecovery
       delete current.regenInProgress

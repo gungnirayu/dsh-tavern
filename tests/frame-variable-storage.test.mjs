@@ -40,15 +40,7 @@ test('状态栏 script 作用域读写隔离，失败回滚不污染消息或其
   assert.equal(w.getVariables(option).count,2)
   assert.equal(JSON.stringify(w.getVariables({type:'message'})),message)
 })
-test('消息 iframe 导入角色预设后同步读到新列表，保存接口可等待且不污染消息变量', async () => {
-  const h = fixture(), w = h.w
-  assert.equal(w.getVariables({ type: 'global' }).shared, 2)
-  const pending = w.insertOrAssignVariables({ start_presets: { presets: [{ name: '建档测试' }] } }, { type: 'character' })
-  assert.equal(w.getVariables({ type: 'character' }).start_presets.presets[0].name, '建档测试')
-  assert.equal(w.getVariables({ type: 'character' }).unrelated, 1)
-  assert.equal(w.getVariables({ type: 'message' }).start_presets, undefined)
-  h.reply(); await pending
-})
+
 test('自定义建档 MVU 写入 latest 并等待保存，失败回滚且不宣称成功', async () => {
   const h = fixture(), option = { type: 'message', message_id: 'latest' }
   const pending = h.w.Mvu.replaceMvuData({ stat_data: { 主角: { 姓名: '新' } } }, option)

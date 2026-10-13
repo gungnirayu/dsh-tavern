@@ -86,6 +86,7 @@
 					name: String(script && script.name || script && script.id || ""),
 					info: String(script && script.info || ""),
 					buttons: Array.isArray(script && script.buttons) ? script.buttons : [],
+                    buttonsEnabled: !script || script.buttonsEnabled !== false,
 					ready: false,
 					failed: false
 				};
@@ -320,26 +321,14 @@
 			function optionOf(option) {
 				const value = option && typeof option === "object" ? copy(option) : { type: "message" };
 				if (!value.type) value.type = "message";
+                if (!["message", "chat", "character", "global", "script"].includes(value.type)) throw Object.assign(new Error("尚未支持的变量作用域: " + value.type), { code: "TAVERN_CAPABILITY_UNSUPPORTED" });
 				if (value.type === "message") {
 					if (value.message_id === undefined || value.message_id === null || value.message_id === "latest") value.message_id = currentId();
 				} else if (value.type === "script" && !value.script_id) value.script_id = currentScript().id;
 				return value;
 			}
-			function messagesFor(target, options) {
-				const all = state.messages || [];
-				let items = [];
-				if (target === undefined || target === null) items = [readMessage(currentId())];
-				else if (typeof target === "string" && target.includes("-")) {
-					const value = target.replace(/{{\s*lastMessageId\s*}}/gi, String(lastId()));
-					const parts = value.split("-");
-					const from = normalizeId(parts[0]);
-					const to = normalizeId(parts[1]);
-					for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) items.push(readMessage(index));
-				} else items = [readMessage(normalizeId(target))];
-				items = items.filter(Boolean);
-				if (options && options.role && options.role !== "all") items = items.filter(function (item) { return item.role === options.role; });
-				return copy(items);
-			}
+            const messagesFor = modules.createMessageReader({ context: () => state, currentId, copy, readMessage });
+
 			function getVariables(option) {
 				const resolved = optionOf(option);
 				if (resolved.type === "global") return copy(state.globalVariables || {});
@@ -440,6 +429,16 @@
 				window.replaceScriptButtons(next);
 				return copy(next);
 			};
+            window.getAllEnabledScriptButtons = function () {
+                const result = {};
+                for (const script of scriptList) {
+                    if (script.buttonsEnabled === false || script.failed) continue;
+                    const buttons = script.buttons.filter(button => button && button.visible === true)
+                        .map(button => ({ button_id: buttonEvent(button.name, script.id), button_name: button.name }));
+                    if (buttons.length) Object.defineProperty(result, script.id, { value: buttons, enumerable: true, configurable: true, writable: true });
+                }
+                return copy(result);
+            };
 			window.getButtonEvent = buttonEvent;
 			window.getCharData = function () { return copy(readCharacter() || null); };
 			window.getCurrentCharacterName = function () { return String(state.characterName || state.character && state.character.name || ""); };
@@ -464,13 +463,23 @@
 			};
 			window.getVariables = getVariables;
 			window.getAllVariables = function () {
-				const merged = Object.assign({}, copy(state.globalVariables || {}), copy(state.characterVariables || {}), copy(state.chatVariables || {}), getVariables({ type: "script" }));
-				for (const message of state.messages || []) Object.assign(merged, copy(message.variables || {}));
-				return merged;
+				return Object.assign({}, copy(state.globalVariables || {}), copy(state.characterVariables || {}), getVariables({ type: "script" }), copy(state.chatVariables || {}));
 			};
 			window.replaceVariables = function (variables, option) {
-				const resolved = localReplace(copy(variables || {}), option);
-				return call("updateTavernHelperVariables", { option: resolved, variables: copy(variables || {}) }).catch(function (error) { console.error(error); throw error; });
+                const resolved = optionOf(option), plain = copy(variables || {}), before = getVariables(resolved);
+                const revision = [state.chatId, state.lifecycleRevision, state.stateRevision];
+                localReplace(plain, resolved);
+                return call("updateTavernHelperVariables", { option: resolved, variables: plain }).then(function (result) {
+                    if (result && result.stale) throw new Error("聊天已变化，变量未保存");
+                    return result;
+                }).catch(function (error) {
+                    // Preserve a newer context or overlapping edit; roll back only
+                    // our own unacknowledged optimistic value on the same revision.
+                    if (JSON.stringify(revision) === JSON.stringify([state.chatId, state.lifecycleRevision, state.stateRevision])
+                        && JSON.stringify(getVariables(resolved)) === JSON.stringify(plain)) localReplace(before, resolved);
+                    console.error(error);
+                    throw error;
+                });
 			};
 			window.insertOrAssignVariables = function (variables, option) {
 				const resolved = optionOf(option);
@@ -509,34 +518,18 @@
 			window.deleteVariable = async function (path, option) {
 				const resolved = optionOf(option);
 				const next = getVariables(resolved);
-				window._.unset(next, String(path || ""));
+				const deleted = window._.unset(next, String(path || ""));
 				await window.replaceVariables(next, resolved);
-				return copy(next);
+				return { variables: copy(next), delete_occurred: deleted };
 			};
 			window.setChatMessages = async function (patches) {
 				const plain = copy(patches || []);
 				localSetMessages(plain);
 				return await call("updateTavernHelperMessages", { messages: plain });
 			};
-			window.generateRaw = function (config) {
-				const payload = copy(config || {});
-				const streaming = payload.should_stream === true;
-				const generationId = payload.generation_id != null && String(payload.generation_id) !== ""
-					? String(payload.generation_id)
-					: ("dsh-gen-" + Date.now().toString(16) + "-" + Math.random().toString(16).slice(2, 8));
-				if (streaming) {
-					if (payload.generation_id == null || payload.generation_id === "") payload.generation_id = generationId;
-					// 假流式：宿主一次性返回全文，这里补发酒馆助手流式事件，供评议等 UI 收尾。
-					void window.eventEmit(window.iframe_events.GENERATION_STARTED, generationId);
-				}
-				return call("generateTavernHelperRaw", { config: payload }).then(function (result) {
-					const text = result && result.text;
-					if (!streaming) return text;
-					const events = window.iframe_events;
-					return Promise.resolve(window.eventEmit(events.STREAM_TOKEN_RECEIVED_FULLY, text, generationId))
-						.then(function () { return window.eventEmit(events.STREAM_TOKEN_RECEIVED_INCREMENTALLY, text, generationId); })
-						.then(function () { return window.eventEmit(events.GENERATION_ENDED, text, generationId); })
-						.then(function () { return text; });
+			window.triggerSlash = function (line) {
+				return call("triggerTavernSlash", { line: window.substitudeMacros(String(line || "")) }).then(function (result) {
+					return result && Object.prototype.hasOwnProperty.call(result, "pipe") ? result.pipe : result;
 				});
 			};
 			window.createChatMessages = async function (messages, option) {
@@ -758,9 +751,15 @@
 					.replace(/{{\s*char\s*}}/gi, String(state.characterName || "角色"));
 			};
 			window.submitTavernInput = function (text) { return call("submitTavernHelperInput", { text: String(text || "") }); };
-            const backgroundModel = modules.installBackgroundModel({ window: window, request: call });
+            const backgroundModel = modules.installBackgroundModel({ window: window, request: call, context: function () { return state; } });
 			facade = modules.installFacade({ projectMvuSettings: backgroundModel.projectMvuSettings, normalizeMvuSettings: backgroundModel.normalizeMvuSettings, readGlobalRegexes: function () { return regexGroups().global.map(rawRegex); }, installCompatibility: modules.installCompatibility, currentScript: currentScript, post: transport.post, createChatData: modules.createChatData, readMessage:readMessage, readCharacter:readCharacter, createLocalVariables: modules.createLocalVariables, window: window, copy: copy, request: call, context: function () { return state; },
 				Popup: modules.createPopup({ document: window.document, parent: parent, token: token }) });
+            modules.installUtilities(window);
+            modules.installEventApi(window);
+            modules.installMacros({window, context: () => state});
+            modules.installRegexApi({window, context: () => state, createEngine: modules.createRegexEngine});
+            modules.installDisplay(window);
+            modules.installGeneration({window, request:call, copy});
 			let regexSaveTimer = null;
 			async function persistGlobalRegexes() {
 				if (regexSaveTimer !== null) { clearTimeout(regexSaveTimer); regexSaveTimer = null; }

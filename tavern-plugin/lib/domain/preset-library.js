@@ -4,15 +4,18 @@ import { inspectPreset, nativeRegexScriptsOf } from './preset-reading.js'
 import { previewPresetConversion } from './preset-conversion-preview.js'
 import { createPresetEditor } from './preset-editor.js'
 import { createRuntimePresetModule } from './runtime-presets.js'
-import { createBypassPlanModule } from './bypass-plans.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
+// Bypass plans were retired on this date; their file is only read for migrations.
+const PLANS_RETIRED_AT = Date.parse('2026-08-28T00:00:00+08:00')
+
 /** Own the preset library's reads, source mappings, selection and legacy migrations.
  * Editors/compilers still own their existing formats; raw documents are never rewritten here.
  */
+
 export function createPresetLibrary({ resources: fileResources, state: profileData, prepareImport: prepareTextImport, logger = console }) {
   const readJson = function (path) { return profileData.readJson(path) }
   async function readPreset(presetPath) {
@@ -81,135 +84,85 @@ export function createPresetLibrary({ resources: fileResources, state: profileDa
     updateState: async function (updater) { return await profileData.updateJson('runtime-presets.json', updater) },
     now: Date.now
   })
-  const bypassPlans = createBypassPlanModule({
-    readPreset,
-    readPresetDocument,
-    runtimeRegexScripts: runtimeRegexScriptsOf,
-    readState: async function () { return await readJson('bypass-plans.json') },
-    updateState: async function (updater) { return await profileData.updateJson('bypass-plans.json', updater) },
-    now: Date.now
-  })
-  async function migrateLegacyPresetPlans() {
-    const target = await bypassPlans.state()
-    if (target.plans.length > 0) return
-    const legacy = await runtimePresets.state()
-    const candidates = (legacy.plans || []).map(function (plan) {
-      return { name: plan.name, path: plan.presetPath, entryKeys: plan.entryKeys || [], regexKeys: plan.regexKeys || [] }
-    })
-    if (legacy.activePreset && !candidates.some(function (item) { return item.path === legacy.activePreset })) {
-      candidates.push({
-        name: (legacy.activePreset.split('/').pop() || '外部预设').replace(/\.json$/i, '') + ' · 迁移方案',
-        path: legacy.activePreset,
-        entryKeys: Object.keys(legacy.entries[legacy.activePreset] || {}),
-        regexKeys: Object.keys(legacy.regexes[legacy.activePreset] || {})
-      })
-    }
-    for (const candidate of candidates) {
-      try {
-        const preset = await readPreset(candidate.path)
-        const document = await readPresetDocument(candidate.path)
-        if (!preset || !document) continue
-        const availableRegexes = new Set(runtimeRegexScriptsOf(preset, document).map(function (script) { return script.regexKey }))
-        const regexKeys = candidate.regexKeys.filter(function (key) { return availableRegexes.has(key) })
-        await bypassPlans.extract({
-          name: candidate.name,
-          sourcePresetPath: candidate.path,
-          entryKeys: candidate.entryKeys,
-          regexKeys
-        })
-      } catch (error) {
-        logger.warn('dsh-tavern: 旧预设方案迁移失败', candidate.path, error)
-      }
-    }
+  async function readRetiredPlans() {
+    const value = await readJson('bypass-plans.json')
+    const plans = Array.isArray(value?.plans) ? value.plans.filter(function (plan) { return plan && typeof plan.id === 'string' && plan.id !== '' }) : []
+    return { plans, activePlanId: str(value?.activePlanId) }
   }
+  // An install that last ran with an active plan continues with that plan's source preset.
   async function migrateActivePresetSelection() {
-    const legacy = await bypassPlans.state()
+    const legacy = await readRetiredPlans()
+    if (legacy.activePlanId === '') return
     const activePlan = legacy.plans.find(function (plan) { return plan.id === legacy.activePlanId })
-    if (!activePlan) return
-    const path = str(activePlan.source && activePlan.source.presetPath)
+    const path = str(activePlan && activePlan.source && activePlan.source.presetPath)
     if (path !== '' && await readPreset(path)) await runtimePresets.select(path)
-    await bypassPlans.activate('')
+    await profileData.updateJson('bypass-plans.json', function (current) { return Object.assign({}, current, { activePlanId: '' }) })
   }
 
-  async function migrateLegacyChatPreset(chat) {
-    if (!chat || str(chat.bypassPlanId) !== '') return false
-    const path = str(chat.runtimePresetPath) || str(chat.runtimePresetSnapshot && chat.runtimePresetSnapshot.presetPath)
-    if (path === '') return false
-    const snapshot = chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object' ? chat.runtimePresetSnapshot : {}
-    const selectedKeys = Array.from(new Set((snapshot.sources || []).map(function (source) { return str(source && source.entryKey) }).filter(Boolean)))
-    let plan = null
-    const existingPlans = await bypassPlans.list()
-    plan = existingPlans.find(function (item) {
-      if (str(item.source && item.source.presetPath) !== path) return false
-      const keys = item.entries.filter(function (entry) { return entry.enabled && !entry.systemManaged }).map(function (entry) { return entry.entryKey })
-      return JSON.stringify(keys.slice().sort()) === JSON.stringify(selectedKeys.slice().sort())
-    }) || null
-    if (plan === null) {
-      const name = '旧对话 · ' + (str(chat.cardName) || '未命名') + ' · ' + str(chat.id).slice(-6)
-      const preset = await readPreset(path)
-      const document = await readPresetDocument(path)
-      if (preset && document) {
-        const selectedRegexKeys = Array.from(new Set((snapshot.regexSources || []).map(function (source) { return str(source && source.regexKey) }).filter(Boolean)))
-        plan = await bypassPlans.extract({ name, sourcePresetPath: path, entryKeys: selectedKeys, regexKeys: selectedRegexKeys })
-      } else {
-        const entries = []
-        for (const phase of ['front', 'middle', 'back']) {
-          for (const entry of (snapshot[phase] && snapshot[phase].entries || [])) {
-            entries.push(Object.assign({}, entry, {
-              entryKey: str(entry.id || entry.entryKey), identifier: str(entry.source && entry.source.identifier),
-              enabled: true, injectable: str(entry.content).trim() !== '', phase
-            }))
-          }
-        }
-        plan = await bypassPlans.importPlan({
-          name,
-          source: { presetName: (path.split('/').pop() || path).replace(/\.json$/i, ''), presetPath: path, presetDigest: '' },
-          entries,
-          regexScripts: snapshot.regexScripts || [],
-          compatibilitySettings: {}
-        })
-      }
-    }
-    chat.bypassPlanId = plan.id
-    chat.runtimePresetPath = ''
-    chat.runtimePresetSnapshot = await bypassPlans.snapshot(plan.id)
+  // Games started after bypass plans were retired never chose a plan. A startup
+  // migration used to bind them to an old plan anyway, freezing them on stale preset
+  // text that no longer followed edits (#166); return them to their source preset.
+  async function restoreRetiredPlanChat(chat) {
+    if (!chat || str(chat.bypassPlanId) === '' || !(Number(chat.createdAt) >= PLANS_RETIRED_AT)) return false
+    const plan = (await readRetiredPlans()).plans.find(function (item) { return item.id === chat.bypassPlanId })
+    const path = str(plan && plan.source && plan.source.presetPath)
+    if (path === '' || !await readPreset(path)) return false
+    let snapshot = null
+    try { snapshot = await runtimePresets.fullSnapshot(path) } catch (error) { logger.warn('dsh-tavern: 对话预设恢复失败', chat.id, error) }
+    if (!snapshot) return false
+    chat.bypassPlanId = ''
+    chat.runtimePresetSnapshot = snapshot
+    chat.runtimePresetPath = str(snapshot.presetPath) || path
     return true
+  }
+  // Inspecting, converting and parsing a multi-MB preset dominates the catalog; the
+  // summary depends only on the file text, so it is reused until the text changes.
+  const summaryCache = new Map()
+  function summarize(presetPath, text) {
+    const conversion = previewPresetConversion(text, presetPath)
+    // Same field precedence as readPreset().
+    const preset = Object.assign({ path: presetPath, previewPath: fileResources.absolute(presetPath),
+      dshPreset: conversion && conversion.dshPreset || null }, inspectPreset(text, presetPath))
+    let document
+    try { document = JSON.parse(text) } catch { document = undefined }
+    const extractableRegexScripts = runtimeRegexScriptsOf(preset, document)
+    const phaseCounts = Object.fromEntries(['front', 'middle', 'back'].map(function (phase) {
+      return [phase, Array.isArray(preset.dshPreset && preset.dshPreset[phase]) ? preset.dshPreset[phase].length : 0]
+    }))
+    const phasedEntryKeys = new Set(['front', 'middle', 'back'].flatMap(function (phase) {
+      return (Array.isArray(preset.dshPreset && preset.dshPreset[phase]) ? preset.dshPreset[phase] : []).map(function (entry) { return str(entry && entry.id) })
+    }))
+    return {
+      path: preset.path,
+      previewPath: preset.previewPath,
+      title: preset.title,
+      valid: preset.valid,
+      recognized: preset.recognized,
+      promptCount: preset.promptCount,
+      phaseCounts,
+      unassignedPromptCount: (preset.entries || []).filter(function (entry) { return !phasedEntryKeys.has(str(entry && entry.entryKey)) }).length,
+      enabledCount: preset.enabledCount || 0,
+      regexCount: extractableRegexScripts.length,
+      enabledRegexCount: extractableRegexScripts.filter(function (script) { return script.enabled !== false }).length,
+      warning: preset.warning,
+      error: preset.error
+    }
   }
   async function listPresets() {
     const result = []
-    const inspectedPresets = []
-    for (const presetPath of await fileResources.list('preset')) {
-      const inspected = await readPreset(presetPath)
-      inspectedPresets.push({ path: presetPath, inspected })
+    const listed = new Set()
+    for (const listedPath of await fileResources.list('preset')) {
+      const presetPath = normalizeResourcePath(listedPath, 'preset')
+      const text = await fileResources.readText(presetPath)
+      if (text === undefined) continue // A listed file may disappear before it is read.
+      listed.add(presetPath)
+      const cached = summaryCache.get(presetPath)
+      if (cached && cached.text === text) { result.push(structuredClone(cached.summary)); continue }
+      const summary = summarize(presetPath, text)
+      summaryCache.set(presetPath, { text, summary })
+      result.push(structuredClone(summary))
     }
-    for (const record of inspectedPresets) {
-      const presetPath = record.path
-      const inspected = record.inspected
-      if (!inspected) continue // A listed file may disappear before it is read.
-      const preset = inspected
-      const extractableRegexScripts = runtimeRegexScriptsOf(preset, await readPresetDocument(preset.path))
-      const phaseCounts = Object.fromEntries(['front', 'middle', 'back'].map(function (phase) {
-        return [phase, Array.isArray(preset.dshPreset && preset.dshPreset[phase]) ? preset.dshPreset[phase].length : 0]
-      }))
-      const phasedEntryKeys = new Set(['front', 'middle', 'back'].flatMap(function (phase) {
-        return (Array.isArray(preset.dshPreset && preset.dshPreset[phase]) ? preset.dshPreset[phase] : []).map(function (entry) { return str(entry && entry.id) })
-      }))
-      result.push({
-        path: preset.path,
-        previewPath: preset.previewPath,
-        title: preset.title,
-        valid: preset.valid,
-        recognized: preset.recognized,
-        promptCount: preset.promptCount,
-        phaseCounts,
-        unassignedPromptCount: (preset.entries || []).filter(function (entry) { return !phasedEntryKeys.has(str(entry && entry.entryKey)) }).length,
-        enabledCount: preset.enabledCount || 0,
-        regexCount: extractableRegexScripts.length,
-        enabledRegexCount: extractableRegexScripts.filter(function (script) { return script.enabled !== false }).length,
-        warning: preset.warning,
-        error: preset.error
-      })
-    }
+    for (const cachedPath of summaryCache.keys()) if (!listed.has(cachedPath)) summaryCache.delete(cachedPath)
     return result
   }
   async function importPreset(payload) {
@@ -233,7 +186,6 @@ export function createPresetLibrary({ resources: fileResources, state: profileDa
       if (!preset || preset.valid !== true || preset.recognized !== true) throw new Error('该文件不是可运行的 SillyTavern 预设：' + path)
     }
     await runtimePresets.select(path)
-    await bypassPlans.activate('')
     return { activePresetPath: path }
   }
   async function detail(path) {
@@ -262,11 +214,10 @@ export function createPresetLibrary({ resources: fileResources, state: profileDa
     return Object.assign({}, next, { extractableRegexScripts: runtimeRegexScriptsOf(next, await readPresetDocument(normalized)) })
   }
   async function migrate() {
-    await migrateLegacyPresetPlans()
     await migrateActivePresetSelection()
   }
   return Object.freeze({ read: readPreset, readDocument: readPresetDocument, detail,
     catalog, select, import: importPreset, export: exportPreset, preview: previewPreset,
-    updateEntry, updateRegex, moveEntry, migrate, migrateChat: migrateLegacyChatPreset,
-    editor: presetEditor, runtime: runtimePresets, plans: bypassPlans })
+    updateEntry, updateRegex, moveEntry, migrate, restoreChat: restoreRetiredPlanChat,
+    editor: presetEditor, runtime: runtimePresets })
 }

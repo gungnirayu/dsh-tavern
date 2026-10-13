@@ -2,6 +2,7 @@
   {
     "id": "tavern-terracotta",
     "colorScheme": "light",
+    "schemeFamily": "tavern-terracotta",
     "tokens": {
       "--dsw-alias-brand-primary": "#cc785c",
       "--dsw-alias-brand-text": "#ffffff",
@@ -34,6 +35,7 @@
   {
     "id": "tavern-terracotta-dark",
     "colorScheme": "dark",
+    "schemeFamily": "tavern-terracotta",
     "tokens": {
       "--dsw-alias-brand-primary": "#d4896c",
       "--dsw-alias-brand-text": "#181715",

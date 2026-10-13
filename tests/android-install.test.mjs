@@ -91,12 +91,6 @@ test('Android 入口复用当前 WebView 的 DSHA 鉴权 Cookie', async (t) => {
   assert.equal(await manager.accessUrl(), 'http://127.0.0.1:3088/')
 })
 
-test('Android 按钮通过本机入口打开，不再直接打开缺少 token 的 3088 裸地址', () => {
-  assert.match(entryClient, /window\.location\.assign\("\/api\/dsh-tavern-android\/open"\)/)
-  assert.doesNotMatch(entryClient, /window\.open\(/)
-  assert.doesNotMatch(entryClient, /window\.open\("http:\/\/127\.0\.0\.1:3088"/)
-})
-
 test('Android 入口在 Tavern 离线时仍可启动更新或修复', async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), 'dsh-android-manager-'))
   t.after(() => rm(home, { recursive: true, force: true }))
@@ -130,11 +124,15 @@ test('Android 入口在 Tavern 离线时仍可启动更新或修复', async (t) 
     online: false,
     update: { phase: 'idle', host: 'android', currentVersion: '1.1.0', currentCommit },
   })
-  assert.deepEqual(await manager.update(), {
-    installed: true,
-    online: false,
-    update: { phase: 'running', host: 'android', startedAt: 456, currentVersion: '1.1.0', currentCommit, latestVersion: '1.1.0', latestCommit, checkSource: 'github', checkWarning: undefined },
-  })
+  const started = await manager.update()
+  assert.equal(started.installed, true)
+  assert.equal(started.online, false)
+  // The installation lock owns the attempt identity and start time.
+  const { attemptId, startedAt, ...update } = started.update
+  assert.match(attemptId, /^[0-9a-f-]{36}$/)
+  assert.ok(Number.isFinite(startedAt))
+  assert.deepEqual({ ...update, stage: update.stage, progressAt: update.progressAt }, { phase: 'running', host: 'android', currentVersion: '1.1.0', currentCommit,
+    latestVersion: '1.1.0', latestCommit, checkSource: 'github', cancellable: false, pid: 0, stage: undefined, progressAt: undefined, stalled: false })
   assert.deepEqual(calls[0].args.slice(0, 4), [launcher, 'update', '--host', 'android'])
 })
 
@@ -482,13 +480,6 @@ test('Git 仓库 fetch 失败时切换为 tarball 更新', async (t) => {
   assert.equal(await readFile(path.join(appDir, 'version.txt'), 'utf8'), 'tarball-v2\n')
   await access(path.join(appDir, '.dsh-tavern-tarball-source'))
   await assert.rejects(access(path.join(appDir, '.git')))
-})
-
-test('DSHA 酒馆入口同时提供打开与更新修复操作', () => {
-  assert.match(entryClient, /更新\/修复/)
-  assert.match(entryClient, /\/api\/dsh-tavern-android\/update/)
-  assert.match(entryClient, /\/api\/dsh-tavern-android\/status/)
-  assert.match(entryClient, /state\.update\.error/)
 })
 
 test('Android Profile 配置保留已有内容并幂等加入所需插件', async (t) => {

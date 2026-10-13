@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createSessionViewReader, createSessionSliceReader } from '../tavern-plugin/lib/domain/session-view-reader.js'
+import { createSessionViewReader } from '../tavern-plugin/lib/domain/session-view-reader.js'
 const gate=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}}
 function fixture() {
   let chat={id:'c',sessionId:'s',mode:'story',cardPath:'card',_storageRevision:1,messages:[{role:'assistant',text:'one'}]}
@@ -70,22 +70,6 @@ for(const request of [{viewSync:1},{viewSync:1,openingWindow:1,fullView:true}])t
  assert.equal((await reader.response({sessionId:'s',...request})).view,null)
 })
 
-test('narrow variable slices retain routing fields and legacy adoption fallback', async()=>{
- const stored={id:'c',sessionId:'s',backgroundConfigVersion:1,conversationFeaturesVersion:1,mvu:{enabled:true}}
- let received
- const read=createSessionSliceReader({links:async()=>({s:'c',alias:'c'}),readSlice:async(id,indices,fields)=>{
-  received={id,indices,fields};return {chat:Object.fromEntries(fields.map(key=>[key,stored[key]])),messageCount:20000,denseMessages:true}
- }})
- const selected=await read('s',[19999],['mvu'])
- assert.equal(selected.chat.backgroundConfigVersion,1)
- assert.equal(selected.messageCount,20000)
- assert.deepEqual(received.indices,[19999])
- assert.ok(!received.fields.includes('messages'))
- assert.equal(await read('alias',[],['mvu']),undefined)
- stored.conversationFeaturesVersion=0
- assert.equal(await read('s',[],['mvu']),undefined)
-})
-
 for (const fields of [undefined, ['openingWorldbookSnapshot'], ['cardDefinitionSnapshot']]) test(`resource snapshot changes rebuild deferred capabilities: ${fields}`, async () => {
   const f = fixture(), project = f.deps.project.full
   f.deps.project.full = async chat => ({...await project(chat), cardResourceAccess:{revision:chat._storageRevision}})
@@ -95,4 +79,13 @@ for (const fields of [undefined, ['openingWorldbookSnapshot'], ['cardDefinitionS
   const view = await f.reader.read('s', {deferResources:true})
   assert.equal(view.cardResourceAccess.revision, 2)
   assert.equal(f.calls.dirty, 0)
+})
+
+test('a browser that scrolled into older floors gets a longer window, not a complete view',async()=>{
+ const requested=[]
+ const reader=createSessionViewReader({readOpeningWindow:async(_s,from)=>{requested.push(from);return {chat:{messages:[]},revision:3}},readState:async()=>{throw Error('complete read')},
+  project:{opening:async window=>({historyWindow:{from:0},revision:window.revision})},trace:{stage:(_name,fn)=>fn(),state(){}},synchronize:(_id,view)=>({view})})
+ await reader.response({sessionId:'s',viewSync:1,openingWindow:1,historyFrom:360})
+ await reader.response({sessionId:'s',viewSync:1,openingWindow:1})
+ assert.deepEqual(requested,[360,undefined])
 })

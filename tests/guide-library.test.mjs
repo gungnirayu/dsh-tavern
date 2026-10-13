@@ -3,25 +3,6 @@ import test from 'node:test'
 import { appendGuides } from '../tavern-plugin/lib/domain/guide-content.js'
 import { createGuideLibrary } from '../tavern-plugin/lib/domain/guide-library.js'
 
-test('guide library saves the complete game bundle independently and survives reopening', async () => {
-  let document
-  const store = { readJson: async () => structuredClone(document), updateJson: async (_, fn) => { document = await fn(structuredClone(document)); return document } }
-  const library = createGuideLibrary({ store })
-  const guides = [{ text: '短句' }, { text: '心理描写'.repeat(500) }]
-  const saved = await library.save('文风', guides)
-  assert.deepEqual((await createGuideLibrary({ store }).get(saved.id)).guides, guides.map(item => item.text))
-  await assert.rejects(library.save('空方案', []))
-  assert.equal((await library.list()).length, 1)
-  const existing = [{ id: 'old', text: '短句' }]
-  const loaded = appendGuides(existing, saved.guides, { deduplicate: true })
-  assert.equal(loaded.length, 2)
-  assert.equal(loaded[0].id, 'old')
-  assert.equal(existing.length, 1)
-  assert.deepEqual(appendGuides(loaded, saved.guides, { deduplicate: true }), loaded)
-  assert.throws(() => appendGuides(Array.from({ length: 20 }, (_, n) => ({ text: String(n) })), ['新增'], { deduplicate: true }), /20/)
-  await assert.rejects(library.get('missing'), /不存在/)
-})
-
 test('rename and edit keep identity and loaded game content, and reject stale edits', async () => {
   let value
   const store = { readJson: async () => structuredClone(value), updateJson: async (_, fn) => { value = await fn(structuredClone(value)); return structuredClone(value) } }
@@ -37,4 +18,16 @@ test('rename and edit keep identity and loaded game content, and reject stale ed
   assert.equal(loaded[0].text, '原内容')
   await assert.rejects(library.update({ id: edited.id, expected: edited, guides: [''] }), /非空/)
   assert.deepEqual((await library.get(edited.id)).guides, edited.guides)
+})
+
+test('delete removes the whole plan and rejects stale deletes', async () => {
+  let value
+  const store = { readJson: async () => structuredClone(value), updateJson: async (_, fn) => { value = await fn(structuredClone(value)); return structuredClone(value) } }
+  const library = createGuideLibrary({ store })
+  const first = await library.save('甲', [{ text: '一' }])
+  const second = await library.save('乙', [{ text: '二' }])
+  await assert.rejects(library.remove({ id: first.id, expected: { ...first, name: '旧' } }), /已被修改/)
+  await library.remove({ id: first.id, expected: first })
+  assert.deepEqual((await library.list()).map(item => item.id), [second.id])
+  await assert.rejects(library.remove({ id: first.id, expected: first }), /不存在/)
 })

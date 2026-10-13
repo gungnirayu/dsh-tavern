@@ -51,7 +51,3 @@ export function worldbookPlacement(entries) {
   }
   return { foregroundRefs: refs, prefixRefs }
 }
-
-export function foregroundWorldbookRefs(entries) {
-  return worldbookPlacement(entries).foregroundRefs
-}

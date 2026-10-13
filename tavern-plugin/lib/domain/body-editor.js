@@ -2,7 +2,9 @@ import { replaceSessionSurface } from './session-surface-mutations.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { editableReplyParts } from './reply-presentation.js'
 import { locateRegenerationSurface } from './rollback-surface.js'
-import { sessionEvents, appendSessionEvent } from './session-events.js'
+import { sessionEvents } from './session-events.js'
+import { isScopedMessages } from './scoped-messages.js'
+import { diffJson } from './json-mutation.js'
 
 function latest(chat) {
   const message = chat.messages?.at(-1)
@@ -22,7 +24,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
   const cleared = []
   let sessionDirty = false
   for (const message of chat.messages || []) {
-    if (!message.bodyEdit) continue
+    if (!message?.bodyEdit) continue
     const { id, seq, turn } = message.bodyEdit
     if (recorded.has(id)) continue
     let targetSeq = session.surface?.nodes.includes(seq) ? seq : null
@@ -90,6 +92,24 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (!parts.some(part => part.kind === 'text' && part.text.trim())) throw new Error('这轮只有 HTML，没有可编辑文本')
     return { chat, agent, message, target, parts }
   }
+  // A bounded history edits only its last floor: apply the same timeline intent to
+  // the header and that floor, then patch them on the read revision. A moved
+  // revision returns undefined so the complete path re-validates the edit token.
+  async function saveLatestFloor(chat, message, patch, target, agent) {
+    if (!isScopedMessages(chat.messages) || typeof chats.patch !== 'function') return undefined
+    const index = chat.messages.length - 1
+    const { messages: _rows, ...header } = chat
+    const edited = timeline.apply({ chat: { ...header, messages: [message] }, intent: { kind: 'body.edit', turn: message.turn, patch } }).chat
+    const { messages: [row], ...head } = edited
+    const changes = diffJson({ ...header, messages: [] }, { ...head, messages: [] }).filter(change => !['_storageRevision', 'updatedAt'].includes(change.path[0]))
+    for (const change of diffJson(message, row)) changes.push({ ...change, path: ['messages', index, ...change.path] })
+    const saved = await chats.patch(chat.id, chat._storageRevision, changes, { source: 'foreground.body-edit', assertCurrent() {
+      if (!agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
+    } })
+    if (!saved) return undefined
+    await synchronizeBodyEdits(agent.session, { messages: [row] }, sessions.flush)
+    return present(saved)
+  }
   async function read(sessionId) {
     const { chat, message, parts } = await context(sessionId)
     return { token: token(chat, message), turn: message.turn, parts: parts.map(part => part.kind === 'text' ? part : { kind: part.kind }) }
@@ -104,8 +124,11 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       if (!Array.isArray(texts) || texts.length !== parts.filter(part => part.kind === 'text').length || texts.some(text => typeof text !== 'string')) throw new Error('编辑文本格式无效')
       if (!texts.some(text => text.trim())) throw new Error('正文不能为空')
       if (texts.some(text => editableReplyParts(text).some(part => part.kind !== 'text'))) throw new Error('这里只能编辑文本，不能新增 HTML')
+      // Cards' status blocks must start on their own line. An edit box hides the blank lines
+      // around a text part, so keep the original edges when the edited text has none.
+      const keepEdges = (original, edited) => (/^\s/.test(edited) ? '' : original.match(/^\s*/)[0]) + edited + (/\s$/.test(edited) ? '' : original.match(/\s*$/)[0])
       let index = 0
-      const text = parts.map(part => part.kind === 'text' ? texts[index++] : part.text).join('')
+      const text = parts.map(part => part.kind === 'text' ? keepEdges(part.text, texts[index++]) : part.text).join('')
       if (text === source(message)) return present(chat)
       const reply = await project(text, chat)
       const patch = {
@@ -124,6 +147,8 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       // the existing journal-first recovery path for disk/flush failures.
       const preview = agent.session.constructor.fromRestore(agent.session.id, structuredClone(sessionEvents(agent.session)), structuredClone(agent.session.header), agent.session.inheritedEventCount, 'detached')
       await synchronizeBodyEdits(preview, { messages: [{ ...message, ...patch }] }, async () => {})
+      const patched = await saveLatestFloor(chat, message, patch, target, agent)
+      if (patched) return patched
       const saved = await chats.update(chat.id, current => {
         idle(current, agent)
         if (token(current, latest(current)) !== input.token) throw new Error('正文或会话已变化，请重新打开编辑')
@@ -134,5 +159,28 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       return present(saved)
     } finally { pending.delete(sessionId) }
   }
-  return Object.freeze({ read, save })
+  // A whole new text (plugins): its HTML and markers must equal the current ones, in order;
+  // only the prose between them changes, through the same checks as a player's edit.
+  async function replaceText(sessionId, text) {
+    const { chat, message, parts } = await context(sessionId)
+    const fixed = parts.filter(part => part.kind !== 'text')
+    const gaps = Array.from({ length: fixed.length + 1 }, () => '')
+    let gap = 0
+    for (const part of editableReplyParts(String(text))) {
+      if (part.kind === 'text') { gaps[gap] += part.text; continue }
+      if (gap >= fixed.length || fixed[gap].kind !== part.kind || fixed[gap].text.trim() !== part.text.trim()) throw new Error('正文里的 HTML 块要保持原样，只能改文字')
+      gap++
+    }
+    if (gap !== fixed.length) throw new Error('正文里的 HTML 块要保持原样，只能改文字')
+    const texts = []
+    gap = 0
+    for (const part of parts) {
+      if (part.kind !== 'text') { gap++; continue }
+      texts.push(gaps[gap])
+      gaps[gap] = ''
+    }
+    if (gaps.some(rest => rest.trim())) throw new Error('只能修改原有的文字段落，不能在 HTML 块之间新增段落')
+    return await save(sessionId, { token: token(chat, message), texts })
+  }
+  return Object.freeze({ read, save, replaceText })
 }

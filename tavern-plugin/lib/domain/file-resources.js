@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID, createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { createDurableFilePromotion } from '../durable-file-promotion.js'
 import { createResourceMutationJournal } from './resource-mutation-journal.js'
 import { inspectPreset } from './preset-reading.js'
@@ -47,10 +47,6 @@ export function normalizeResourcePath(value, expectedKind) {
 export function resourceKind(value) {
   const normalized = normalizeResourcePath(value)
   return Object.entries(KIND_DIR).find(function (entry) { return normalized.startsWith(entry[1] + '/') })[0]
-}
-
-export function resourceUri(value) {
-  return 'tavern-file:' + encodeURIComponent(normalizeResourcePath(value))
 }
 
 function extensionForText(name, fallback = '.txt') {
@@ -159,53 +155,6 @@ export function createFileResourceStore(options = {}) {
     await mkdir(path.dirname(target), { recursive: true })
     if (await exists(target)) throw new Error('文件已存在: ' + path.relative(dataRoot, target))
     await writeFile(target, data)
-  }
-
-  function mvuDefinitionPath(revision) {
-    if (!/^[a-f0-9]{64}$/.test(revision)) throw new Error('字段定义版本无效')
-    return path.join(dataRoot, 'mvu-conversion-definitions', revision + '.json')
-  }
-  async function readMvuDefinition(revision) {
-    const value = await durableFiles.read(mvuDefinitionPath(revision))
-    return value === undefined ? undefined : JSON.parse(value.toString('utf8'))
-  }
-  async function saveMvuDefinition(revision, definition) {
-    await durableFiles.write(mvuDefinitionPath(revision), JSON.stringify(definition))
-  }
-
-  function mvuDraftPath(id) {
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('MVU 草稿 ID 无效')
-    return path.join(dataRoot, 'mvu-drafts', id + '.json')
-  }
-  async function readMvuDraft(id) {
-    const value = await durableFiles.read(mvuDraftPath(id))
-    return value === undefined ? undefined : JSON.parse(value.toString('utf8'))
-  }
-  async function updateMvuDraft(id, updater) {
-    let result
-    await durableFiles.update(mvuDraftPath(id), async bytes => {
-      result = await updater(bytes === undefined ? undefined : JSON.parse(bytes.toString('utf8')))
-      return JSON.stringify(result)
-    })
-    return result
-  }
-
-  function mvuDraftSessionPath(sessionId) {
-    if(typeof sessionId!=='string'||!sessionId)throw Error('MVU 草稿需要会话 ID')
-    const id=createHash('sha256').update(sessionId).digest('hex')
-    return path.join(dataRoot,'mvu-draft-sessions',id+'.json')
-  }
-  async function readMvuDraftSession(sessionId) {
-    const bytes=await durableFiles.read(mvuDraftSessionPath(sessionId))
-    return bytes===undefined?undefined:JSON.parse(bytes.toString('utf8'))
-  }
-  async function updateMvuDraftSession(sessionId, updater) {
-    let result
-    await durableFiles.update(mvuDraftSessionPath(sessionId),async bytes=>{
-      result=await updater(bytes===undefined?undefined:JSON.parse(bytes.toString('utf8')))
-      return JSON.stringify(result)
-    })
-    return result
   }
 
   async function writeWorking(relative, data) {
@@ -591,42 +540,6 @@ export function createFileResourceStore(options = {}) {
       try { await writeFile(absolute(target), text, { flag: 'wx' }) }
       catch (error) { await rm(original, { force: true }); throw error }
       return { path: target, sourcePath: source, imageCopied: !!image }
-    })
-    copyTail = operation.catch(() => {})
-    return operation
-  }
-
-  // A conversion owns its copy, image and binding as one recoverable mutation.
-  // Compare disk snapshots again at publication, never overwrite a same-name card.
-  async function inspectMvuDestination(targetPath) {
-    const target = normalizeResourcePath(targetPath, 'card')
-    const working = await readText(target)
-    const original = await originalCardName(target)
-    return { available: working !== undefined || original === null, workingExists:working !== undefined,
-      originalExists:original !== null, reason:working === undefined && original !== null ? '副本原版资源已存在，请换名' : null }
-  }
-  function saveMvuCard({ sourcePath, targetPath, document, expectedSourceText, expectedTargetText, finalize }) {
-    const operation = copyTail.then(async () => {
-      await ensure()
-      const source = normalizeResourcePath(sourcePath, 'card'), target = normalizeResourcePath(targetPath, 'card')
-      if (source === target) throw new Error('MVU 转换不能覆盖原卡')
-      if (await readText(source) !== expectedSourceText || await readText(target) !== expectedTargetText) throw new Error('人物卡已变化，请重新读取后转换')
-      if (expectedTargetText === undefined && await originalCardName(target) !== null) throw new Error('副本原版资源已存在，请换名')
-      const saved = clone(document), image = await readCardImage(source)
-      if (saved.kind === 'dsh-tavern-character-workspace' && !saved.meta?.id) saved.meta = { ...saved.meta, id: randomUUID() }
-      if (finalize) finalize(saved)
-      const text = JSON.stringify(saved, null, 2)
-      const bindings = await readWorldBookBindings()
-      bindings[target] = { kind: 'embedded', cardPath: target }
-      const result = await mutations.run('convert-mvu:' + target, async plan => {
-        await plan.write(absolute(target), text)
-        if (expectedTargetText === undefined) {
-          const original = target.replace(/\.json$/i, image ? '.png' : '.json')
-          await plan.write(absolute(original, true), image || text)
-        }
-        await plan.write(worldBookBindingsPath, JSON.stringify(bindings, null, 2))
-      })
-      return { path: target, changed: result.changed, imageCopied: !!image }
     })
     copyTail = operation.catch(() => {})
     return operation
@@ -1076,5 +989,5 @@ export function createFileResourceStore(options = {}) {
     return result
   }
 
-  return Object.freeze({ globalWorldBookSources, setGlobalWorldBook: serializeWorldBookMutation(setGlobalWorldBook), readMvuDraftSession, updateMvuDraftSession, readMvuDraft, updateMvuDraft, readMvuDefinition, saveMvuDefinition, absolute, copyCard, saveMvuCard: serializeWorldBookMutation(saveMvuCard), inspectMvuDestination, bindMaterial, bindWorldBook: serializeWorldBookMutation(bindWorldBook), bindWorldBooks: serializeWorldBookMutation(bindWorldBooks), cardsForMaterial, cardImagePreview, ensure, ensureCardWorkspace, hasCardImage, importCard, importText, importWorldBook, list, metadata, migrateLegacy, readCard, readCardImage, readText, remove: serializeWorldBookMutation(remove), rename: serializeWorldBookMutation(renameResource), replaceScript, restoreCard, scriptBindingsForCards, scriptForCard, unbindMaterial, unbindWorldBook: serializeWorldBookMutation(unbindWorldBook), worldBookBindingForCard, writeWorking })
+  return Object.freeze({ globalWorldBookSources, setGlobalWorldBook: serializeWorldBookMutation(setGlobalWorldBook), absolute, copyCard, bindMaterial, bindWorldBook: serializeWorldBookMutation(bindWorldBook), bindWorldBooks: serializeWorldBookMutation(bindWorldBooks), cardsForMaterial, cardImagePreview, ensure, ensureCardWorkspace, originalCardPayload: relative => originalCardPayload(normalizeResourcePath(relative, 'card')), hasCardImage, importCard, importText, importWorldBook, list, metadata, migrateLegacy, readCard, readCardImage, readText, remove: serializeWorldBookMutation(remove), rename: serializeWorldBookMutation(renameResource), replaceScript, restoreCard, scriptBindingsForCards, scriptForCard, unbindMaterial, unbindWorldBook: serializeWorldBookMutation(unbindWorldBook), worldBookBindingForCard, writeWorking })
 }

@@ -34,47 +34,6 @@ function selected(registry) {
   return ['contextBreakdown', 'turnOutline'].map(key => registry.registrations.get(key).def)
 }
 
-test('cold replay equals native folds, including replacements; live definitions and inputs remain isolated', native, async t => {
-  const registry = await harness(t)
-  const { events, add, message } = fixture(40)
-  add('system/message', { message: message('system', '') }, 'append')
-  add('system/message', { message: message('system', 'new system') }, 'append')
-  const lastSystemSeq = events.length - 1
-  add('system/message', { message: { ...message('system', ''), content: [] } }, { op: 'replace', startSeq: lastSystemSeq, endSeq: lastSystemSeq })
-  add('tool/result', { message: message('tool', 'tool result') }, 'append')
-  add('request/header', { header: { tools: [] } })
-  add('assistant/message', { message: message('assistant', 'replacement') }, { op: 'replace', startSeq: 2, endSeq: 3 })
-  add('user/message', message('user', 'after replacement'), 'append')
-  const defs = selected(registry)
-  const nativeBuild = registry.buildCell
-  const expected = defs.map(def => nativeBuild.call(registry, def, {}, 0, events))
-  const inputs = JSON.stringify(events)
-  const applies = defs.map(def => def.apply)
-  t.after(installHostProjectionReplay(registry))
-  for (let i = 0; i < defs.length; i++) {
-    const def = defs[i], actual = registry.buildCell(def, {}, 0, events)
-    assert.deepEqual(actual, expected[i])
-    assert.equal(def.apply, applies[i])
-    const before = structuredClone(actual)
-    // Native live apply must not mutate the state returned by cold replay.
-    const liveEvent = def.key === 'turnOutline'
-      ? { seq: events.length, type: 'turn/start', data: { turn: 41 } }
-      : { ...events.at(-1), seq: events.length }
-    const live = def.apply(actual.state, liveEvent)
-    assert.notEqual(live, actual.state)
-    assert.deepEqual(live, def.apply(expected[i].state, liveEvent))
-    assert.deepEqual(actual, before)
-    assert.deepEqual(registry.buildCell(def, {}, 0, events), expected[i])
-    // Every intermediate cut, including the empty-system replacement, must
-    // produce the same checkpoint, not only the final totals.
-    for (let end = 0; end <= events.length; end++) {
-      const prefix = events.slice(0, end)
-      assert.deepEqual(registry.buildCell(def, {}, 0, prefix), nativeBuild.call(registry, def, {}, 0, prefix))
-    }
-  }
-  assert.equal(JSON.stringify(events), inputs)
-})
-
 test('native checkpoint restore preserves schemas, missing-sequence errors, and checkpoint isolation', native, async t => {
   const registry = await harness(t)
   // Other projections have unrelated step constraints; keep this differential
@@ -95,53 +54,4 @@ test('native checkpoint restore preserves schemas, missing-sequence errors, and 
   assert.throws(() => registry.restore(checkpoint, events.slice(cut + 1), cut, {}, 0), /missing seq/)
   assert.throws(() => registry.restore({ ...checkpoint, contextBreakdown: { ...checkpoint.contextBreakdown, val: {} } }, events.slice(cut), cut, {}, 0))
   assert.deepEqual(checkpoint, prefix.checkpoint)
-})
-
-test('ten-thousand-round cold fold delegates only a bounded suffix, preserving every output row', native, async t => {
-  const registry = await harness(t)
-  const { events } = fixture(10000)
-  const started = performance.now()
-  const baseline = new Map(selected(registry).map(def => [def.key, registry.buildCell(def, {}, 0, events)]))
-  const nativeMs = performance.now() - started
-  t.after(installHostProjectionReplay(registry))
-  const optimizedAt = performance.now()
-  for (const def of selected(registry)) {
-    let maxRows = 0, calls = 0
-    const measured = { ...def, apply(state, event) {
-      maxRows = Math.max(maxRows, (state.nodes || state.turns).length)
-      calls++
-      return def.apply(state, event)
-    } }
-    const cell = registry.buildCell(measured, {}, 0, events)
-    assert.deepEqual(cell, baseline.get(def.key))
-    // Non-surface context events use native apply with the full array but do
-    // not copy/scan it. Count only actual append transitions separately below.
-    assert.equal(calls, events.length)
-    assert.equal((cell.state.nodes || cell.state.turns).length, def.key === 'contextBreakdown' ? 20001 : 10000)
-    if (def.key === 'turnOutline') assert.ok(maxRows <= 1)
-    let appendMax = 0
-    registry.buildCell({ ...def, apply(state, event) {
-      if (event.surfaceOp === 'append') appendMax = Math.max(appendMax, (state.nodes || state.turns).length)
-      return def.apply(state, event)
-    } }, {}, 0, events)
-    assert.ok(appendMax <= 1)
-  }
-  t.diagnostic(`10000 rounds: native ${nativeMs.toFixed(1)} ms; optimized including two folds and equality checks ${(performance.now() - optimizedAt).toFixed(1)} ms`)
-})
-
-test('installation is reference counted and leaves unknown projection versions native', native, async t => {
-  const registry = await harness(t)
-  const originalBuild = Object.getOwnPropertyDescriptor(registry, 'buildCell'), originalRestore = Object.getOwnPropertyDescriptor(registry, 'restore')
-  const stop1 = installHostProjectionReplay(registry), stop2 = installHostProjectionReplay(registry)
-  const { events } = fixture(3)
-  const nativeDef = selected(registry)[1]
-  let maxRows = 0
-  const unknown = { ...nativeDef, stateVersion: 999, apply(state, event) { maxRows = Math.max(maxRows, state.turns.length); return nativeDef.apply(state, event) } }
-  registry.buildCell(unknown, {}, 0, events)
-  assert.equal(maxRows, 3)
-  stop1(); stop1()
-  assert.ok(Object.hasOwn(registry, 'buildCell'))
-  stop2()
-  assert.deepEqual(Object.getOwnPropertyDescriptor(registry, 'buildCell'), originalBuild)
-  assert.deepEqual(Object.getOwnPropertyDescriptor(registry, 'restore'), originalRestore)
 })

@@ -62,33 +62,3 @@ test('header revision promotion also refreshes concurrent append and truncation'
  assert.equal(chat.messages.length,19999)
  assert.equal(chat._storageRevision,5)
 })
-
-test('missing change coverage falls back to current history, not an old revision merge',async t=>{
- const {journal}=await fixture(t)
- let fullReads=0
- const persistence=createChatPersistence({store:{...journal,read:async id=>{fullReads++;return journal.read(id)},readChangedSlice:async()=>undefined,readRevision:()=>{throw Error('old revision recovery')}}})
- const chat=await journal.read('a'),base=header(chat)
- chat.preparedWorldBookContext='changed'
- await journal.patch('a',1,[{op:'set',path:['messages',0,'text'],value:'concurrent edit'},{op:'set',path:['_storageRevision'],value:2}])
- await persistence.writeHeader(chat,base)
- assert.equal(fullReads,1)
- assert.equal(chat.messages[0].text,'concurrent edit')
-})
-
-test('foreground preparation keeps its detached history without another timeline copy',async()=>{
- const {createTurnOrchestrator}=await import('../tavern-plugin/lib/domain/turn-orchestration.js')
- const {createStoryTimeline}=await import('../tavern-plugin/lib/domain/story-timeline.js')
- const {createForegroundFrameBuilder}=await import('../tavern-plugin/lib/domain/agent-input-frame.js')
- const messages=Array.from({length:20000},()=>({role:'assistant',get text(){throw Error('preparation must not copy historical bodies')}}))
- let saved
- const orchestrator=createTurnOrchestrator({
-  store:{chatForSession:async()=>({id:'a',sessionId:'s',cardPath:'card.json',mode:'story',messages,_storageRevision:1}),readCard:async()=>({name:'Card'}),
-   writeChatHeader:async chat=>{saved=chat;return header(chat)}},
-  timeline:createStoryTimeline(),frameBuilder:createForegroundFrameBuilder(),planner:{plan:async()=>({text:'context'})}
- })
- const prepared=await orchestrator.prepare({sessionId:'s',turn:10001,userText:'continue'})
- assert.equal(prepared.ready,true)
- assert.equal(saved.messages,messages)
- assert.equal(saved.messages.length,20000)
- assert.equal(Object.values(saved.timeline.operations)[0].kind,'body')
-})

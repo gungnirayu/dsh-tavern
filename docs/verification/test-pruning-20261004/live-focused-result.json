@@ -1,0 +1,35 @@
+{
+  "command": "node bin/test-tavern.mjs tests/tavern-remote-assets.test.mjs tests/mvu-background-settlement.test.mjs tests/settlement-restart-recovery.test.mjs tests/script-display-layer.test.mjs tests/mvu-drafts.test.mjs tests/card-to-mvu-skill.test.mjs",
+  "tests": 54,
+  "pass": 54,
+  "fail": 0,
+  "skipped": 0,
+  "additional": {
+    "command": "node bin/test-tavern.mjs tests/application-updater.test.mjs tests/tavern-helper-regex-formatting.test.mjs tests/background-agent-lifecycle.test.mjs tests/chat-journal-store.test.mjs tests/chat-journal-cache.test.mjs tests/durable-task-mailbox.test.mjs tests/incremental-json-state.test.mjs",
+    "tests": 66,
+    "pass": 66,
+    "fail": 0,
+    "skipped": 0
+  },
+  "finalAdjustment": {
+    "command": "node bin/test-tavern.mjs tests/foreground-handoff.test.mjs tests/candidate-generation.test.mjs tests/tavern-data.test.mjs tests/native-conversation-storage.test.mjs tests/file-resources.test.mjs tests/tavern-helper-regex-formatting.test.mjs tests/inline-message-renderer.test.mjs",
+    "tests": 100,
+    "pass": 100,
+    "fail": 0,
+    "skipped": 0
+  },
+  "lastAdjustment": {
+    "command": "node bin/test-tavern.mjs tests/mvu-drafts.test.mjs tests/extract-flow.test.mjs tests/tavern-script-dispatch.test.mjs tests/runtime-package.test.mjs tests/android-install.test.mjs",
+    "tests": 61,
+    "pass": 61,
+    "fail": 0,
+    "skipped": 0
+  },
+  "terminalAdjustment": {
+    "command": "node bin/test-tavern.mjs tests/live-card-update.test.mjs tests/turn-orchestration.test.mjs tests/mvu-conversion.test.mjs tests/http-performance-diagnostics.test.mjs tests/inline-message-renderer.test.mjs tests/extract-flow.test.mjs",
+    "tests": 96,
+    "pass": 96,
+    "fail": 0,
+    "skipped": 0
+  }
+}

@@ -18,6 +18,8 @@
 
 用户功能和演示见项目 [README](../README.md)；安装、更新、数据备份及排错见[安装说明](installation.md)。
 
+v2.6 发布说明见 [变更记录](releases/v2.6.md) 和 [完整提交清单](releases/v2.6-commits.md)。
+
 ## 查找资料
 
 | 目录 | 用途 |

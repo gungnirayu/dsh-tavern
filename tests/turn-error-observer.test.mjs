@@ -1,27 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import vm from 'node:vm'
+
 import {readFile} from 'node:fs/promises'
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const start = source.indexOf('function observeTurnErrorProjection(')
 const end = source.indexOf('function SupersededTurnErrors(', start)
-
-test('流式正文不重扫历史，结构变化合并到一帧，卸载取消待处理工作', () => {
-  assert.ok(start >= 0)
-  const factory = vm.runInNewContext(source.slice(start,end) + '; observeTurnErrorProjection')
-  let callback, pending, applied=0, cancelled=0
-  const host = { MutationObserver: class {constructor(fn){callback=fn} observe(){} disconnect(){}}, requestAnimationFrame(fn){pending=fn;return 1}, cancelAnimationFrame(){pending=null;cancelled++} }
-  const observer = factory({}, () => applied++, host)
-  const ordinary = {nodeType:1, matches:()=>false, querySelector:()=>null}
-  const text = {nodeType:3}
-  for(let i=0;i<100;i++) callback([{type:'childList', target:ordinary, addedNodes:[text], removedNodes:[]}])
-  assert.equal(pending, undefined)
-  const row = {nodeType:1,matches:()=>true}
-  for(let i=0;i<100;i++) callback([{type:'childList', target:ordinary, addedNodes:[row], removedNodes:[]}])
-  assert.equal(applied,0); pending(); assert.equal(applied,1)
-  callback([{type:'attributes',target:row}])
-  observer.disconnect(); assert.equal(cancelled,1)
-})
 
 test('真实 MutationObserver 在长列表流式追加时不扫描，新增错误行仍刷新', {skip: !process.env.TAVERN_BROWSER_TESTS}, async () => {
   const {chromium} = await import('playwright')

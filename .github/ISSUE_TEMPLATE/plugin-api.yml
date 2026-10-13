@@ -1,0 +1,31 @@
+name: 插件接口需求
+description: 做 Tavern 插件时，现有接口做不到你要的功能
+title: "[插件接口] "
+labels: ["plugin-api"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tavern 不提前设计接口，而是根据插件实际用到的内容补接口。请先读[插件接口文档](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)，确认现有接口和 DSH 自带的服务（llm、credentials、attachments、subagents 等）做不到。
+        接口只开放媒体等外围能力（生图、视频、配音、插图显示等），不开放修改正文、变量、存档。新增接口只加不改，已发布的插件不会受影响。
+  - type: textarea
+    id: plugin
+    attributes:
+      label: 你在做什么插件
+      description: 插件做什么、给谁用。有仓库地址请附上。
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: 卡在哪一步
+      description: 具体需要 Tavern 提供什么：哪个时机、什么数据、要放回什么东西。
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: 试过什么办法
+      description: 用了哪些现有接口，为什么不够；如果现在是靠改 Tavern 源码、读 Tavern 数据文件或打补丁实现的，请贴出改动的位置。
+    validations:
+      required: true

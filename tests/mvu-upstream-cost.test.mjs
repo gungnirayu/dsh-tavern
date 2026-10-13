@@ -68,36 +68,3 @@ test('receipt index retains alerts, quiet tail, duplicate turns and live interru
  chat={...chat,_storageRevision:4,messages:[row(7,'pending')]}
  assert.deepEqual(receipts.receipts(chat,{baseRevision:3,indices:[0]}).map(r=>r.turn),[7])
 })
-
-test('turn mapping falls back for structural changes, and variable-only projections stay immutable',()=>{
- const chat={id:'turns',messages:[{role:'assistant',turn:1,text:'a',variables:[{hp:10}]}]}
- const first=projectTavernHelperContext(chat,{indexed:true})
- const next={...chat,messages:[{...chat.messages[0],turn:2}]}
- const changed=projectTavernHelperContext(next,{indexed:true,previousContext:first,previousMessages:first.messages,dirtyIndices:new Set([0]),layoutChanged:true})
- assert.deepEqual(changed.turnMessageIds,{'2':0})
- assert.deepEqual(first.turnMessageIds,{'1':0})
- assert.throws(()=>{first.messages[0].variables.hp=100},TypeError)
- assert.equal(projectTavernHelperContext(chat).messages[0].variables.hp,10)
-})
-
-import {mkdtemp,rm} from 'node:fs/promises'
-import {tmpdir} from 'node:os'
-import {join} from 'node:path'
-import {createChatJournalStore} from '../tavern-plugin/lib/domain/chat-journal-store.js'
-test('journal display input carries layout evidence and detaches only accessed floors',async t=>{
- const root=await mkdtemp(join(tmpdir(),'upstream-view-'));t.after(()=>rm(root,{recursive:true,force:true}))
- let visits=0
- const store=createChatJournalStore({dataRoot:root,onIndexedMessageVisit:()=>visits++,frameLimit:1e6,byteLimit:1e9})
- await store.update('c',()=>({id:'c',_storageRevision:1,messages:Array.from({length:400},(_,i)=>({role:'assistant',turn:i+1,text:'body',variables:[{hp:10}]}))}))
- await store.patch('c',1,[{op:'set',path:['_storageRevision'],value:2},{op:'set',path:['messages',399,'variables',0,'hp'],value:9}])
- visits=0
- const delta=await store.readViewDelta('c',1)
- assert.equal(delta.layoutChanged,false)
- assert.equal(delta.chat.messages[399].variables[0].hp,9)
- assert.equal(delta.chat.messages[0].variables,undefined)
- assert.ok(visits<64,`display input visited ${visits} index nodes`)
- delta.chat.messages[399].variables[0].hp=100
- assert.equal((await store.readSlice('c',[399])).chat.messages[0].variables[0].hp,9)
- await store.patch('c',2,[{op:'set',path:['_storageRevision'],value:3},{op:'set',path:['messages',399,'turn'],value:800}])
- assert.equal((await store.readViewDelta('c',2)).layoutChanged,true)
-})

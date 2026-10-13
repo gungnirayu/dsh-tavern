@@ -4420,61 +4420,95 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			const listeners = /* @__PURE__ */ new Set();
 			const latest = /* @__PURE__ */ new Map();
 			let connected = false;
-			let started = false;
 			let disposed = false;
 			let retryAttempt = 0;
 			let retryTimer;
 			let control;
+			const pendingDisposals = /* @__PURE__ */ new Set();
 			const sessionIds = () => Array.from(new Set(Array.from(listeners, (item) => item.sessionId))).sort();
 			const key = (sessionId, kind) => `${sessionId}\u0000${kind}`;
-			const report = (error) => {
-				for (const item of listeners) item.onError?.(error);
+			const isCurrent = (stream) => !disposed && control === stream;
+			const report = (stream, error) => {
+				for (const item of Array.from(listeners)) {
+					if (!isCurrent(stream)) return;
+					if (listeners.has(item)) item.onError?.(error);
+				}
 			};
-			const publish = (signal) => {
-				latest.set(key(signal.sessionId, signal.kind), signal);
-				for (const item of listeners) if (item.sessionId === signal.sessionId && item.kind === signal.kind) item.listener(signal);
+			const clearSnapshot = () => {
+				connected = false;
+				latest.clear();
+			};
+			const retireStream = (resetRetry = true) => {
+				const previous = control;
+				control = void 0;
+				clearSnapshot();
+				if (retryTimer !== void 0) {
+					clearTimeout(retryTimer);
+					retryTimer = void 0;
+				}
+				if (resetRetry) retryAttempt = 0;
+				if (previous === void 0) return;
+				const pending = previous.dispose();
+				pendingDisposals.add(pending);
+				pending.then(() => pendingDisposals.delete(pending), () => pendingDisposals.delete(pending));
 			};
 			const scheduleRecovery = (failed) => {
-				if (disposed || retryTimer !== void 0 || control !== failed) return;
-				connected = false;
+				if (!isCurrent(failed) || retryTimer !== void 0 || listeners.size === 0) return;
 				const delay = Math.min(5e3, 250 * 2 ** retryAttempt++);
 				retryTimer = setTimeout(() => {
+					if (!isCurrent(failed)) return;
 					retryTimer = void 0;
-					if (disposed || control !== failed) return;
-					failed.dispose().finally(() => {
-						if (disposed || control !== failed) return;
-						control = void 0;
-						startStream();
-					});
+					retireStream(false);
+					startStream();
 				}, delay);
 			};
 			const startStream = () => {
 				if (disposed || control !== void 0 || listeners.size === 0) return;
+				const followedSessionIds = sessionIds();
+				let failed = false;
+				const active = () => isCurrent(next) && !failed;
 				const stream = ctx.remote.$stream({
 					name: "Tavern session signal stream",
-					open: (signal) => tavernSignals.follow(sessionIds(), signal),
+					open: (signal) => tavernSignals.follow(followedSessionIds, signal),
 					ended: (accepted) => accepted ? new _deepseek_ai_dsh_api_gateway_client.RemoteStreamCarrierError("Tavern session signal stream ended unexpectedly") : /* @__PURE__ */ new Error("Tavern session signal stream ended before its snapshot"),
-					carrierFailed: report
+					carrierFailed: (error) => {
+						if (!active()) return;
+						clearSnapshot();
+						report(next, error);
+					}
 				});
 				const next = new _deepseek_ai_dsh_api_gateway_client.RemoteSnapshotStream(stream, {
 					name: "Tavern session signal stream",
 					isSnapshot: (frame) => frame.type === "snapshot",
 					replace: (frame) => {
+						if (!active()) return;
 						retryAttempt = 0;
 						latest.clear();
 						for (const signal of frame.signals) latest.set(key(signal.sessionId, signal.kind), signal);
 						connected = true;
-						for (const item of listeners) {
+						for (const item of Array.from(listeners)) {
+							if (!active()) return;
+							if (!listeners.has(item)) continue;
 							item.onConnect?.();
+							if (!active()) return;
 							const signal = latest.get(key(item.sessionId, item.kind));
-							if (signal !== void 0) item.listener(signal);
+							if (listeners.has(item) && signal !== void 0) item.listener(signal);
 						}
 					},
 					update: (frame) => {
-						publish(frame.signal);
+						if (!active()) return;
+						const signal = frame.signal;
+						latest.set(key(signal.sessionId, signal.kind), signal);
+						for (const item of Array.from(listeners)) {
+							if (!active()) return;
+							if (listeners.has(item) && item.sessionId === signal.sessionId && item.kind === signal.kind) item.listener(signal);
+						}
 					},
 					failed: (error) => {
-						report(error);
+						if (!active()) return;
+						failed = true;
+						clearSnapshot();
+						report(next, error);
 						scheduleRecovery(next);
 					}
 				});
@@ -4488,6 +4522,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					throw new Error("Tavern runtime control ended without a response");
 				},
 				subscribe(sessionId, kind, listener, onError, onConnect) {
+					if (disposed) throw new Error("Tavern session signals have been disposed");
 					const item = {
 						sessionId: String(sessionId),
 						kind: String(kind),
@@ -4495,33 +4530,42 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						onError,
 						onConnect
 					};
-					const before = sessionIds().join("\0");
+					const before = JSON.stringify(sessionIds());
 					listeners.add(item);
-					const after = sessionIds().join("\0");
-					const signal = latest.get(key(item.sessionId, item.kind));
+					if (before !== JSON.stringify(sessionIds())) retireStream();
+					const current = control;
 					if (connected) item.onConnect?.();
-					if (signal !== void 0) item.listener(signal);
-					if (!started) {
-						started = true;
-						startStream();
-					} else if (control === void 0) startStream();
-					else if (before !== after) control.restart();
+					const signal = latest.get(key(item.sessionId, item.kind));
+					if (current === control && !disposed && signal !== void 0) item.listener(signal);
+					startStream();
 					let stopped = false;
 					return () => {
 						if (stopped) return;
 						stopped = true;
-						const previous = sessionIds().join("\0");
+						const previous = JSON.stringify(sessionIds());
 						listeners.delete(item);
-						if (previous !== sessionIds().join("\0")) control?.restart();
+						if (listeners.size === 0 || previous !== JSON.stringify(sessionIds())) {
+							retireStream();
+							startStream();
+						}
 					};
 				}
 			});
 			ctx.provide("tavernSessionSignals", service);
-			return async () => {
+			let disposal;
+			return () => {
+				if (disposal !== void 0) return disposal;
 				disposed = true;
-				if (retryTimer !== void 0) clearTimeout(retryTimer);
-				await control?.dispose();
-				await unmount();
+				listeners.clear();
+				retireStream();
+				disposal = (async () => {
+					try {
+						await Promise.all(Array.from(pendingDisposals));
+					} finally {
+						await unmount();
+					}
+				})();
+				return disposal;
 			};
 		}
 		//#endregion

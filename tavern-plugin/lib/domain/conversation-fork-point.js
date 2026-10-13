@@ -32,7 +32,7 @@ export async function conversationStateAtTurn(source, requestedTurn, readRevisio
     const old = state.messages[index]
     return message.role !== old.role || turnOf(message) !== turnOf(old) || (message.sourceText ?? message.text) !== (old.sourceText ?? old.text)
   })) throw new Error('历史快照与当前分支正文不一致，无法安全分叉')
-  assertConversationForkable(state)
+  assertConversationForkable(state, { historical: state !== source })
   return { turn, state }
 }
 

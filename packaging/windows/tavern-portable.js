@@ -10,6 +10,7 @@ const data = path.resolve(parent);
 const home = path.join(data, 'harness');
 const userData = path.join(data, 'desktop');
 const profile = path.join(home, 'profiles', 'tavern');
+const TAVERN_APP_ID = 'ai.deepseek.dsh.tavern';
 function refreshLink(link,target) {
   fs.mkdirSync(path.dirname(link),{recursive:true});
   let stat;
@@ -27,6 +28,16 @@ try {
   // The web updater also launches `node`, outside pnpm's private environment.
   process.env.PATH=path.join(userData,'runtime-commands','private','node-bin')+path.delimiter+process.env.PATH;
   app.setPath('userData', userData);
+  // Windows groups taskbar buttons, pins and notifications by AppUserModelID. The
+  // bundled Desktop claims the stock DSH Desktop id, so a running Tavern absorbed
+  // the user's own DSH Desktop pin: clicking it focused Tavern instead of launching
+  // Desktop, and pinning Tavern replaced that pin. Keep a distinct identity; the
+  // launcher writes the same id into the DSH Tavern shortcuts.
+  if (process.platform === 'win32') {
+    const setAppUserModelId = app.setAppUserModelId.bind(app);
+    app.setAppUserModelId = () => setAppUserModelId(TAVERN_APP_ID);
+    setAppUserModelId(TAVERN_APP_ID);
+  }
   // Restart the outer launcher so its cleanup cannot remove a relaunched runtime.
   if(process.env.PORTABLE_EXECUTABLE_FILE) {
     const relaunch=app.relaunch.bind(app);

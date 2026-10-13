@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict'
 import { inflateRawSync } from 'node:zlib'
 import test from 'node:test'
-import { createMvuDiagnosticStore, createMvuDiagnosticExport, redactDiagnostic, sanitizeModuleFailure, redactMvuLoadError, sanitizeMvuLoadDiagnostic } from '../tavern-plugin/lib/domain/mvu-diagnostics.js'
+import { createMvuDiagnosticStore, createMvuDiagnosticExport, redactDiagnostic, sanitizeModuleFailure, sanitizeMvuLoadDiagnostic } from '../tavern-plugin/lib/domain/mvu-diagnostics.js'
 
-import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import vm from 'node:vm'
 
 function zipText(buffer) {
   const parts = []
@@ -52,26 +51,6 @@ test('MVU 加载诊断只允许结构字段，错误脱敏、长度受限且随 
   assert.ok(JSON.stringify(sanitizeMvuLoadDiagnostic({ phase: 'execution-failed', message: 'x'.repeat(1000000) })).length < 4200)
 })
 
-test('真实日志 RPC 保留加载字段；诊断写盘失败不向运行路径抛错', async () => {
-  const source = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-  const start = source.indexOf("case 'recordMvuRuntimeDiagnostic':")
-  const end = source.indexOf("case 'getPlayChatDebugTarget':", start)
-  const store = createMvuDiagnosticStore(storage())
-  const context = { chatHeaderForSession: async id => ({ sessionId: id }), sessionStateForSession: async id => ({ sessionId: id }), str: String, sanitizeMvuLoadDiagnostic, sanitizeModuleFailure, redactMvuLoadError, mvuDiagnostics: store }
-  const invoke = vm.runInNewContext('(async function(args){switch("recordMvuRuntimeDiagnostic"){' + source.slice(start, end) + '}})', context)
-  const args = { sessionId: 's', diagnostic: { kind: 'mvu-load', phase: 'download-response', httpStatus: 403, contentType: 'text/plain' } }
-  assert.equal((await invoke(args)).recorded, true)
-  const row = (await store.read('s')).records[0]
-  assert.equal(row.stage, 'mvu-load')
-  assert.equal(row.diagnostic.httpStatus, 403)
-  await invoke({sessionId:'s', diagnostic:{scriptId:'schema',level:'error',message:'模块加载失败',moduleFailure:{phase:'module-load',reason:'http',resources:[{url:'https://cdn.example/a.js?token=PRIVATE',status:404}]}}})
-  const moduleRow = (await store.read('s')).records.at(-1)
-  assert.equal(moduleRow.diagnostic.moduleFailure.resources[0].status,404)
-  assert.doesNotMatch(JSON.stringify(moduleRow),/PRIVATE/)
-  context.mvuDiagnostics = { record: async () => { throw Error('disk failure') } }
-  assert.equal((await invoke(args)).recorded, false)
-})
-
 test('诊断记录持久化、限量，并移除凭据', async () => {
   const data = storage()
   const store = createMvuDiagnosticStore(data, { maxRecords: 3 })
@@ -113,44 +92,6 @@ test('诊断包同时导出前台、后台日志和 MVU 记录，缺失日志明
       assert.equal(JSON.parse(content).records[0].stage, 'submitted')
     }
   } finally { await rm(dir, { recursive: true, force: true }) }
-})
-
-test('真实 iframe bootstrap 捕获 console.warn 和 toastr，带事件编号并限制洪泛', async () => {
-  const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-  let descriptor
-  vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { descriptor = value } } }, console })
-  const client = descriptor.factory(() => ({}))
-  const document = client.buildTavernHelperScriptDocument({ token: 'test', scripts: [{ id: 'guard' }], context: { messages: [] } })
-  // Execute the production document, replacing only the unrelated packaged module import.
-  const bootstrap = document.match(/<script data-dsh-tavern-helper-script>([\s\S]*?)<\/script>/)[1]
-    .replace('import(new URL("/api/dsh-tavern/vendor/runtime-assets/zod/index.mjs",document.baseURI).href)', 'Promise.resolve({})')
-    .replace('import(new URL("/api/dsh-tavern/vendor/runtime-assets/yaml/index.mjs",document.baseURI).href)', 'Promise.resolve({})')
-  const messages = [], listeners = new Map()
-  const parent = { postMessage: value => messages.push(value) }
-  const sandbox = { parent, console: { info() {}, warn() {}, error() {} }, structuredClone, setTimeout, clearTimeout,
-    addEventListener(name, listener) { const list = listeners.get(name) || []; list.push(listener); listeners.set(name, list) }
-  }
-  sandbox.window = sandbox
-  vm.runInNewContext(bootstrap, sandbox)
-  sandbox.console.warn('initialization warning')
-  assert.equal(messages.at(-1).type, 'dsh-tavern-helper-diagnostic')
-  assert.equal(messages.at(-1).eventId, '')
-  assert.equal(messages.at(-1).scriptId, '', 'unowned logs do not borrow the last script id')
-  const deferredError = new Error('earlier callback')
-  deferredError.stack = 'Error: earlier callback\n at run (dsh-tavern-script:previous:1:20)'
-  sandbox.console.warn('deferred', deferredError)
-  assert.equal(messages.at(-1).scriptId, 'previous')
-  const initialDiagnostics = messages.filter(item => item.type === 'dsh-tavern-helper-diagnostic').length
-  sandbox.eventOn('MESSAGE_RECEIVED', () => sandbox.toastr.warning('schema rejected'))
-  for (const listener of listeners.get('message')) listener({ source: parent, data: { token: 'test', type: 'dsh-tavern-helper-event', eventId: 'event-1', name: 'MESSAGE_RECEIVED', args: [0] } })
-  await new Promise(resolve => setImmediate(resolve))
-  const warning = messages.find(item => item.message === 'schema rejected')
-  assert.equal(warning.eventId, 'event-1')
-  assert.equal(warning.scriptId, 'guard')
-  const completed = messages.find(item => item.type === 'dsh-tavern-helper-event-complete')
-  assert.equal(completed.error, undefined)
-  for (let i = 0; i < 100; i++) sandbox.console.warn('repeated')
-  assert.ok(messages.filter(item => item.type === 'dsh-tavern-helper-diagnostic').length <= initialDiagnostics + 50)
 })
 
 test('诊断包包含界面按钮错误并脱敏', async () => {

@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createIncrementalReplyView} from '../tavern-plugin/lib/domain/incremental-reply-view.js'
-import {projectRuntimeReplyHistory} from '../tavern-plugin/lib/domain/runtime-content-projection.js'
+import {projectReplyHistory} from '../tavern-plugin/lib/domain/reply-presentation.js'
 import {projectPersistentStatusView} from '../tavern-plugin/lib/domain/persistent-status-view.js'
 const options={charName:'角色',macroState:{userName:'玩家'}}
 function reference(chat, opts=options) {
- const history=projectRuntimeReplyHistory(chat.messages,opts)
+ const history=projectReplyHistory(chat.messages,opts)
  return {...projectPersistentStatusView(chat.messages,history.projections,opts),presentation:null,latestSourceBacked:history.latestSourceBacked}
 }
 

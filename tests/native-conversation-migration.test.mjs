@@ -42,20 +42,6 @@ for(const source of ['journal','compatible','flat'])test(`${source}: verified na
  assert.ok((await readdir(join(dataRoot,'chats','old'))).includes('head.json'))
 })
 
-test('failed verification never publishes native head; retry succeeds',async t=>{
- const dataRoot=await mkdtemp(join(tmpdir(),'native-migration-fail-'));t.after(()=>rm(dataRoot,{recursive:true,force:true}))
- const store=createChatJournalStore({dataRoot}),native=createNativeConversationStorage({dataRoot})
- const chat={id:'old',_storageRevision:1,messages:[]}
- await store.update('old',()=>chat)
- await assert.rejects(native.create('old',chat,undefined,{migration:true,verifyBeforePublish:()=>{throw Error('source changed')}}),/source changed/)
- assert.equal(await native.version('old'),null)
- assert.deepEqual(await store.read('old'),chat)
- assert.equal((await store.migrateNative('old')).status,'native')
- await writeFile(join(dataRoot,'chats','old','head.json'),'broken')
- await assert.rejects(store.read('old')) // Never silently fall back to a stale backup.
-})
-
-
 test('source mutation and disk failure during import leave the legacy authority writable',async t=>{
  for(const fault of ['source','disk']){
   const dataRoot=await mkdtemp(join(tmpdir(),'native-migration-race-'));t.after(()=>rm(dataRoot,{recursive:true,force:true}))

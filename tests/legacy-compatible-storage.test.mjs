@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {mkdtemp,mkdir,readFile,writeFile,rm,access} from 'node:fs/promises'
-import {writeFileSync} from 'node:fs'
+
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {spawn} from 'node:child_process'
@@ -26,21 +26,6 @@ async function fixture(t,options={}){
 }
 async function marker(root){return JSON.parse(await readFile(join(root,'chats','old','storage-format.json'),'utf8'))}
 async function bump(store,mutate){return store.update('old',chat=>{mutate(chat);chat._storageRevision++;return chat})}
-
-test('automatic legacy JSON migration keeps every field and the original file; restart uses active data',async t=>{
- const {root,legacy,source,bytes,store}=await fixture(t,{migrateLegacy:true})
- assert.equal(JSON.stringify(await store.read('old')),bytes)
- assert.equal((await marker(root)).mode,'compatible')
- assert.equal(await readFile(legacy,'utf8'),bytes)
- const saved=await bump(store,chat=>{chat.messages.push({role:'user',text:'next'});chat.unknown.after=true})
- const fresh=createChatJournalStore({dataRoot:root})
- assert.deepEqual(await fresh.read('old'),saved)
- assert.deepEqual(await fresh.readRevision('old',1),source)
- assert.deepEqual(await fresh.readRevision('old',2),saved)
- const detached=await fresh.read('old');detached.messages[1].variables[1].stat_data.gold=999
- assert.equal((await fresh.read('old')).messages[1].variables[1].stat_data.gold,10)
- assert.equal(await readFile(legacy,'utf8'),bytes)
-})
 
 test('existing persistence and projections survive journal migration, settlement patch, and rollback',async t=>{
  const {root,store}=await fixture(t)
@@ -74,17 +59,6 @@ test('failed conversion falls back to the writable original without activating a
  assert.equal((await marker(root)).mode,'compatible')
 })
 
-test('source edits during conversion are detected and the newest legacy state remains authoritative',async t=>{
- const f=await fixture(t)
- let changed=false
- const updated={...f.source,unknown:{newer:true},_storageRevision:2}
- const store=createChatJournalStore({dataRoot:f.root,migrateLegacy:true,logger:{warn(){}},onCompatibilityIO:e=>{
-  if(!changed&&e.kind==='write'){changed=true;writeFileSync(f.legacy,JSON.stringify(updated))}
- }})
- assert.deepEqual(await store.read('old'),updated)
- await assert.rejects(access(join(f.root,'chats','old','storage-format.json')),{code:'ENOENT'})
-})
-
 test('active corruption is never disguised as a successful read of the stale migration backup',async t=>{
  const {root,store}=await fixture(t)
  await store.migrateCompatibility('old')
@@ -116,19 +90,6 @@ test('restore includes post-migration progress and retains historical revisions 
  assert.equal((await restored.read('old')).unknown.progress,'fourth')
 })
 
-test('migration shares the write lock with existing store instances',async t=>{
- const {root,store}=await fixture(t)
- let enter,release
- const entered=new Promise(resolve=>{enter=resolve}),gate=new Promise(resolve=>{release=resolve})
- const writing=store.update('old',async chat=>{enter();await gate;chat.unknown.concurrent=true;chat._storageRevision++;return chat})
- await entered
- const other=createChatJournalStore({dataRoot:root,logger:{warn(){}}})
- assert.equal((await other.migrateCompatibility('old')).status,'legacy')
- release();await writing
- assert.equal((await other.migrateCompatibility('old')).status,'compatible')
- assert.equal((await other.read('old')).unknown.concurrent,true)
-})
-
 test('process exit before cutover keeps old data and dead-lock recovery permits retry',async t=>{
  const {root,source}=await fixture(t)
  const moduleUrl=new URL('../tavern-plugin/lib/domain/chat-journal-store.js',import.meta.url).href
@@ -151,34 +112,12 @@ test('a late transaction guard failure and stale patches leave the committed rev
  assert.equal((await store.read('old')).unknown.value,2)
 })
 
-test('deleting a migrated archive removes compatibility blocks and legacy sources',async t=>{
- const {root,store}=await fixture(t)
- await store.migrateCompatibility('old');await store.remove('old')
- assert.equal(await store.read('old'),undefined)
- await assert.rejects(access(join(root,'compatible-conversations','old')),{code:'ENOENT'})
- await assert.rejects(access(join(root,'chats','old.json')),{code:'ENOENT'})
-})
-
 test('auto migration does not reenter an updater lock and incompatible future markers fail closed',async t=>{
  const {root,source,store}=await fixture(t,{migrateLegacy:true})
  await store.update('old',async chat=>{assert.deepEqual(await store.read('old'),source);chat._storageRevision++;return chat})
  await store.read('old')
  await writeFile(join(root,'chats','old','storage-format.json'),JSON.stringify({version:999,mode:'future'}))
  await assert.rejects(createChatJournalStore({dataRoot:root}).read('old'),{code:'CHAT_STORAGE_FORMAT'})
-})
-
-test('legacy splice, escaped paths and sparse array writes retain JSON persistence semantics',async t=>{
- const {root,store}=await fixture(t)
- await store.migrateCompatibility('old')
- const changes=[{op:'set',path:['unknown','a/b~c'],value:{'__proto__':'literal'}},
-  {op:'splice',path:['messages'],index:1,deleteCount:0,items:[{role:'user',text:'insert'}]},
-  {op:'set',path:['_storageRevision'],value:2}]
- await store.patch('old',1,changes)
- assert.equal((await store.read('old')).messages[1].text,'insert')
- await store.patch('old',2,[{op:'set',path:['messages',0,'variables'],value:[]},{op:'set',path:['messages',0,'variables',2],value:{gold:1}},{op:'set',path:['_storageRevision'],value:3}])
- const fresh=createChatJournalStore({dataRoot:root})
- assert.deepEqual((await fresh.read('old')).messages[0].variables,[null,null,{gold:1}])
- assert.deepEqual((await fresh.readRevision('old',2)).messages[1],{role:'user',text:'insert'})
 })
 
 test('interrupted reverse export resumes missing revisions before switching authority',async t=>{

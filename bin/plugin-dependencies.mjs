@@ -1,6 +1,6 @@
 import { desktopHostAnchors } from './desktop-host-paths.mjs'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -23,6 +23,27 @@ function findPackage(name, anchor, resolveEntry = true) {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     if (manifest.name !== name) continue
     return { name, version: manifest.version, directory: realpathSync(directory), ...(resolveEntry ? { entry: require.resolve(name) } : {}) }
+  }
+  return null
+}
+
+// Version managers (pnpm env, fnm, nvm-windows…) put a script shim on PATH that is
+// not inside the package's node_modules ancestry. Follow the script it launches.
+function commandShimTargets(commandFile) {
+  try { if (statSync(commandFile).size > 64 * 1024) return [] } catch { return [] }
+  const text = readFileSync(commandFile, 'utf8')
+  const targets = []
+  for (const [, relative] of text.matchAll(/(?:%~dp0%?|%dp0%|\$basedir)[\\/]+([^"'%*\r\n]+?\.[cm]?js)\b/g)) {
+    const target = path.join(path.dirname(commandFile), ...relative.split(/[\\/]+/))
+    if (existsSync(target)) targets.push(realpathSync(target))
+  }
+  return targets
+}
+
+function findCommandPackage(name, commandFile) {
+  for (const anchor of [commandFile, ...commandShimTargets(commandFile)]) {
+    const found = findPackage(name, anchor, false)
+    if (found) return found
   }
   return null
 }
@@ -66,7 +87,7 @@ function resolveHostAnchor({ dsh, host = 'cli', env = process.env, execPath = pr
     const commandFile = resolveCommandFile(dsh, env, platform)
     // npm/pnpm .cmd wrappers live outside the actual DSH package. Resolving
     // from the real package also works for nested and pnpm-symlinked installs.
-    const cliPackage = findPackage('@deepseek-ai/dsh', commandFile, false)
+    const cliPackage = findCommandPackage('@deepseek-ai/dsh', commandFile)
     anchor = cliPackage ? path.join(cliPackage.directory, 'host-dependencies.cjs') : commandFile
   }
   return anchor
@@ -119,7 +140,7 @@ export function resolveHostDependencies({ dsh, host = 'cli', env = process.env, 
 // Windows command shim or assuming a fixed lib/bin.js package layout.
 export function resolveDshCliEntry({ dsh, env = process.env, platform = process.platform }) {
   const commandFile = resolveCommandFile(dsh, env, platform)
-  const cli = findPackage('@deepseek-ai/dsh', commandFile, false)
+  const cli = findCommandPackage('@deepseek-ai/dsh', commandFile)
   if (!cli) throw new Error(`无法定位当前 DSH CLI 包：${commandFile}`)
   const manifest = JSON.parse(readFileSync(path.join(cli.directory, 'package.json'), 'utf8'))
   const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
@@ -131,7 +152,7 @@ export function resolveDshCliEntry({ dsh, env = process.env, platform = process.
 // shell metacharacters are passed as argv, never reparsed by cmd.exe.
 export function resolveNpmCliEntry({ env = process.env, platform = process.platform } = {}) {
   const commandFile = resolveCommandFile('npm', env, platform)
-  const cli = findPackage('npm', commandFile, false)
+  const cli = findCommandPackage('npm', commandFile)
   if (!cli) throw new Error(`无法定位 npm CLI 包：${commandFile}`)
   const manifest = JSON.parse(readFileSync(path.join(cli.directory, 'package.json'), 'utf8'))
   const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.npm
@@ -146,7 +167,7 @@ export function resolveDshBootModule({ dsh, host = 'cli', env = process.env, exe
   return dependency.entry
 }
 
-export function installPluginDependencies({ pluginDirectory, run, ...hostOptions }) {
+export async function installPluginDependencies({ pluginDirectory, run, ...hostOptions }) {
   // Validate everything before changing the plugin's existing installation.
   const dependencies = resolveHostDependencies(hostOptions)
   const workspacePath = path.join(pluginDirectory, 'pnpm-workspace.yaml')
@@ -157,13 +178,17 @@ export function installPluginDependencies({ pluginDirectory, run, ...hostOptions
     workspace.setIn(['overrides', dependency.name], `link:${dependency.directory.replaceAll('\\', '/')}`)
   }
   const temporary = `${workspacePath}.tmp-${process.pid}`
+  let safeToRestore = true
   try {
     writeFileSync(temporary, workspace.toString(), 'utf8')
     renameSync(temporary, workspacePath)
-    run('pnpm', ['install', '--lockfile=false'], { cwd: pluginDirectory })
+    await run('pnpm', ['install', '--lockfile=false'], { cwd: pluginDirectory })
+  } catch (error) {
+    safeToRestore = !error.unsafeToRetry
+    throw error
   } finally {
-    if (existsSync(temporary)) unlinkSync(temporary)
-    writeFileSync(workspacePath, original, 'utf8')
+    if (safeToRestore && existsSync(temporary)) unlinkSync(temporary)
+    if (safeToRestore) writeFileSync(workspacePath, original, 'utf8')
   }
   return dependencies
 }

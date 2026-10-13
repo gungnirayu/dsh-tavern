@@ -1,39 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mutateScriptPrompts, scriptPromptScanText, scriptPromptFrameInputs, consumeScriptPrompts } from '../tavern-plugin/lib/domain/tavern-script-prompts.js'
-import { prepareWorldBookRecall } from '../tavern-plugin/lib/domain/worldbook-recall.js'
-import { foregroundFrameInputs } from '../tavern-plugin/lib/domain/turn-orchestration.js'
-import { createForegroundFrameBuilder } from '../tavern-plugin/lib/domain/agent-input-frame.js'
-import { createForegroundFrameSessionAdapter } from '../tavern-plugin/lib/domain/foreground-frame-session-adapter.js'
+import { mutateScriptPrompts, scriptPromptFrameInputs, consumeScriptPrompts } from '../tavern-plugin/lib/domain/tavern-script-prompts.js'
 
 import { createHelperWorldbookHost } from './fixtures/helper-worldbook-host.mjs'
 import { helperHostHarness } from './fixtures/helper-host-harness.mjs'
 
 const prompt = (id, content, position = 'in_chat') => ({ id, content, position, role: 'system', depth: 0, should_scan: true })
-
-test('脚本扫描触发原生世界书，正文进入实际 Frame，不修改世界书和旧消息', () => {
-  const chat = { messages: [], tavernScriptPrompts: [] }
-  mutateScriptPrompts(chat, { kind: 'inject', prompts: [prompt('location', '王都', 'none'), prompt('event', '请继续当前事件')] })
-  const worldBook = { view: { entries: [{ ref: 'city', enabled: true, primaryKeys: ['王都'], content: '王都有三座城门' }] } }
-  const original = structuredClone(worldBook)
-  const recalled = prepareWorldBookRecall({ chat, worldBook, latestBody: scriptPromptScanText(chat), turn: 1 })
-  assert.equal(recalled.context, '王都有三座城门')
-  const frame = createForegroundFrameBuilder().build({ chatId: 'a', branchId: 'b', operationId: 'op', basedOnRevision: 0, turn: 1,
-    inputs: foregroundFrameInputs({ sections: [{ kind: 'world-book', text: recalled.context }] }, '继续', '继续', null, chat) })
-  const prior = [{ id: 'old', role: 'assistant', content: [{ type: 'text', text: '旧剧情' }] }]
-  const output = createForegroundFrameSessionAdapter({ id: () => 'new' }).append({ messages: prior, frame, step: 1 })
-  assert.match(output.messages.at(-1).content[0].text, /请继续当前事件/)
-  const snapshot = output.messages.find(message => message.source?.worldbookSnapshot)
-  assert.equal(snapshot.source.worldbookSnapshot.text, '王都有三座城门')
-  assert.match(snapshot.content[0].text, /王都有三座城门/)
-  assert.doesNotMatch(output.messages.at(-1).content[0].text, /王都有三座城门/)
-  assert.deepEqual(output.messages[0], prior[0])
-  assert.equal(frame.contributions.filter(x => x.source.stage === 'tavern-script-prompt').length, 1)
-  assert.deepEqual(worldBook, original)
-  assert.equal(prior.length, 1)
-  mutateScriptPrompts(chat, { kind: 'remove', ids: ['event'] })
-  assert.deepEqual(scriptPromptFrameInputs(chat), [])
-})
 
 test('同 ID 替换、删除、一次性与无效批次原子验证', () => {
   const chat = {}

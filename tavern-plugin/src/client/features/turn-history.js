@@ -11,7 +11,7 @@
 			const [selected, setSelected] = React.useState("");
 			const [refreshes, setRefreshes] = React.useState({});
 			const view = props.view;
-			const statuses = view && isPlayMode(view.mode) ? (view.tavernStatusViews || (view.tavernStatusView ? [view.tavernStatusView] : [])) : [];
+			const statuses = view && isPlayMode(view.mode) ? (view.tavernStatusViews || []) : [];
 			const manual = entries.filter(function (entry) { return entry.sessionId === props.sessionId && entry.pinned; });
 			const newest = manual.reduce(function (latest, entry) { return !latest || entry.activation > latest.activation ? entry : latest; }, null);
 			React.useEffect(function () { if (newest) setSelected(newest.id); }, [props.sessionId, newest && newest.activation]);
@@ -25,6 +25,7 @@
 						return h("button", { key: panel.viewId, role: "tab", type: "button", "aria-selected": active === panel.viewId,
 							className: "dsh-tavern-panel-tab", onClick: function () { setSelected(panel.viewId); } }, panel.title || "角色状态");
 					})) : null,
+                    statuses.some(panel => panel.viewId === active) ? h("button", { type: "button", className: "dsh-tavern-panel-refresh", "aria-label": "放大面板", title: "全屏查看此面板", onClick: function (event) { expandTavernFrame(event.currentTarget.closest(".dsh-tavern-status-runtime")?.querySelector('[role="tabpanel"]:not([hidden])')); } }, "⤢") : null,
                     statuses.some(panel => panel.viewId === active) ? h("button", { type: "button", className: "dsh-tavern-panel-refresh", "aria-label": "刷新状态", title: "重新加载此面板，未保存的输入会清空", onClick: function () { tavernRetainedFrames.invalidatePanel(props.sessionId, active); setRefreshes(function (previous) { return Object.assign({}, previous, { [active]: (previous[active] || 0) + 1 }); }); } }, "↻") : null),
 				statuses.map(function (statusView) { return h("div", { key: props.sessionId + statusView.viewId, role: "tabpanel", hidden: active !== statusView.viewId,
 					"data-status-view-id": statusView.viewId, "data-template-revision": statusView.templateRevision },

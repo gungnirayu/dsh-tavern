@@ -73,8 +73,22 @@ function promptVariables(value) {
     delete variables.schema
     delete variables.display_data
     delete variables.delta_data
+    withoutMetadataKeys(variables.stat_data)
   }
   return variables
+}
+
+// MVU reads `$meta` (strictSet, extensible, templates) into the schema and the
+// structure section already states it; left in the snapshot it reads as one more
+// state field the model may try to update (#153). Only object keys are hidden:
+// dropping an array element would shift every index the model writes back.
+function withoutMetadataKeys(value) {
+  if (Array.isArray(value)) { value.forEach(withoutMetadataKeys); return }
+  if (value === null || typeof value !== 'object') return
+  for (const key of Object.keys(value)) {
+    if (key === '$meta') delete value[key]
+    else withoutMetadataKeys(value[key])
+  }
 }
 
 function retryPromptState(variables, initialSchema) {
@@ -277,6 +291,53 @@ export function normalizeMvuToolSubmission(value) {
   }
 }
 
+function valueKind(value) {
+  return Array.isArray(value) ? '列表' : value !== null && typeof value === 'object' ? '对象' : typeof value === 'number' ? '数字' : typeof value === 'boolean' ? '布尔值' : value === null ? '空值' : '文本'
+}
+// A replace that changes a field's shape (list <-> text <-> object) makes MVU's
+// schema diverge and the card's view mis-render. Let the agent fix it and retry.
+function assertMvuValueKinds(operations, variables) {
+  const root = object(variables)
+  const compatible = (before, after) => before === after || (before === '数字' && after === '文本') || (before === '文本' && after === '数字')
+  const elementKind = list => {
+    const kinds = [...new Set(list.map(valueKind))]
+    return kinds.length === 1 ? kinds[0] : null
+  }
+  function lookup(keys) {
+    let target = keys[0] === 'stat_data' ? root : object(root.stat_data)
+    for (const key of keys) {
+      if (target === null || typeof target !== 'object' || !Object.hasOwn(target, key)) return { found: false }
+      target = target[key]
+    }
+    return { found: true, target }
+  }
+  const fail = (index, path, before, after, element) => {
+    throw new Error('变量操作 #' + (index + 1) + ' 类型不一致：' + path + (element ? ' 的列表元素' : '') + ' 当前是' + before + '，提交的是' + after + '；请按原类型提交（列表用 JSON 数组，元素与已有元素同形）')
+  }
+  for (const [index, operation] of operations.entries()) {
+    if (!['replace', 'insert', 'add'].includes(operation.op)) continue
+    const keys = operation.path.split('/').slice(1).map(key => key.replace(/~1/g, '/').replace(/~0/g, '~'))
+    const self = lookup(keys)
+    if (operation.op === 'replace' && self.found && self.target !== null) {
+      const before = valueKind(self.target), after = valueKind(operation.value)
+      if (!compatible(before, after)) fail(index, operation.path, before, after, false)
+      // Elements of a list keep the shape of the existing ones (MVU infers the element schema).
+      if (Array.isArray(self.target) && Array.isArray(operation.value) && self.target.length) {
+        const kind = elementKind(self.target)
+        const bad = kind && operation.value.find(item => !compatible(kind, valueKind(item)))
+        if (bad !== undefined && kind) fail(index, operation.path, kind, valueKind(bad), true)
+      }
+      continue
+    }
+    // Inserting into a list: the new element matches its siblings.
+    const parent = lookup(keys.slice(0, -1))
+    if (parent.found && Array.isArray(parent.target) && parent.target.length && (keys.at(-1) === '-' || /^\d+$/.test(keys.at(-1)))) {
+      const kind = elementKind(parent.target)
+      if (kind && !compatible(kind, valueKind(operation.value))) fail(index, operation.path, kind, valueKind(operation.value), true)
+    }
+  }
+}
+
 function resolveMvuValueMacros(value, input) {
   if (typeof value === 'string') {
     return resolveRuntimeMacroText(value, {
@@ -390,7 +451,11 @@ export function projectMvuBackgroundRequest(frame) {
       content: [{ type: 'text', text: str(output.storyText) }],
       source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'mvu-final-story' }
     }],
+    // Stable schema and rules precede the per-turn snapshot so the shared background prefix stays cacheable.
     turnContext: [
+      '【变量结构】',
+      JSON.stringify(state.variableSchema || {}),
+      ...(updateRules.length === 0 ? [] : ['【人物卡变量更新规则】', updateRules.join('\n\n')]),
       '【当前变量快照】',
       JSON.stringify(promptVariables(state.currentVariables)),
       ...(rules.helperContext?.length ? ['【本轮人物卡 Helper 交接】',
@@ -400,16 +465,13 @@ export function projectMvuBackgroundRequest(frame) {
         '玩家对本局的持续要求。结算时遵循其中关于变量取向、数值尺度和状态变化的要求；不得据此制造正文未发生的事件。',
         ...rules.guides.map((text, index) => (index + 1) + '. ' + text)] : []),
       ...(rules.guidance ? ['【本次重新结算的指导意见（仅本次有效）】', str(rules.guidance)] : []),
-      '【变量结构】',
-      JSON.stringify(state.variableSchema || {}),
-      ...(updateRules.length === 0 ? [] : ['【人物卡变量更新规则】', updateRules.join('\n\n')]),
       ...(tasks.characterDesign ? ['【人物设计（按需）】',
       '若本轮出现值得长期保留的重要人物，可先调用 skill 加载 character-design，再按 Skill 读取或保存人物档案。人物设计独立保存，不属于 MVU operations。'] : [])
     ].join('\n'),
     system: [
       '只根据【正文】中已经确认发生的事实结算变量，不得读取或推断玩家意图。',
       '不得根据旧轮剧情、隐藏思考、候选项或未发生事件更新变量。',
-      ...(tasks.characterDesign ? ['若确实需要人物设计，在当前后台 Agent 内先加载 character-design 并调用人物档案工具；无需也不得创建另一个 Agent。完成后继续本轮结算。'] : ['本轮人物设计已关闭，不调用人物设计 Skill 或生成档案。']),
+      ...(tasks.characterDesign ? ['若确实需要人物设计，在当前后台 Agent 内先加载 character-design 并调用人物档案工具；无需也不得创建另一个 Agent。完成后继续本轮结算。'] : []),
       tasks.posture ? '在同一次回复中同时调用 posture_submit 和 mvu_submit_update，分别提交本轮结束时可见的人物姿势与变量变化；两者互不依赖，无需等待前一个工具返回。不得在回复正文输出 JSON。' : '本轮姿势结算已关闭，直接提交变量，不生成姿势。',
       '本轮必须调用 mvu_submit_update；姿势和变量分别以各自工具返回结果为准，只补交未完成项。',
       '数值不确定时，合理即可，不要求必须精确。'
@@ -539,6 +601,7 @@ export function createMvuSettlementModule(options = {}) {
       try {
         if (!call || call.name !== MVU_SUBMIT_UPDATE_TOOL_NAME) throw new Error('后台 Agent 调用了未授权的变量工具')
         submission = resolveMvuSubmissionMacros(normalizeMvuToolSubmission(call.arguments), input)
+        assertMvuValueKinds(submission.operations, input.currentVariables)
         if (feedback && submission.operations.length === 0) throw new Error('上一批更新未通过校验，请修正完整 operations，不能用空数组跳过失败')
       } catch (error) {
         await record('submission-rejected', { error: error.message, argumentKeys: Object.keys(object(call?.arguments)), operations: object(call?.arguments).operations })

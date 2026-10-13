@@ -89,15 +89,6 @@ export function isRuntimePresetBoundaryMessage(message) {
   })
 }
 
-export function projectRuntimePresetRequestMessages(messages, snapshot, options = {}) {
-  const source = Array.isArray(messages) ? messages : []
-  const ordinary = source.filter(function (message) { return !isRuntimePresetBoundaryMessage(message) })
-  const front = runtimePresetPhaseMessages(snapshot, 'front', options)
-  const back = runtimePresetPhaseMessages(snapshot, 'back', options)
-  if (front.length === 0 && back.length === 0 && ordinary.length === source.length) return source
-  return front.concat(ordinary, back)
-}
-
 export function projectRuntimePresetRequest(request, snapshot, options = {}) {
   if (request === null || typeof request !== 'object') throw new TypeError('模型请求必须是对象')
   const source = Array.isArray(request.messages) ? request.messages : []

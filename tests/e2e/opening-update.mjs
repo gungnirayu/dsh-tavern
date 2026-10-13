@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {readFile,writeFile,readdir} from 'node:fs/promises'
 import {join} from 'node:path'
-import {parseSessionLog} from '../../tavern-plugin/lib/domain/legacy-session-migration.js'
+import {parseNativeSessionLog} from './native-session-log.mjs'
 import {Session} from '../fixtures/dsh-session-host.mjs'
 export async function openingUpdateChecks({page,step,savedChat,data,output,report,root}){
  const state=text=>JSON.parse(text.match(/<initvar>([\s\S]*?)<\/initvar>/)[1])
@@ -26,7 +26,7 @@ export async function openingUpdateChecks({page,step,savedChat,data,output,repor
   let verified=false
   for(const file of await readdir(directory,{recursive:true})){
    if(!file.endsWith('session.v3.jsonl.zstd'))continue
-   const parsed=parseSessionLog(await readFile(join(directory,file)))
+   const parsed=parseNativeSessionLog(await readFile(join(directory,file)))
    if(parsed.header.id!==after.sessionId)continue
    const native=Session.create(after.sessionId,parsed.events,parsed.header)
    const texts=native.surface.nodes.map(seq=>parsed.events.find(event=>event.seq===seq)).filter(event=>event?.type==='assistant/message').flatMap(event=>event.data.message.content).filter(block=>block.type==='text').map(block=>block.text)

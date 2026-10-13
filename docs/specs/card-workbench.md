@@ -53,15 +53,20 @@ Better Sidebar 提供四个职责分离的库：
 
 - `tavern_read_card`：按字段渐进读取稳定人物卡投影；
 - `tavern_read_card_raw`：按 JSON Pointer 读取正则、脚本、MVU 和未知扩展；
+- `tavern_search_card`：一次搜遍字段、开场、内置世界书（标题、关键词、正文）、正则和脚本，返回 JSON Pointer、所属条目和上下文片段，用于改动前定位；
+- `tavern_replace_card_text`：按字面或正则在全卡批量替换（可用 pointers 限定、expectedCount 防误改），按位置拆成标准字段、内置世界书补丁和 raw 操作走正常保存，返回各位置处数、全卡剩余处数和格式校验；
 - `tavern_read_play_chat`：按轮次和层次只读查看已挂载的游玩记录，并用当前人物卡重新检查正则命中；
 - `tavern_read_worldbook`：按编号、关键词或分页读取世界书；
 - `tavern_update_worldbook`：通过现有世界书 Library interface 保存已确认的条目级修改；
 - `tavern_read_preset`：按 JSON Pointer 分段读取预设工作 JSON；
 - `tavern_update_preset`：按 JSON Pointer 保存已确认的最小修改并重新校验；
+- `tavern_read_regex_library`：读取正则库里用户导入的原版酒馆正则；正则库不生效，按用户要求写入人物卡或预设；
 - `tavern_update_card`：暂存并在本轮最终回复后提交已确认的人物卡最小变更；
 - `tavern_restore_card`：仅在灾难性损坏且用户再次确认后从原版恢复；
 - `skill` 与 `tavern_save_skill`：按需使用或创建 Tavern 专属 Skill。
 - `cordis_inspect_*`、`cordis_define`、`cordis_run`、`cordis_stop` 与 `cordis_undefine`：复用 DSH 创造模式，在当前进程中检查 Runtime，并创建、运行或移除临时插件和工具；只向卡片 Agent 开放。
+
+任务专用工具按 Skill 出现：Cordis 工具在加载 `advanced-capabilities` 或 `tavern-plugin` 后可见，`tavern_save_skill` 随建 Skill 类 Skill，长期偏好工具随 `user-profile`（`create-card` 可读），`tavern_read_play_chat` 随 `debug-card`。普通改卡不为这些 schema 每步付费，加载 Skill 时工具列表变化只造成一次缓存失效。
 
 目标预设只作为待编辑数据，不成为当前 Agent 的提示词，也不启用预设提示词或正则效果。游玩 Agent 和后台 Agent 不获得卡片工作区文件工具或 Skill。
 

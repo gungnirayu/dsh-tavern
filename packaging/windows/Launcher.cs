@@ -18,7 +18,9 @@ class Launcher : Form {
  // build.ps1 rewrites both payload values for the payload it embeds; the defaults here are the last published payload.
  const string PayloadSha256="a272f20b3f1f5b15d2b8b05d22259e7e97597f47dfc01ee79291e34479d5cea4";
  // Bump the suffix for any embedded runtime/bootstrap change; never patch a running installation.
- const string Version="a272f20b3f1f5b15-setup5";
+ const string Version="a272f20b3f1f5b15-setup8";
+ // Must match TAVERN_APP_ID in tavern-portable.js: shortcut and windows share one taskbar identity.
+ const string AppUserModelId="ai.deepseek.dsh.tavern";
  Label label=new Label(), activity=new Label(); ProgressBar bar=new ProgressBar();
  Button logs=new Button(); System.Windows.Forms.Timer progressTimer=new System.Windows.Forms.Timer();
  Stopwatch elapsed=Stopwatch.StartNew(); TimeSpan lastProgress=TimeSpan.Zero; string lastStatus="";
@@ -172,6 +174,12 @@ class Launcher : Form {
    link.SetWorkingDirectory(root);
    link.SetDescription("打开 DSH Tavern 酒馆");
    link.SetIconLocation(Path.Combine(runtime,"DSH Desktop.exe"),0);
+   // Without its own AppUserModelID the shortcut is grouped with the user's DSH Desktop.
+   var store=(IPropertyStore)link;
+   var key=new PropertyKey{FormatId=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),PropertyId=5};
+   var value=new PropVariant{Type=31,Pointer=Marshal.StringToCoTaskMemUni(AppUserModelId)};
+   try {store.SetValue(ref key,ref value);store.Commit();}
+   finally {Marshal.FreeCoTaskMem(value.Pointer);}
    ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(Path.Combine(folder,"DSH Tavern.lnk"),true);
   } finally {Marshal.FinalReleaseComObject(link);}
  }
@@ -302,7 +310,12 @@ class Launcher : Form {
     int remaining=Math.Max(0,(int)(deadline-DateTime.UtcNow).TotalMilliseconds);
     if(!p.WaitForExit(remaining)) {
      if(!OwnsDesktop(p.MainModule.FileName))throw new Exception("酒馆进程位置已改变，请退出后重试。");
-     p.Kill();if(!p.WaitForExit(10000))throw new Exception("酒馆仍在退出，请稍后重试。");
+     // Kill is denied for a process that is already exiting or runs with higher rights;
+     // the first case finishes on its own, the second needs the user to quit it.
+     try {p.Kill();}
+     catch(System.ComponentModel.Win32Exception){if(!p.WaitForExit(10000))throw new Exception("无法结束运行中的酒馆（可能以管理员身份运行）。请手动退出此安装的 DSH Tavern 后点重试。");}
+     catch(InvalidOperationException){}
+     if(!p.WaitForExit(10000))throw new Exception("酒馆仍在退出，请稍后重试。");
     }
    }
   } finally {foreach(var p in owned)p.Dispose();}
@@ -341,4 +354,16 @@ interface IShellLinkW {
  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, int reserved);
  void Resolve(IntPtr window, int flags);
  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+}
+
+[StructLayout(LayoutKind.Sequential, Pack=4)] struct PropertyKey { public Guid FormatId; public int PropertyId; }
+// PROPVARIANT holding a VT_LPWSTR; the string memory stays owned by the caller.
+[StructLayout(LayoutKind.Explicit, Size=24)] struct PropVariant { [FieldOffset(0)] public ushort Type; [FieldOffset(8)] public IntPtr Pointer; }
+[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+interface IPropertyStore {
+ void GetCount(out uint count);
+ void GetAt(uint index, out PropertyKey key);
+ void GetValue(ref PropertyKey key, out PropVariant value);
+ void SetValue(ref PropertyKey key, ref PropVariant value);
+ void Commit();
 }

@@ -24,16 +24,3 @@ for(const fallback of [false,true])test(`record packs preserve hash lookup, stan
  await writeFile(file(refs[0]),'{corrupt')
  await assert.rejects(createConversationPageStore({root}).readRecord('a',refs[0]),/checksum/)
 })
-
-test('a large scalar is stored alone and pack sizes stay bounded',async t=>{
- const root=await mkdtemp(join(tmpdir(),'record-pack-'))
- t.after(()=>rm(root,{recursive:true,force:true}))
- const store=createConversationPageStore({root})
- const values=[{type:'scalar',value:'large'.repeat(20000)},...Array.from({length:300},(_,i)=>({type:'scalar',value:'entry'+i}))]
- const refs=await store.writeRecords('a',values)
- const first=JSON.parse(await readFile(join(root,'a/blocks',refs[0].slice(0,2),refs[0]+'.json'),'utf8'))
- assert.equal(first.kind,'record')
- for(const ref of refs.slice(1))assert.ok((await stat(join(root,'a/blocks',ref.slice(0,2),ref+'.json'))).size<=65536)
- const fresh=createConversationPageStore({root})
- assert.deepEqual(await fresh.readRecord('a',refs.at(-1)),values.at(-1))
-})

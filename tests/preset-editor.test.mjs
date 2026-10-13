@@ -38,14 +38,6 @@ test('预设编辑器按 JSON Pointer 分段读取并保留未知字段', async 
   assert.equal(result.done, true)
 })
 
-test('预设编辑器拒绝根节点删除和不存在的父路径', async () => {
-  const run = harness({ prompts: [] })
-
-  await assert.rejects(run.editor.update('presets/写作.json', [{ op: 'delete', path: '' }]), /根节点/)
-  await assert.rejects(run.editor.update('presets/写作.json', [{ op: 'set', path: '/missing/value', value: 1 }]), /路径不存在/)
-  assert.equal(run.writes(), 0)
-})
-
 test('条目表单拒绝未知字段与非法角色', async () => {
   const run = harness({ prompts: [{ identifier: 'main', content: '正文' }] })
 

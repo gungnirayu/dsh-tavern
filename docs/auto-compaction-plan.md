@@ -20,7 +20,7 @@
 ## 实现边界
 
 - 手动入口位于 `tavern-plugin/src/client/main.js` 的 TavernCompactionAction，现统一调用服务端 `runCompaction`。
-- `tavern-plugin/lib/domain/tavern-compaction.js` 保留旧入口兼容；新 `auto-compaction.js` 将操作、各侧结果和计数基线持久化到 Chat。
+- `auto-compaction.js` 将操作、各侧结果和计数基线持久化到 Chat。
 - 当前检查的 DSH compaction-basic 实现默认 auto=true、thresholdRatio=0.8，同时包含窗口溢出恢复。必须明确接管 Tavern 会话的自动策略，保证默认手动；不得修改宿主全局行为或影响其他 Profile。不能通过界面开关掩盖仍在运行的宿主自动压缩。
 - 自动压缩和后台结算必须共享任务准入边界，避免检查空闲后又插入新任务的竞态；不依赖页面轮询触发。
 

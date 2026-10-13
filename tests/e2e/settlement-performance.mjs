@@ -10,7 +10,7 @@ import { encodeMigratedSessionLog, encodeCurrentGeneration, parseSessionLog } fr
 // compatibility context can be hundreds of MB and preview formatting dominates
 // the very performance this probe measures. Still inspect the real status DOM.
 async function statusFrame(page) {
-  const handle = await page.waitForFunction(() => document.querySelector('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame'), null, {timeout:120000})
+  const handle = await page.waitForFunction(() => document.querySelector('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])'), null, {timeout:120000})
   const frame = await handle.asElement().contentFrame(); await handle.dispose()
   assert.ok(frame, 'the mounted status frame must exist')
   return frame
@@ -190,6 +190,24 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
 
       report.historyDemand={automaticFullReads,initialHistoryReads:priorReads,explicitHistoryReads:historyReads-priorReads}
     }
+    if(process.argv.includes('--history-scroll')) {
+      // Scrolling into old floors pages the history window back; it never asks for a complete view.
+      const sessionRequests=[]
+      const record=request=>{if(request.url().endsWith('/api/dsh-tavern/getSession'))try{sessionRequests.push(request.postDataJSON())}catch{}}
+      page.on('request',record)
+      for(let step=0;step<8;step++){
+        await page.evaluate(()=>{const scroller=[...document.querySelectorAll('*')].filter(node=>node.scrollHeight>node.clientHeight+200).sort((a,b)=>b.scrollHeight-a.scrollHeight)[0];scroller.scrollTop=0})
+        await page.waitForTimeout(1500)
+      }
+      page.off('request',record)
+      const froms=sessionRequests.map(request=>request.historyFrom).filter(Number.isSafeInteger)
+      assert.ok(froms.length>0,'scrolling must request an older history page')
+      assert.ok(Math.min(...froms)<firstWindow.from,'the window must move back')
+      assert.equal(sessionRequests.filter(request=>request.fullView).length,0,'scrolling must not request a complete view')
+      const waiting=await page.getByText('正在读取历史内容…').filter({visible:true}).count()
+      report.historyScroll={requests:sessionRequests.length,oldest:Math.min(...froms),waiting}
+      console.log('HISTORY-SCROLL '+JSON.stringify(report.historyScroll))
+    }
     // Exclude cold initialization and allow snapshot maintenance to settle.
     await page.waitForTimeout(3000)
     if(process.env.TAVERN_PERF_REQUIRE_BOUNDED_STATE==='1') {
@@ -298,4 +316,69 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     await page.waitForTimeout(500)
   })
   await page.screenshot({ path: join(output, 'long-archive-settled.png') })
+  if (process.argv.includes('--long-operations')) await longOperationChecks({ page, step, savedChat, readLog, report })
+}
+
+// Edit, rollback and undo on the long save through the real UI. Each operation is
+// timed and must not read the complete Chat; the stored result is checked directly.
+async function longOperationChecks({ page, step, savedChat, readLog, report }) {
+  const fullReads = offset => [...readLog().slice(offset).matchAll(/\[settlement-perf\](\{[^\n]+\})/g)].map(match => JSON.parse(match[1]))
+    .filter(event => event.stage === 'full-read' || event.stage === 'full-read-miss')
+  // Times the server call and the visible result; disk checks run afterwards,
+  // since reading the 70MB save from the test process is not the user's wait.
+  const timed = async (name, method, action, visible, verify) => {
+    const offset = readLog().length, started = Date.now()
+    const response = page.waitForResponse(item => item.url().endsWith('/api/dsh-tavern/' + method), { timeout: 180000 })
+    await action()
+    await response
+    const rpcMs = Date.now() - started
+    await visible()
+    const ms = Date.now() - started
+    await verify()
+    const reads = fullReads(offset)
+    report.longOperations = { ...report.longOperations, [name]: { rpcMs, ms, fullReads: reads.length } }
+    console.log('LONG-OP ' + name + ' ' + JSON.stringify(report.longOperations[name]))
+    // Baseline comparisons against older builds record the reads instead of failing.
+    if (process.env.TAVERN_PERF_ALLOW_FULL_READS !== '1') assert.equal(reads.length, 0, name + ' must not read the complete Chat: ' + JSON.stringify(reads.map(event => event.caller?.slice(0, 4))))
+  }
+  const shown = text => page.getByText(text, { exact: true }).filter({ visible: true }).first().waitFor()
+  const gone = text => page.waitForFunction(value => ![...document.querySelectorAll('p')].some(node => node.textContent === value && node.getClientRects().length), text, { timeout: 120000 })
+  const before = await savedChat()
+  const edited = '长档手工编辑：最后一轮正文。'
+  await step('长档编辑正文', () => timed('edit', 'saveBodyEdit', async () => {
+    await page.getByRole('button', { name: '更多 ▾', exact: true }).click()
+    await page.getByRole('menuitem', { name: '编辑正文', exact: true }).click()
+    const editor = page.getByRole('region', { name: '编辑正文' })
+    await editor.getByRole('textbox', { name: '正文文本 1' }).fill(edited)
+    await editor.getByRole('button', { name: '保存', exact: true }).click()
+  }, () => shown(edited), async () => {
+    const saved = await savedChat()
+    assert.equal(saved.messages.length, before.messages.length)
+    assert.equal(saved.messages.at(-1).sourceText, edited)
+  }))
+  await step('长档回退本轮', () => timed('rollback', 'rollbackTurn', async () => {
+    await page.getByRole('button', { name: '更多 ▾', exact: true }).click()
+    await page.getByRole('menuitem', { name: /回退第.*轮|回退本轮/ }).click()
+  }, () => gone(edited), async () => {
+    assert.equal((await savedChat()).messages.length, before.messages.length - 2)
+  }))
+  await step('长档撤销回退', () => timed('undo', 'undoRollbackTurn', async () => {
+    await page.getByRole('button', { name: '更多 ▾', exact: true }).click()
+    await page.getByRole('menuitem', { name: /撤销回退（恢复第/ }).click()
+  }, () => shown(edited), async () => {
+    const saved = await savedChat()
+    assert.equal(saved.messages.length, before.messages.length)
+    assert.equal(saved.messages.at(-1).sourceText, edited)
+  }))
+  await step('长档重新生成正文', () => timed('regenerate', 'regenBody', async () => {
+    await page.getByRole('button', { name: '重新生成正文', exact: true }).click()
+    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('长档重写')
+    await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
+  }, () => gone(edited), async () => {
+    const saved = await savedChat()
+    assert.equal(saved.messages.length, before.messages.length)
+    assert.notEqual(saved.messages.at(-1).sourceText, edited)
+    assert.equal(saved.regenInProgress, undefined)
+    assert.deepEqual(saved.messages.slice(0, -1).map(row => row.text), before.messages.slice(0, -1).map(row => row.text))
+  }))
 }

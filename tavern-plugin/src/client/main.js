@@ -78,11 +78,81 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		const MOBILE_IMPORT_SORTS = Object.freeze([
+			{ id: "modified-desc", label: "修改时间 新→旧" },
+			{ id: "modified-asc", label: "修改时间 旧→新" },
+			{ id: "name-asc", label: "文件名 A→Z" },
+			{ id: "name-desc", label: "文件名 Z→A" },
+			{ id: "size-desc", label: "大小 大→小" },
+			{ id: "size-asc", label: "大小 小→大" },
+			{ id: "png-first", label: "PNG 优先" },
+			{ id: "json-first", label: "JSON 优先" }
+		]);
+		const MOBILE_IMPORT_SORT_STORAGE = "dsh-tavern-mobile-import-sort";
+		const MOBILE_IMPORT_SORT_DEFAULT = "modified-desc";
+
+		function mobileImportNameOf(file) {
+			return String(file && file.name || "");
+		}
+
+		function isMobileImportImage(name) {
+			return /\.png$/i.test(String(name || ""));
+		}
+
+		function readMobileImportSort() {
+			try {
+				const stored = window.localStorage.getItem(MOBILE_IMPORT_SORT_STORAGE);
+				if (MOBILE_IMPORT_SORTS.some(function (option) { return option.id === stored; })) return stored;
+			} catch (_error) {}
+			return MOBILE_IMPORT_SORT_DEFAULT;
+		}
+
+		function saveMobileImportSort(value) {
+			try { window.localStorage.setItem(MOBILE_IMPORT_SORT_STORAGE, value); } catch (_error) {}
+		}
+
+		let mobileImportCollator = null;
+		function mobileImportNameCompare(left, right) {
+			const leftName = mobileImportNameOf(left);
+			const rightName = mobileImportNameOf(right);
+			if (mobileImportCollator === null) {
+				try { mobileImportCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" }); }
+				catch (_error) { mobileImportCollator = false; }
+			}
+			return mobileImportCollator ? mobileImportCollator.compare(leftName, rightName) : (leftName < rightName ? -1 : (leftName > rightName ? 1 : 0));
+		}
+
+		function sortMobileImportFiles(files, sort) {
+			const items = files.slice();
+			const byName = mobileImportNameCompare;
+			const byExtension = function (jsonFirst) {
+				return function (left, right) {
+					const leftRank = isMobileImportImage(left.name) === jsonFirst ? 1 : 0;
+					const rightRank = isMobileImportImage(right.name) === jsonFirst ? 1 : 0;
+					return leftRank - rightRank || byName(left, right);
+				};
+			};
+			if (sort === "modified-asc") items.sort(function (left, right) { return Number(left.modifiedAt) - Number(right.modifiedAt) || byName(left, right); });
+			else if (sort === "name-asc") items.sort(byName);
+			else if (sort === "name-desc") items.sort(function (left, right) { return byName(right, left); });
+			else if (sort === "size-desc") items.sort(function (left, right) { return Number(right.size) - Number(left.size) || byName(left, right); });
+			else if (sort === "size-asc") items.sort(function (left, right) { return Number(left.size) - Number(right.size) || byName(left, right); });
+			else if (sort === "png-first") items.sort(byExtension(false));
+			else if (sort === "json-first") items.sort(byExtension(true));
+			else items.sort(function (left, right) { return Number(right.modifiedAt) - Number(left.modifiedAt) || byName(left, right); });
+			return items;
+		}
+
 		function MobileCardImportButton(props) {
 			const [catalog, setCatalog] = React.useState(null);
 			const [open, setOpen] = React.useState(false);
 			const [busy, setBusy] = React.useState(false);
 			const [error, setError] = React.useState("");
+			const [filter, setFilter] = React.useState("");
+			const [sort, setSort] = React.useState(readMobileImportSort);
+			const [selecting, setSelecting] = React.useState(false);
+			const [selected, setSelected] = React.useState(function () { return new Set(); });
+			const [progress, setProgress] = React.useState(null);
 			function load() {
 				return rpcWithTimeout("listMobileCardImports", {}).then(function (result) { setCatalog(result); return result; }, function () { setCatalog({ available: false, files: [] }); return { available: false, files: [] }; });
 			}
@@ -92,21 +162,101 @@ window.__ModuleLoader__.load({
 				if (current.available) { setOpen(true); load(); }
 				else if (props.inputRef.current) props.inputRef.current.click();
 			}
-			async function importFile(file) {
-				setBusy(true); setError("");
-				try { const result = await rpc("importMobileCard", { id: file.id }); setOpen(false); await props.onImported(result.card); }
-				catch (err) { setError(String(err && err.message || err)); }
-				finally { setBusy(false); }
+			function close() {
+				setOpen(false); setSelecting(false); setSelected(new Set()); setProgress(null); setError("");
 			}
+			function toggle(file) {
+				setSelected(function (previous) {
+					const next = new Set(previous);
+					if (next.has(file.id)) next.delete(file.id); else next.add(file.id);
+					return next;
+				});
+			}
+			async function importQueue(queue) {
+				if (!queue.length) return;
+				setBusy(true); setError("");
+				const failures = [];
+				let last = null;
+				for (let index = 0; index < queue.length; index += 1) {
+					setProgress({ done: index + 1, total: queue.length });
+					try { const result = await rpc("importMobileCard", { id: queue[index].id }); last = result.card; }
+					catch (err) { failures.push(mobileImportNameOf(queue[index]) + "：" + String(err && err.message || err)); }
+				}
+				setBusy(false); setProgress(null);
+				if (last) { if (!failures.length) close(); await props.onImported(last); }
+				if (failures.length) {
+					setError(failures.length + " 个文件导入失败：\n" + failures.slice(0, 4).join("\n") + (failures.length > 4 ? "\n…" : ""));
+					await load();
+				}
+			}
+			async function importFile(file) { await importQueue([file]); }
 			const h = React.createElement;
+			const allFiles = catalog && Array.isArray(catalog.files) ? catalog.files : [];
+			const needle = filter.trim().toLowerCase();
+			const matched = needle ? allFiles.filter(function (file) { return mobileImportNameOf(file).toLowerCase().indexOf(needle) >= 0; }) : allFiles;
+			const files = sortMobileImportFiles(matched, sort);
+			const selectedFiles = sortMobileImportFiles(allFiles.filter(function (file) { return selected.has(file.id); }), sort);
+			const everyVisibleSelected = files.length > 0 && files.every(function (file) { return selected.has(file.id); });
+			function selectAllVisible() {
+				const ids = files.map(function (file) { return file.id; });
+				const every = everyVisibleSelected;
+				setSelected(function (previous) {
+					const next = new Set(previous);
+					for (const id of ids) { if (every) next.delete(id); else next.add(id); }
+					return next;
+				});
+			}
+			function thumbnailOf(file) {
+				return h("span", { className: "dsh-tavern-mobile-import-thumb" + (isMobileImportImage(file.name) ? "" : " placeholder"), "aria-hidden": "true" },
+					h("span", { className: "dsh-tavern-mobile-import-thumb-fallback" }, mobileImportNameOf(file).replace(/^.*\./, "").toUpperCase()),
+					isMobileImportImage(file.name) ? h("img", { src: "/api/dsh-tavern/mobile-card-thumbnail?id=" + encodeURIComponent(file.id), alt: "", loading: "lazy", decoding: "async", onError: function (event) { event.currentTarget.hidden = true; } }) : null);
+			}
+			function rowOf(file) {
+				const picked = selected.has(file.id);
+				return h("button", {
+					key: file.id,
+					className: "dsh-tavern-mobile-import-file" + (picked ? " selected" : ""),
+					disabled: busy,
+					"aria-pressed": selecting ? picked : undefined,
+					onClick: function () { if (selecting) toggle(file); else importFile(file); }
+				},
+					selecting ? h("span", { className: "dsh-tavern-mobile-import-mark", "aria-hidden": "true" }, "✓") : null,
+					thumbnailOf(file),
+					h("span", { className: "dsh-tavern-mobile-import-meta" },
+						h("b", { title: mobileImportNameOf(file) }, mobileImportNameOf(file)),
+						h("span", null, file.directory + " · " + Math.ceil(file.size / 1024) + " KB")));
+			}
+			function emptyState() {
+				if (needle) return h("div", { className: "dsh-tavern-empty" }, "没有匹配“" + filter.trim() + "”的文件");
+				return h("div", { className: "dsh-tavern-empty" }, catalog && catalog.storageAccessible === false ? "DSHA 无法读取下载目录。请在系统设置中允许 DSHA ‘访问所有文件’，然后点刷新；也可尝试系统文件选择器。" : "下载目录里还没有 PNG/JSON 人物卡。");
+			}
+			const countText = "共 " + allFiles.length + " 个文件"
+				+ (needle ? "，匹配 " + files.length + " 个" : "")
+				+ (selected.size ? "，已选 " + selected.size + " 个" : "")
+				+ (progress ? "，正在导入 " + progress.done + "/" + progress.total : "");
 			return h(React.Fragment, null,
 				h("button", { className: "dsh-tavern-btn primary", disabled: props.disabled || busy, onClick: activate }, "导入人物卡"),
 				open ? h("div", { className: "dsh-tavern-mobile-import", role: "dialog", "aria-modal": "true", "aria-label": "从手机下载目录导入人物卡" }, h("div", { className: "dsh-tavern-mobile-import-shell" }, h("div", { className: "dsh-tavern-mobile-import-panel" },
 					h("div", { className: "dsh-tavern-mobile-import-title" }, "从手机下载目录导入"),
 					h("div", { className: "dsh-tavern-question-sub" }, "把 PNG 或 JSON 人物卡放进手机 Download，回到这里点选。"),
+					h("div", { className: "dsh-tavern-mobile-import-count" }, countText),
 					error ? h("div", { className: "dsh-tavern-dock-error", role: "alert" }, error) : null,
-					h("div", { className: "dsh-tavern-mobile-import-list" }, catalog && catalog.files.length ? catalog.files.map(function (file) { return h("button", { key: file.id, className: "dsh-tavern-mobile-import-file", disabled: busy, onClick: function () { importFile(file); } }, h("b", null, file.name), h("span", null, file.directory + " · " + Math.ceil(file.size / 1024) + " KB")); }) : h("div", { className: "dsh-tavern-empty" }, catalog && catalog.storageAccessible === false ? "DSHA 无法读取下载目录。请在系统设置中允许 DSHA ‘访问所有文件’，然后点刷新；也可尝试系统文件选择器。" : "下载目录里还没有 PNG/JSON 人物卡。")),
-					h("div", { className: "dsh-tavern-library-head-actions" }, h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: load }, "刷新"), h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: function () { setOpen(false); if (props.inputRef.current) props.inputRef.current.click(); } }, "使用系统文件选择器"), h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: function () { setOpen(false); } }, "关闭"))
+					h("div", { className: "dsh-tavern-mobile-import-tools" },
+						h("input", { className: "dsh-tavern-mobile-import-search", type: "search", value: filter, placeholder: "筛选文件名", disabled: busy, onChange: function (event) { setFilter(event.target.value); } }),
+						h("select", { className: "dsh-tavern-mobile-import-sort", value: sort, disabled: busy, "aria-label": "排序方式", onChange: function (event) { const value = event.target.value; setSort(value); saveMobileImportSort(value); } },
+							MOBILE_IMPORT_SORTS.map(function (option) { return h("option", { key: option.id, value: option.id }, option.label); }))),
+					selecting ? h("div", { className: "dsh-tavern-mobile-import-selection" },
+						h("span", { className: "dsh-tavern-mobile-import-selection-copy" }, selected.size ? "已选 " + selected.size + " 个（可跨筛选累计）" : "点条目勾选，可跨筛选累计"),
+						h("button", { className: "dsh-tavern-btn", disabled: busy || !files.length, onClick: selectAllVisible }, everyVisibleSelected ? "取消全选" : "全选 " + files.length + " 项"),
+						h("button", { className: "dsh-tavern-btn", disabled: busy || !selected.size, onClick: function () { setSelected(new Set()); } }, "清空选择"),
+						h("button", { className: "dsh-tavern-btn primary dsh-tavern-mobile-import-selection-primary", disabled: busy || !selectedFiles.length, onClick: function () { importQueue(selectedFiles); } }, "导入选中 " + selectedFiles.length + " 个")
+					) : null,
+					h("div", { className: "dsh-tavern-mobile-import-list" }, files.length ? files.map(rowOf) : emptyState()),
+					h("div", { className: "dsh-tavern-library-head-actions dsh-tavern-mobile-import-actions" },
+						h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: load }, "刷新"),
+						h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: function () { close(); if (props.inputRef.current) props.inputRef.current.click(); } }, "使用系统文件选择器"),
+						h("button", { className: "dsh-tavern-btn", disabled: busy || !allFiles.length, onClick: function () { setSelecting(!selecting); } }, selecting ? "退出多选" : "多选"),
+						h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: close }, "关闭"))
 				))) : null
 			);
 		}
@@ -193,8 +343,8 @@ window.__ModuleLoader__.load({
 			if (trace) payload._traceId = trace.id;
 			if (sessionId) payload.sessionId = sessionId;
 			const viewRead = method === "getSession" ? beginSessionViewRead(payload.sessionId) : null;
-			if (viewRead) { payload.viewSync = 1; payload.resourceSync = 1; payload.openingWindow = 1; if (completeHistorySessions.has(payload.sessionId)) payload.fullView = true; payload.viewCursor = viewRead.cursor; if (viewRead.receiptSync) payload.receiptSync = 1; }
-			if (method === "getTavernHelperContext" && !payload.eventId && !payload.fullView && !completeHistorySessions.has(payload.sessionId)) payload.openingWindow = 1;
+			if (viewRead) { payload.viewSync = 1; payload.resourceSync = 1; payload.openingWindow = 1; if (historyFromSessions.has(payload.sessionId)) payload.historyFrom = historyFromSessions.get(payload.sessionId); payload.viewCursor = viewRead.cursor; if (viewRead.receiptSync) payload.receiptSync = 1; }
+			if (method === "getTavernHelperContext" && !payload.eventId && !payload.fullView) payload.openingWindow = 1;
 			const requestBody = JSON.stringify(payload);
 			if (trace) {
 				try { trace.requestBytes = typeof TextEncoder === "function" ? new TextEncoder().encode(requestBody).length : requestBody.length; }
@@ -206,6 +356,12 @@ window.__ModuleLoader__.load({
 				body: requestBody
 			};
 			if (requestOptions && requestOptions.signal) request.signal = requestOptions.signal;
+			// Release ownership even when a cancelled carrier never settles.
+			const releaseViewRead = viewRead ? () => viewRead.release() : null;
+			if (releaseViewRead && request.signal) {
+				if (request.signal.aborted) releaseViewRead();
+				else request.signal.addEventListener("abort", releaseViewRead, { once: true });
+			}
 			if (requestOptions && requestOptions.keepalive === true) request.keepalive = true;
 			if (method === "generateSceneImage") recordImageInteraction(payload.sessionId, payload.turn, payload.requestId, "sent");
 			const responsePromise = controlChannel
@@ -223,7 +379,17 @@ window.__ModuleLoader__.load({
 				}
                 return result;
             });
+			function checkCancelled() {
+				if (request.signal && request.signal.aborted) {
+					if (typeof request.signal.throwIfAborted === "function") request.signal.throwIfAborted();
+					const error = new Error("会话读取已取消");
+					error.name = "AbortError";
+					throw error;
+				}
+			}
 			return responsePromise.then(function (result) {
+				checkCancelled();
+				result = viewRead && viewRead.current() || result;
 				tavernRuntimeGenerationMonitor.observe(result && result.runtimeGeneration);
 				if (!result || !result.ok) {
 					const error = new Error(result && result.error ? result.error : "操作失败");
@@ -234,10 +400,15 @@ window.__ModuleLoader__.load({
                 if (accepted.contextWindow) return {...accepted,context:expandTavernOpeningWindow(accepted.contextWindow).tavernHelper};
                 return accepted.view && accepted.view.historyWindow ? {...accepted,view:expandTavernOpeningWindow(accepted.view)} : accepted;
 			}).catch(function (error) {
+				checkCancelled();
+				const newer = viewRead && viewRead.current();
+				if (newer) return newer.view && newer.view.historyWindow ? {...newer,view:expandTavernOpeningWindow(newer.view)} : newer;
                 if (trace) trace.failed = true;
 				if (method === "generateSceneImage") recordImageInteraction(payload.sessionId, payload.turn, payload.requestId, "failed", "rpc-error");
 				throw error;
 			}).finally(function () {
+				if (viewRead) viewRead.release();
+				if (releaseViewRead && request.signal) request.signal.removeEventListener("abort", releaseViewRead);
 				const elapsed = Date.now() - started;
                 if (trace) {
                     performanceActiveRequests--;
@@ -328,6 +499,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		// @include modules/session-refresh-controller.js
 		// @include modules/live-tavern-view.js
 
 		function isMissingTavernCardError(value) {
@@ -359,11 +531,11 @@ window.__ModuleLoader__.load({
 			return Object.assign({}, view, { tavernHelper: nextHelper });
 		}
 
-		async function hydrateLiveTavernHelperMessages(sessionId, view) {
+		async function hydrateLiveTavernHelperMessages(sessionId, view, request) {
             // First paint is independent of compatibility/history preparation.
             // A window must not be promoted to a complete view by filling only
             // Helper rows: historical display projections need their full read.
-            if (view && view.historyWindow) return (await rpc("getSession", {fullView:true}, sessionId)).view;
+            if (view && view.historyWindow) return (await rpc("getSession", {fullView:true}, sessionId, request)).view;
 			const pending = view && view.tavernHelper && view.tavernHelper.messagesPending;
 			if (!pending) return view;
 			const payload = await rpc("hydrateTavernHelperMessages", {
@@ -371,7 +543,7 @@ window.__ModuleLoader__.load({
                 revision: view.tavernHelper.stateRevision,
 				from: pending.from,
 				to: pending.to
-			}, sessionId);
+			}, sessionId, request);
 			return applyTavernHelperMessageHydration(view, payload);
 		}
 
@@ -386,6 +558,20 @@ window.__ModuleLoader__.load({
 			pollWhileBusy: false,
 			isTerminalError: isMissingTavernCardError
 		});
+		// Side panels read the session view too. Started together with the conversation's own
+		// first read they had no delta cursor yet, so each downloaded the whole view (a few MB
+		// for heavy cards). Waiting for the conversation's view makes theirs a delta read.
+		function readSessionViewAfterLive(sessionId) {
+			const ready = function (state) { return state.phase === "ready" || state.phase === "unavailable" || state.phase === "retrying"; };
+			const wait = ready(liveTavernView.getSnapshot(sessionId)) ? Promise.resolve() : new Promise(function (resolve) {
+				let stop = null, done = false;
+				const timer = window.setTimeout(finish, 10000);
+				function finish() { if (done) return; done = true; window.clearTimeout(timer); if (stop) stop(); resolve(); }
+				stop = liveTavernView.subscribe(sessionId, function (state) { if (ready(state)) finish(); });
+				if (done) stop();
+			});
+			return wait.then(function () { return rpc("getSession", { sessionId: sessionId }, sessionId); });
+		}
 		function coordinationView(result, sessionId) {
 			const sync = result && result.sync ? result.sync : (result || {});
 			const tasks = sync.tasks && typeof sync.tasks === "object" ? sync.tasks : {};
@@ -406,71 +592,7 @@ window.__ModuleLoader__.load({
 
 		let tavernSessionSignals;
 
-		function createTavernCoordinationEventModule(options) {
-			if (!options || typeof options.connect !== "function") throw new Error("Tavern Coordination Event 缺少 SSE adapter");
-			const records = new Map();
-			function initialState() { return { phase: "connecting", view: null, error: "", updatedAt: 0 }; }
-			function recordFor(sessionId) {
-				const id = String(sessionId || "");
-				if (!records.has(id)) records.set(id, { id: id, state: initialState(), listeners: new Set(), connection: null });
-				return records.get(id);
-			}
-			function publish(record, state) {
-				record.state = state;
-				record.listeners.forEach(function (listener) { listener(state); });
-			}
-			function disconnect(record) {
-				if (record.connection && typeof record.connection.close === "function") record.connection.close();
-				record.connection = null;
-			}
-			function connect(record) {
-				if (record.listeners.size === 0 || record.connection !== null) return;
-				record.connection = options.connect(record.id, {
-					message: function (view) {
-						publish(record, { phase: "ready", view: view || null, error: "", updatedAt: Date.now() });
-						if (typeof options.onView === "function") options.onView(record.id, view || null);
-					},
-					error: function (error) {
-						publish(record, { phase: "retrying", view: record.state.view, error: String(error && error.message || ""), updatedAt: record.state.updatedAt });
-					}
-				});
-				// Session Signals are lossy wake-ups, not state. Always establish the
-				// coordination view from its authoritative source after (re)connecting.
-				if (record.connection && typeof record.connection.refresh === "function") void record.connection.refresh();
-			}
-			function invalidate(sessionId) {
-				const targets = sessionId === undefined || sessionId === null || sessionId === "" ? Array.from(records.values()) : [recordFor(sessionId)];
-				targets.forEach(function (record) {
-					if (record.connection && typeof record.connection.refresh === "function") {
-						void record.connection.refresh();
-						return;
-					}
-					disconnect(record);
-					if (record.listeners.size > 0) {
-						publish(record, { phase: "connecting", view: record.state.view, error: "", updatedAt: record.state.updatedAt });
-						connect(record);
-					}
-				});
-			}
-			return {
-				getSnapshot: function (sessionId) { return recordFor(sessionId).state; },
-				setView: function (sessionId, view) {
-					const record = recordFor(sessionId);
-					publish(record, { phase: "ready", view: view || null, error: "", updatedAt: Date.now() });
-				},
-				subscribe: function (sessionId, listener) {
-					const record = recordFor(sessionId);
-					record.listeners.add(listener);
-					listener(record.state);
-					connect(record);
-					return function () {
-						record.listeners.delete(listener);
-						if (record.listeners.size === 0) disconnect(record);
-					};
-				},
-				invalidate: invalidate
-			};
-		}
+		// @include modules/tavern-coordination.js
 
 		const coordinatedCardPaths = new Map();
 		const tavernCoordination = createTavernCoordinationEventModule({
@@ -483,40 +605,20 @@ window.__ModuleLoader__.load({
 				if (observed && previous === "" && cardPath !== "") notifyTavernDataChanged(["cards", "sessions"], "coordination");
 			},
 			connect: function (sessionId, handlers) {
-				let active = true;
-				let loading = false;
-				let reloadRequested = false;
-				async function load() {
-					if (!active) return;
-					if (loading) { reloadRequested = true; return; }
-					loading = true;
-					try {
-						const result = await rpc("syncSession", { kind: "candidate" }, sessionId);
-						if (active) handlers.message(coordinationView(result, sessionId));
-					} catch (error) {
-						if (active) handlers.error(error);
-					} finally {
-						loading = false;
-						if (active && reloadRequested) { reloadRequested = false; void load(); }
-					}
-				}
-				const stop = tavernSessionSignals.subscribe(sessionId, "tavern-state", function (signal) {
-					if (signal && signal.snapshot) {
-						handlers.message(coordinationView(signal.snapshot, sessionId));
-						return;
-					}
-					void load();
-				}, handlers.error, function () {
-					void load();
+				return createTavernCoordinationConnection({
+					load: request => rpc("syncSession", { kind: "candidate" }, sessionId, request),
+					subscribe: (message, error, connected) => tavernSessionSignals.subscribe(sessionId, "tavern-state", message, error, connected),
+					view: result => coordinationView(result, sessionId),
+					handlers
 				});
-				return { close: function () { active = false; stop(); }, refresh: load };
 			}
 		});
 
 		function describeTavernActivity(value) {
 			const activity = value && typeof value === "object" ? value : {};
-			const busy = activity.busy === true;
 			const role = String(activity.role || "");
+			// The worldbook prefilter yields to any other task, so it never blocks the player.
+			const busy = activity.busy === true && role !== "worldbook-filter";
 			let label = "生成候选项";
 			let blockReason = "";
 			if (busy && role === "candidate") { label = "生成中…"; blockReason = "正在生成候选项，请稍候…"; }
@@ -524,7 +626,6 @@ window.__ModuleLoader__.load({
 			return { phase: String(activity.phase || "idle"), busy: busy, role: role, label: label, blockReason: blockReason };
 		}
 
-        // @include modules/history-viewport.js
 
 		function useLiveTavernView(sessionId, revision, paths) {
             const dependencyKey = JSON.stringify(paths);
@@ -540,13 +641,17 @@ window.__ModuleLoader__.load({
 			return state;
 		}
 
-        const completeHistorySessions = new Set();
-        const completeHistoryLoads = new Map();
-        function requestCompleteHistory(sessionId) {
-            if(completeHistoryLoads.has(sessionId))return completeHistoryLoads.get(sessionId);
-            completeHistorySessions.add(sessionId);
-            const task=rpc("getSession",{fullView:true},sessionId).then(result=>liveTavernView.setView(sessionId,result.view)).finally(()=>completeHistoryLoads.delete(sessionId));
-            completeHistoryLoads.set(sessionId,task);
+        // Scrolling into older floors extends the session's history window by one
+        // page; later view syncs keep that range instead of a complete history.
+        const TAVERN_HISTORY_PAGE = 120;
+        const historyFromSessions = new Map();
+        const historyLoads = new Map();
+        function requestOlderHistory(sessionId, windowFrom) {
+            if(historyLoads.has(sessionId))return historyLoads.get(sessionId);
+            const current=historyFromSessions.get(sessionId);
+            historyFromSessions.set(sessionId,Math.max(0,Math.min(current ?? windowFrom,windowFrom)-TAVERN_HISTORY_PAGE));
+            const task=rpc("getSession",{},sessionId).then(result=>liveTavernView.setView(sessionId,result.view)).finally(()=>historyLoads.delete(sessionId));
+            historyLoads.set(sessionId,task);
             return task;
         }
 
@@ -581,6 +686,15 @@ window.__ModuleLoader__.load({
 
 // @include runtime/host-artifacts.js
 
+// @include runtime/helper-public-api.js
+// @include runtime/helper-macro-api.js
+// @include runtime/helper-display-api.js
+// @include runtime/helper-generation-api.js
+// @include runtime/helper-event-api.js
+// @include-domain tavern-regex-engine.js
+// @include-domain tavern-helper-regex-api.js
+// @include-domain response-refusal.js
+// @include refusal-notice.js
 // @include runtime/frame-document.js
 
 // @include modules/host-theme.js
@@ -606,6 +720,8 @@ window.__ModuleLoader__.load({
 		// Guard pathological card resize loops without constraining normal long content.
 // @include runtime/message-frame-lifecycle.js
 
+// @include features/plugin-extensions.js
+
 // @include ui/message-frame.js
 
 // @include features/assistant-renderer.js
@@ -620,6 +736,7 @@ window.__ModuleLoader__.load({
 // @include features/user-profile.js
 
 // @include features/guide-library.js
+// @include features/regex-library.js
 
 // @include features/system-prompts.js
 
@@ -650,12 +767,21 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions), "dsh-tavern: subagent catalog synchronization");
+			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
 			const slots = ctx.slots;
 			if (slots === undefined) return;
             ctx.effect(() => slots.inject("conversation.view", () => slots.register({
                 name: "conversation.view", id: "dsh-tavern:full-context", order: 11,
                 label: "完整上下文", inject: sessionId => ({ contextSessionId: sessionId })
             }, FullRequestContextView)), "dsh-tavern: full request context");
+            ctx.effect(() => slots.inject("conversation.view", () => slots.register({
+                name: "conversation.view", id: "dsh-tavern:gallery", order: 12,
+                label: "画廊", inject: sessionId => ({ gallerySessionId: sessionId })
+            }, SceneImageGallery)), "dsh-tavern: picture gallery");
+			// Public browser API for third-party plugins (docs/plugin-api.md).
+			tavernUiExtensions.service.ctx = ctx;
+			tavernUiExtensions.attachHost(ctx);
+			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
@@ -746,8 +872,12 @@ window.__ModuleLoader__.load({
 					if (!targetPath) throw new Error("MVU 转换缺少目标人物卡");
 					input.setDraft(
 						"/card-to-mvu\n\n【目标人物卡】\n@\"" + targetPath + "\"\n\n" +
-						"把这张人物卡转换为独立的 MVU 版本；保留剧情设定与状态栏视觉风格，同时移除原卡自带的候选项生成提示、按钮、正则和专用脚本，统一使用 DSH Tavern 内置候选项。"
+						"先用 tavern_copy_card 建一份副本，在副本上改成 MVU 版，原卡保持不变；保留剧情设定与状态栏视觉风格。原卡自带的候选项（生成提示、按钮、正则和专用脚本）移除，统一使用 DSH Tavern 内置候选项；手机、开场主页等与状态栏和候选项无关的美化与脚本原样保留。"
 					);
+					return;
+				}
+				if (task === "create") {
+					input.setDraft("/create-card\n\n我想新建一张人物卡。请逐题问我，每次一个问题并给参考选项；问清角色、玩家身份、世界和开场，再问我是否需要 MVU 变量和前端美化。选了美化先给 HTML 草图让我挑，确认设定后再创建。\n\n我的初步想法：");
 					return;
 				}
 				if (task === "user-profile") {
@@ -777,7 +907,6 @@ window.__ModuleLoader__.load({
 			registerTavernStartPage(ctx, slots);
 			playControlsFeature.register({ ctx: ctx, slots: slots });
 			assistantRendererFeature.register({ ctx: ctx, slots: slots });
-			// Native history paging owns loading; TavernWindowedNode bounds live bodies without shadowing its slots.
 			ctx.effect(function () {
 				return slots.inject("conversation.input.right", function () { return slots.register({
 					name: "conversation.input.right",
@@ -793,6 +922,20 @@ window.__ModuleLoader__.load({
 					label: function () { return "DSH Tavern"; }
 				}, TavernSettingsSection); });
 			}, "dsh-tavern: settings section");
+			ctx.effect(function () {
+				let dispose = null, active = true;
+				// Releases without scene images get no page at all.
+				rpc("getTavernSettings").then(function (result) {
+					if (!active || !(result.releaseCapabilities && result.releaseCapabilities.sceneImages)) return;
+					dispose = slots.inject("settings.section", function () { return slots.register({
+						name: "settings.section",
+						id: "dsh-tavern-scene-images",
+						order: 111,
+						label: function () { return "场景生图"; }
+					}, function () { return React.createElement("div", { className: "dsh-tavern-settings-section dsh-tavern-global-settings" }, React.createElement(SceneImageSettings, null)); }); });
+				}, function () {});
+				return function () { active = false; if (typeof dispose === "function") dispose(); };
+			}, "dsh-tavern: scene image settings section");
 
 			ctx.effect(function () {
 				const dispose = ctx.betterSidebar.registerTab({ id: "dsh-tavern:system-prompts", title: "系统提示词", order: 5, single: true, component: SystemPromptSidebarTab });
@@ -802,6 +945,7 @@ window.__ModuleLoader__.load({
 			presetLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 			resourcesLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
             ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:guide-library", title: "Guide 库", order: 9, single: true, component: GuideLibraryTab }), "dsh-tavern: guide library");
+            ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:regex-library", title: "正则库", order: 9, single: true, component: RegexLibraryTab }), "dsh-tavern: regex library");
 			ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:skills", title: "Skill 库", order: 8, single: true, component: props => React.createElement(TavernSkillsTab, { sessionId: props.scope.sessionId }) }), "dsh-tavern: Skill library");
             ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:card-memory", title: "改卡记忆", order: 9, single: true, component: props => React.createElement(TavernCardMemoryTab, { sessionId: props.scope.sessionId }) }), "dsh-tavern: card memory");
 			worldBookLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
@@ -840,6 +984,7 @@ window.__ModuleLoader__.load({
 		exports.buildTavernFrameDocument = buildTavernFrameDocument;
 		exports.openingPreviewSelection = openingPreviewSelection;
 		exports.syncTavernSubagentCatalogs = syncTavernSubagentCatalogs;
+		exports.syncTavernCardAgentResources = syncTavernCardAgentResources;
 		exports.applyTavernVariableReceipt = applyTavernVariableReceipt;
 		exports.createTavernHelperTransport = createTavernHelperTransport;
 		exports.createTavernInitializationTiming = createTavernInitializationTiming;
@@ -860,6 +1005,9 @@ window.__ModuleLoader__.load({
         exports.loadTavernHelperModule = loadTavernHelperModule;
         exports.installTavernBackgroundModel = installTavernBackgroundModel;
         exports.mountTavernLegacyMessage = mountTavernLegacyMessage;
+        exports.mountTavernScriptLayer = mountTavernScriptLayer;
+        exports.tavernScriptLayers = tavernScriptLayers;
+        window.__dshTavernScriptLayers = function (sessionId, messageId) { return tavernScriptLayers(window.document, sessionId, messageId); };
 		exports.releaseTavernHostJQueryHandlers = releaseTavernHostJQueryHandlers;
 		exports.tavernScriptRuntimeReady = tavernScriptRuntimeReady;
 		exports.clampTavernFrameHeight = clampTavernFrameHeight;
@@ -882,6 +1030,8 @@ window.__ModuleLoader__.load({
         exports.createSessionViewReader = createSessionViewReader;
 		exports.applyBodyRegenerationResult = applyBodyRegenerationResult;
 		exports.createTavernCoordinationEventModule = createTavernCoordinationEventModule;
+		exports.createTavernCoordinationConnection = createTavernCoordinationConnection;
+		exports.createSessionRefreshController = createSessionRefreshController;
 		exports.describeTavernActivity = describeTavernActivity;
 		exports.deleteTavernCards = deleteTavernCards;
 		exports.deleteTavernChats = deleteTavernChats;
@@ -896,6 +1046,9 @@ window.__ModuleLoader__.load({
         exports.createTavernComposerWindow = createTavernComposerWindow;
         exports.parseTavernInlineFragment = parseTavernInlineFragment;
         exports.TavernInlineFragment = TavernInlineFragment;
+        exports.bindTavernFontZoom = bindTavernFontZoom;
+        exports.tavernProviderRefusalNotice = tavernProviderRefusalNotice;
+        exports.tavernModelRefusalNotice = tavernModelRefusalNotice;
         exports.renderTavernProjection = renderTavernProjection;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;

@@ -2,7 +2,7 @@
 
 ## 读取入口与分页
 
-从当前工作台已挂载的资源引用取得 `ref`，例如 `play-chat:chat-xxx`，不要把前台 Session ID 当成 chatId。先读 `{ref, layer: "overview"}`；只有一个挂载引用时可省略 ref。读具体证据时显式带上目标 `turn`，特别是 `request`：省略轮次时请求查询可能使用挂载引用记录的轮次，而正文默认使用最新轮。
+从当前工作台关联的游玩记录取得 `ref`，例如 `play-chat:chat-xxx`，不要把前台 Session ID 当成 chatId。先读 `{ref, layer: "overview"}`；只有一个关联记录时可省略 ref。读具体证据时显式带上目标 `turn`，特别是 `request`：省略轮次时请求查询可能使用关联记录的轮次，而正文默认使用最新轮。
 
 `offset` 是从 1 开始的字符位置，`limit` 默认 6000、最多 12000；返回 `done: false` 时按 `to + 1` 继续读取需要的部分。`turns` 用于定位轮次，`conversation` 才是整场 Session 对话。`context`、`preset`、`regex` 层保留完整字段，通过分页读取；其他日志与对象还可能经过内部截断，分页结束不保证原始对象未截断。
 
@@ -31,7 +31,7 @@
 | 世界书 | `tavern_read_worldbook`，path 可省略为当前卡绑定世界书；用 ref、query 或分页 | 路径可为 worldbooks/... 或内置世界书所在 cards/...；当前条目不证明当时已注入 |
 | 剧本 | `tavern_read_script`，工作台可指定 path，用 query、offset、limit 读取 | offset 是块号，不是字符位置；工作台最多读 6 块 |
 | 预设 | `tavern_read_preset`，path 必填为 presets/...，pointer 按需定位 | 读取编辑目标不会将其应用到 Agent；实际生效看 request |
-| 画像 | `tavern_user_profile_read`，无参数 | 返回 Profile 的草案和确认版本，不代表该局保存的画像快照；实际注入看 request |
+| 长期偏好 | `tavern_user_profile_read`，无参数 | 返回 Profile 的草案和确认版本，不代表该局保存的长期偏好快照；实际注入看 request |
 
 ## 按症状选层
 
@@ -43,7 +43,7 @@
 | 修改正则后显示不同 | display、saved-display、diagnostics；用 tavern_read_card_raw 查相关 raw 路径 | display 与 diagnostics 按当前全局、卡片规则及本局预设快照计算，saved-display 是保存时快照；缺失快照也有回退 |
 | 状态栏空白、按钮无效 | display、iframe | iframe 是已采集的 DOM、控制台、网络和错误；没有采集记录不等于没有故障 |
 | MVU、姿势或候选项异常 | tavern、background，必要时 request | 区分任务未启用、未运行、调用失败和提交内容错误；前台成功不代表后台成功 |
-| 预设、画像或模型设置未生效 | preset、context、request，结合相关 Agent 日志 | 根据真实请求检查实际发送内容；请求为空或截断时不能推断未发送 |
+| 预设、长期偏好或模型设置未生效 | preset、context、request，结合相关 Agent 日志 | 根据真实请求检查实际发送内容；请求为空或截断时不能推断未发送 |
 | 生成或结算慢 | foreground、background、tavern、request | 使用可得时间证据区分阶段与缓存；长连接存在本身不证明泄漏 |
 | 多轮连续性问题 | turns，再读相关轮；确需完整上下文才读 conversation | conversation 是 Session 层对话，不是全部原始模型请求 |
 
@@ -54,7 +54,7 @@ foreground / background 读取原生 Agent Session 事件。运行时未加载�
 先用引用和 Tavern 工具定位；这些路径用于理解来源与提交诊断信息，不要求 Agent 绕过工具直接访问文件。
 
 - 人物卡引用如 `cards/example.json` 是资源逻辑路径。资源工作区在当前数据根的 `resources/` 下，通过资源工具和 `tavern_read_card_raw` 读取；不要自行拼接用户机器的绝对路径。
-- `play-chat:<chatId>` 是诊断引用，不是文件路径，必须挂载到同一人物卡的卡片工作台后读取。
+- `play-chat:<chatId>` 是诊断引用，不是文件路径，须从对应游玩对话进入卡片调试，关联到同一人物卡的卡片工作台后读取。
 - 数据根由宿主的 DSH_HOME 确定，默认 `~/.dsh/profile-data/tavern/data`，不是代码仓库，也不是固定的 Desktop 安装目录。
 - 游玩持久化可包含 `chats/<chatId>/snapshots/`、`journals/`，旧格式可能为 `chats/<chatId>.json`。单个旧 JSON 不保证代表最新状态；以 Tavern 读取接口重建后的结果为准。
 - 用户 Skill 在数据根的 `skills/`；本 Skill 的仓库源文件为 `presets/tavern/skills/debug-card/SKILL.md`，参考资料随相邻 `references/` 打包。安装后的源码根可能不同。

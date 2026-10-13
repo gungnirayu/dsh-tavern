@@ -4,7 +4,7 @@ import { startupTimeoutMs, waitForServiceStartup } from '../bin/service-startup.
 
 test('Android 冷启动超过 30 秒仍等待就绪，配置按秒解析', async () => {
   assert.equal(startupTimeoutMs('android', undefined),120000)
-  assert.equal(startupTimeoutMs('cli', undefined),30000)
+  assert.equal(startupTimeoutMs('cli', undefined),120000)
   assert.equal(startupTimeoutMs('android','180'),180000)
   for (const value of ['0','-1','oops','Infinity']) assert.throws(()=>startupTimeoutMs('android',value))
   let now=0, stopped=false
@@ -43,4 +43,10 @@ test('安装回滚遇到活进程保留新旧源码；确认无进程才恢复�
   await rm(root+'/logs/tavern.pid.json')
   await promisify(execFile)('bash',['-c',script,'test',root])
   assert.equal(await readFile(root+'/app/version','utf8'),'old')
+})
+
+test('slow startup reports once that the service is still initializing', async () => {
+  let now = 0, notices = 0
+  await waitForServiceStartup({ timeoutMs: startupTimeoutMs('cli', undefined), now: () => now, sleep: async ms => { now += ms }, alive: () => true, ready: async () => now >= 40000, onSlow: () => { notices += 1 }, stop: async () => {} })
+  assert.equal(notices, 1)
 })

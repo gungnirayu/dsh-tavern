@@ -1,9 +1,14 @@
+import { helperApiChecks, helperApiScript } from './helper-api.mjs'
 import { backgroundFailureChecks } from './background-failure.mjs'
 import { createConversationPageStore } from '../../tavern-plugin/lib/domain/conversation-page-store.js'
 import { createConversationState } from '../../tavern-plugin/lib/domain/conversation-state.js'
 import { settlementPerformanceChecks, settlementPerformanceInitialVariables } from './settlement-performance.mjs'
 import {setupRealVariables,realVariableLookupChecks} from './real-variable-lookup.mjs'
 import { setupRealCharacterDesign, realCharacterDesignChecks } from './real-character-design.mjs'
+import { setupRealCardEdit, realCardEditChecks } from './real-card-edit.mjs'
+import { startSceneImageServer, sceneAddChecks } from './scene-add.mjs'
+import { regenAnomalyChecks, regenTemplateChecks } from './regen-anomalies.mjs'
+import { brokenSaveChecks } from './broken-save.mjs'
 import { incrementalMvuChecks } from './mvu-incremental.mjs'
 import {openingUpdateChecks} from './opening-update.mjs'
 import { backgroundLifecycleChecks } from './background-lifecycle.mjs'
@@ -29,6 +34,7 @@ import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-jour
 
 const displayScenario = process.argv.includes('--display-regression')
 const recoveryScenario = process.argv.includes('--surface-recovery')
+const helperApiScenario = process.argv.includes('--helper-api')
 const compactionScenario = process.argv.find(arg => arg.startsWith('--compaction='))?.split('=')[1]
 const source = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const runtime = resolve(process.env.TAVERN_E2E_RUNTIME || join(homedir(), '.dsh-tavern/runtime'))
@@ -37,7 +43,12 @@ const cli = join(modules, '@deepseek-ai/dsh/lib/bin.js')
 const outputBase = resolve(process.env.TAVERN_E2E_OUTPUT || join(source, 'output/e2e-gameplay'))
 await mkdir(outputBase, { recursive: true })
 const output = await mkdtemp(join(outputBase, 'run-'))
-const root = await mkdtemp(join(tmpdir(), 'tavern-e2e-'))
+// A fixed home lets a saved profile-data snapshot (whose session paths embed the
+// home) be restored as is: TAVERN_E2E_HOME + TAVERN_E2E_RESTORE_DATA (a .tar.gz).
+const root = process.env.TAVERN_E2E_HOME
+  ? (await rm(process.env.TAVERN_E2E_HOME, { recursive: true, force: true }), await mkdir(process.env.TAVERN_E2E_HOME, { recursive: true }), process.env.TAVERN_E2E_HOME)
+  : await mkdtemp(join(tmpdir(), 'tavern-e2e-'))
+const restoredSave = process.env.TAVERN_E2E_RESTORE_DATA || ''
 const profile = join(root, 'profiles/tavern'), data = join(root, 'profile-data/tavern/data')
 const timeout = Number(process.env.TAVERN_E2E_TIMEOUT_MS) || 30000
 const report = { status: 'running', scope: 'real isolated DSH + Tavern + Chromium; fixed model only', steps: [] }
@@ -110,7 +121,7 @@ async function inspectScreen() {
   await page.getByText('你获得了十枚金币。', { exact: false }).filter({ visible: true }).first().waitFor()
   await page.getByText(/变量已更新/).filter({ visible: true }).first().waitFor()
   await openStatus()
-  await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame')
+  await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])')
     .locator('#e2e-gold').filter({ hasText: /^金币：10$/ }).waitFor()
   await page.getByText('站在柜台前，收下奖励。', { exact: true }).filter({ visible: true }).waitFor()
 }
@@ -118,7 +129,7 @@ try {
   await step('准备独立运行环境', async () => {
     if (compactionScenario) {
       await mkdir(data, { recursive: true })
-      await writeFile(join(data, 'tavern-settings.json'), JSON.stringify({ contextCompaction: { mode: compactionScenario === 'rounds' ? 'rounds' : ['manual', 'overflow', 'legacy'].includes(compactionScenario) ? 'manual' : 'percent', rounds: 2, percent: 50 } }))
+      await writeFile(join(data, 'tavern-settings.json'), JSON.stringify({ contextCompaction: { mode: compactionScenario === 'rounds' ? 'rounds' : ['manual', 'overflow', 'legacy'].includes(compactionScenario) ? 'manual' : 'percent', rounds: 2, percent: 50, retainRounds: 2 } }))
       await writeFile(join(output, 'model-control.json'), JSON.stringify({ foregroundPadding: compactionScenario === 'overflow' ? 4000 : 650, backgroundPadding: 0, window: compactionScenario === 'overflow' ? 262144 : 32768 }))
     }
     if (displayScenario) {
@@ -129,7 +140,8 @@ try {
     report.runtimeVersion = JSON.parse(await readFile(join(modules, '@deepseek-ai/dsh/package.json'), 'utf8')).version
     await mkdir(join(profile, 'node_modules'), { recursive: true })
     for (const [name, target] of Object.entries({
-      'dsh-tavern-plugin': join(source, 'tavern-plugin'),
+      // An older plugin build can produce a save its bugs damaged; the scenario then switches to this one.
+      'dsh-tavern-plugin': process.env.TAVERN_E2E_PLUGIN_SOURCE || join(source, 'tavern-plugin'),
       'dsh-tavern-remote': join(source, 'tavern-plugin/packages/dsh-tavern-remote'),
       'dsh-web-mobile': join(source, 'node_modules/dsh-web-mobile')
     })) await symlink(target, join(profile, 'node_modules', name))
@@ -161,13 +173,21 @@ try {
     await writeFile(join(data, 'resources/cards/e2e.json'), JSON.stringify({ spec: 'chara_card_v2', spec_version: '2.0', data: {
       name: 'E2E 奖励验收', description: '固定验收角色', first_mes: (process.argv.includes('--text-colors') ? '她说：“欢迎光临。” *窗外下着雨。*' : '欢迎领取奖励。') + (process.argv.includes('--opening-update') ? '\n<initvar>{"gold":0,"old":1}</initvar>' : '') + '\n\n<StatusPlaceHolderImpl/>',
       mes_example: '', scenario: '', personality: '',
-      character_book: { name: '验收初始变量', entries: [{ id: 1, keys: [], comment: '[initvar]初始值', content: process.argv.includes('--settlement-performance') ? JSON.stringify(settlementPerformanceInitialVariables()) : 'gold: 0', enabled: true, constant: true, insertion_order: 1 }] },
-      extensions: { mvu: {}, regex_scripts: [{ id: 'e2e-status', scriptName: '金币状态', findRegex: '<StatusPlaceHolderImpl/>',
-        replaceString: '```html\n' + status + '\n```', placement: [2], markdownOnly: true, disabled: false }, ...(displayScenario ? displayRegressionRules() : [])] }
+      character_book: { name: '验收初始变量', entries: [{ id: 1, keys: [], comment: '[initvar]初始值', content: process.argv.includes('--settlement-performance') ? JSON.stringify(settlementPerformanceInitialVariables()) : 'gold: 0', enabled: true, constant: true, insertion_order: 1 }, ...(helperApiScenario ? [{ id: 2, keys: ['金币规则'], comment: '金币规则', content: '每次领取十枚金币。', enabled: true, insertion_order: 2 }] : [])] },
+      extensions: { mvu: {}, ...(helperApiScenario ? { TavernHelper_scripts: [{ type: 'script', value: { id: 'e2e-helper-api', name: 'E2E 助手接口', enabled: true, content: helperApiScript } }] } : {}), regex_scripts: [{ id: 'e2e-status', scriptName: '金币状态', findRegex: '<StatusPlaceHolderImpl/>',
+        replaceString: '```html\n' + status + '\n```', placement: [2], markdownOnly: true, disabled: false }, ...(displayScenario ? displayRegressionRules() : []),
+        // A permanent player-input rule: the saved input differs from what was typed.
+        ...(process.argv.includes('--regen-template') ? [{ id: 'e2e-input-rule', scriptName: '整理输入', findRegex: '/ZZ(\\d)/g', replaceString: '〔$1〕', placement: [1], disabled: false }] : [])] }
     } }))
   })
   if(process.argv.includes('--real-variables')) {report.scope='real isolated DSH + Chromium + configured live model';report.model=await setupRealVariables({root,profile,data,runtimeHome:join(homedir(),'.dsh-tavern')})}
+  if(process.argv.includes('--real-card-edit')) {report.scope='real isolated DSH + Chromium + configured live model';report.model=await setupRealCardEdit({root,profile,data,runtimeHome:join(homedir(),'.dsh-tavern')})}
   if(process.argv.includes('--real-character-design')) {report.scope='real isolated DSH + Chromium + configured live model';report.model=await setupRealCharacterDesign({root,profile,data,runtimeHome:join(homedir(),'.dsh-tavern')})}
+  if (restoredSave) await step('放入保存的存档快照', async () => {
+    await rm(join(root, 'profile-data'), { recursive: true, force: true })
+    const { execFileSync } = await import('node:child_process')
+    execFileSync('tar', ['-xzf', restoredSave, '-C', root])
+  })
   await step('启动真实 DSH 与酒馆', async () => {
     async function launchServer() {
       const logOffset = log.length
@@ -183,6 +203,7 @@ try {
           TAVERN_E2E_BACKGROUND_DIR: (process.argv.includes('--background-lifecycle') || process.argv.includes('--background-failure')) ? output : '',
           TAVERN_E2E_REQUEST_AUDIT: join(output, 'preset-requests.jsonl'),
           TAVERN_E2E_MEMORY_AUDIT: process.argv.includes('--card-memory') ? join(output, 'memory-requests.jsonl') : '',
+          TAVERN_E2E_SCENE_AUDIT: process.argv.includes('--scene-add') ? join(output, 'scene-requests.jsonl') : '',
           TAVERN_E2E_LLM_MODULE: join(modules, '@deepseek-ai/dsh-llm/lib/index.js'),
           TAVERN_E2E_WRONG_GOLD: process.env.TAVERN_E2E_WRONG_GOLD || '' }, stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -243,7 +264,7 @@ try {
       });
       page.on('console',message=>{if(message.text().startsWith('[history-read-stack]'))log+=message.text()+'\n'});
     }
-    page.on('pageerror', error => errors.push(error.message))
+    page.on('pageerror', error => { errors.push(error.message); if (process.env.E2E_ERROR_STACK) console.log('[pageerror]', error.stack) })
     // Slot error boundaries catch React failures, so pageerror alone misses them.
     page.on('console', message => {
       if (message.type() === 'error' && /slot entry crashed|Minified React error/.test(message.text())) errors.push(message.text())
@@ -251,13 +272,20 @@ try {
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
   })
-  await step('通过界面选择角色卡并新开一局', async () => {
+  if (restoredSave) await step('打开存档中的这局游戏', async () => {
+    const history = page.locator('.dsh-tavern-history-group-toggle').filter({ hasText: 'E2E 奖励验收' })
+    await history.filter({ visible: true }).first().waitFor()
+    if (!await page.locator('.dsh-tavern-side-row-name').first().isVisible().catch(() => false)) await history.first().click()
+    await page.locator('.dsh-tavern-side-row-name').first().click()
+    await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
+  })
+  else await step('通过界面选择角色卡并新开一局', async () => {
     await page.getByRole('button', { name: /选择人物卡.*新开游玩/ }).click()
     await page.getByText('E2E 奖励验收', { exact: true }).first().click()
     await page.getByRole('button', { name: '开始新游戏', exact: true }).click()
     await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
     await openStatus()
-    await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame')
+    await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])')
       .locator('#e2e-gold').filter({ hasText: /^金币：0$/ }).waitFor()
   })
   if(process.argv.includes('--native-format'))await step('确认新局直接写入原生分页存档',assertNativeStorage)
@@ -283,6 +311,147 @@ try {
       }
       assert.deepEqual((await savedChat()).messages,original,'换强调色只改变展示，不改写存档')
     })
+  } else if (process.argv.includes('--truncation')) {
+    const composer = () => page.getByRole('textbox', { name: /发消息|Message/ })
+    const probe = async name => {
+      await page.screenshot({ path: join(output, name + '.png'), fullPage: true })
+      const chat = await savedChat()
+      report[name] = { body: (await page.locator('body').innerText()).slice(-1500), messages: chat.messages.map(m => ({ role: m.role, text: (m.sourceText ?? m.text ?? '').slice(0, 80) })),
+        foregroundError: chat.foregroundError, operations: Object.values(chat.timeline?.operations || {}).map(o => ({ kind: o.kind, status: o.status, turn: o.turn })) }
+    }
+    for (const marker of (process.env.E2E_TRUNCATE_MARKERS || 'E2E_TRUNCATE_TEXT').split(',')) {
+      await step('正文截断：' + marker, async () => {
+        await composer().fill(marker + ' 继续'); await composer().press('Enter')
+        const sent = Date.now()
+        await page.getByRole('button', { name: /重新生成/ }).filter({ visible: true }).last().waitFor({ timeout: 600000 }).catch(() => {})
+        report['ms-' + marker] = Date.now() - sent
+        await pause(3000)
+        await probe('after-' + marker)
+      })
+      await step('截断后继续发消息：' + marker, async () => {
+        await composer().fill('再次领取奖励'); await composer().press('Enter')
+        const ok = await page.getByText('你再次领取了奖励', { exact: false }).filter({ visible: true }).nth(marker === 'E2E_TRUNCATE_TEXT' ? 0 : 1).waitFor({ timeout: 60000 }).then(() => true, () => false)
+        await probe('next-' + marker)
+        report['next-' + marker].replied = ok
+      })
+      if (marker === 'E2E_TRUNCATE_LOOP') await step('截断后重新生成正文', async () => {
+        await page.getByRole('button', { name: '重新生成正文', exact: true }).filter({ visible: true }).last().click()
+        await pause(15000)
+        await probe('regen-' + marker)
+      })
+    }
+  } else if (process.argv.includes('--filter-midstream')) {
+    // Moderation stops repeat for the same request: the failed tail must offer a way out besides replaying.
+    const composer = () => page.getByRole('textbox', { name: /发消息|Message/ })
+    const tail = () => page.locator('.dsh-tavern-error-controls').filter({ visible: true }).last()
+    const settled = () => page.getByText('后台结算已完成').last().waitFor({ timeout: 60000 }).catch(() => {})
+    const replies = async () => (await savedChat()).messages.filter(m => m.role === 'assistant').length
+    const nextReply = async before => { for (let i = 0; i < 120 && await replies() <= before; i++) await pause(500); assert.ok(await replies() > before, '应收到新回复') }
+    await step('正常玩一轮', async () => {
+      await composer().fill('领取任务奖励'); await composer().press('Enter')
+      await page.getByText('你获得了十枚金币。').first().waitFor()
+      await settled()
+    })
+    await step('正文输出到一半被内容审核掐断：撤回输入放回输入框，错误收起', async () => {
+      await composer().fill('E2E_FILTER_MIDSTREAM 继续'); await composer().press('Enter')
+      await tail().locator('.dsh-tavern-error-withdraw.is-primary').waitFor({ timeout: 60000 })
+      assert.match(await tail().innerText(), /原样重新生成通常还会被拦截/)
+      await page.screenshot({ path: join(output, 'filter-tail.png'), fullPage: true })
+      await tail().locator('.dsh-tavern-error-withdraw').click()
+      await page.waitForFunction(() => /E2E_FILTER_MIDSTREAM 继续/.test(document.querySelector('[data-composer-card] :is(textarea, [contenteditable="true"])')?.value ?? document.querySelector('[data-composer-card] [contenteditable="true"]')?.innerText ?? ''), null, { timeout: 15000 })
+      await page.getByText('这一轮的失败已清除，错误已收起').first().waitFor({ timeout: 15000 })
+      await page.getByRole('button', { name: '重新生成本轮', exact: true }).filter({ visible: true }).waitFor({ state: 'detached', timeout: 15000 }).catch(() => {})
+      report.withdrawDockReplay = await page.locator('.dsh-tavern-choice-trigger').filter({ hasText: '重新生成本轮' }).count()
+      assert.equal(report.withdrawDockReplay, 0, '撤回后不应再提供重放被撤回的输入')
+    })
+    await step('撤回后改写输入再发送，正常回复', async () => {
+      await composer().fill('再次领取奖励'); await composer().press('Enter')
+      await page.getByText('你再次领取了奖励', { exact: false }).first().waitFor({ timeout: 60000 })
+      await settled()
+    })
+    await step('前面的剧情触发审核、之后连续被拦：主推回退上一轮，回退后恢复', async () => {
+      const before = await replies()
+      await composer().fill('E2E_POISON 继续'); await composer().press('Enter')
+      await nextReply(before)
+      await settled(); await pause(1000)
+      await composer().fill('第三次领取'); await composer().press('Enter')
+      await tail().locator('.dsh-tavern-error-replay').waitFor({ timeout: 60000 })
+      await tail().locator('.dsh-tavern-error-replay').click()
+      await tail().locator('.dsh-tavern-error-rewind.is-primary').waitFor({ timeout: 60000 })
+      assert.match(await tail().innerText(), /已连续 2 次.*建议回退上一轮/s)
+      await page.screenshot({ path: join(output, 'filter-repeated.png'), fullPage: true })
+      await tail().locator('.dsh-tavern-error-rewind').click()
+      await page.waitForFunction(() => !document.body.innerText.includes('E2E_POISON 继续'), null, { timeout: 30000 })
+      assert.ok(!JSON.stringify((await savedChat()).messages).includes('E2E_POISON'), '回退上一轮应移除触发审核的那一轮')
+      const kept = await replies()
+      await composer().fill('回退后再领取'); await composer().press('Enter')
+      await nextReply(kept)
+      await page.screenshot({ path: join(output, 'filter-recovered.png'), fullPage: true })
+    })
+  } else if (process.argv.includes('--send-during-settlement')) {
+    // A reload followed by an immediate send must not fail while the previous round still settles.
+    await step('结算未完成时刷新并立即发送下一条消息', async () => {
+      const composer = () => page.getByRole('textbox', { name: /发消息|Message/ })
+      await composer().fill('领取任务奖励'); await composer().press('Enter')
+      await page.getByText('你获得了十枚金币。').first().waitFor()
+      await page.reload()
+      await composer().fill('再次领取奖励'); await composer().press('Enter')
+      const outcome = await Promise.race([
+        page.getByText('你再次领取了奖励，金币累计二十枚。').first().waitFor({ timeout: 90000 }).then(() => 'replied'),
+        page.locator('[data-chat-flow-kind="turn-error"]').first().waitFor({ timeout: 90000 }).then(async () => 'error: ' + await page.locator('[data-chat-flow-kind="turn-error"]').first().innerText()),
+      ])
+      report.sendDuringSettlement = outcome
+      await page.screenshot({ path: join(output, 'send-during-settlement.png'), fullPage: true })
+      assert.equal(outcome, 'replied', '结算期间发送的消息不能直接失败：' + outcome)
+    })
+  } else if (process.argv.includes('--refusal')) {
+    await step('模型回复拒绝语时，正文下方说明不是酒馆故障', async () => {
+      const composer = page.getByRole('textbox', { name: /发消息|Message/ })
+      await composer.fill('E2E_REFUSE_TEXT 继续'); await composer.press('Enter')
+      const notice = page.locator('.dsh-tavern-refusal-notice').filter({ hasText: '模型拒绝继续这段剧情' })
+      await notice.waitFor()
+      await page.reload(); await notice.waitFor()
+      report.refusal = { textNotice: await notice.textContent() }
+      // The reply projection lands after the chat revision; its fork target must not wait for a later rebuild.
+      await page.locator('[data-chat-flow-kind="turn-tail"][data-chat-turn="2"] button[aria-label="从这一轮分叉"]').waitFor({ state: 'attached', timeout: 5000 })
+      // Settlement of this round runs in the background; the next send must follow it.
+      await page.locator('.dsh-tavern-mvu-receipt').filter({ visible: true }).last().waitFor()
+      await page.getByText('后台结算已完成').first().waitFor({ timeout: 60000 }).catch(() => {})
+    })
+    await step('服务商内容审核拦截时，报错旁说明不是酒馆故障', async () => {
+      const composer = page.getByRole('textbox', { name: /发消息|Message/ })
+      await composer.fill('E2E_CONTENT_FILTER 继续'); await composer.press('Enter')
+      const label = page.locator('.dsh-tavern-error-controls').filter({ hasText: '内容审核拦截了这一轮回复' })
+      await label.waitFor()
+      await page.reload(); await label.waitFor()
+      report.refusal.providerNotice = await label.textContent()
+      await page.screenshot({ path: join(output, 'refusal-notices.png'), fullPage: true })
+    })
+    await step('失败轮次之后，每条回复仍可分叉，且分叉能开出新对话', async () => {
+      // Fork targets follow session events written after the chat revision (reply projection).
+      const tails = page.locator('[data-chat-flow-kind="turn-tail"]')
+      for (const turn of ['1', '2']) {
+        const tail = page.locator(`[data-chat-flow-kind="turn-tail"][data-chat-turn="${turn}"]`)
+        await tail.locator('button[aria-label="从这一轮分叉"]').waitFor({ state: 'attached' })
+      }
+      report.refusal.forkButtons = await tails.locator('button[aria-label="从这一轮分叉"]').count()
+      const before = await page.locator('.dsh-tavern-side-row').count()
+      await page.locator('[data-chat-flow-kind="turn-tail"][data-chat-turn="2"] button[aria-label="从这一轮分叉"]').click({ force: true })
+      await page.waitForFunction(count => document.querySelectorAll('.dsh-tavern-side-row').length > count, before, { timeout: 60000 })
+    })
+  } else if (helperApiScenario) {
+    await helperApiChecks({ page, step, savedChat, output, report })
+  } else if (process.argv.includes('--broken-save')) {
+    await brokenSaveChecks({ page, step, savedChat, output, report, root, data, profile, source, restartServer })
+  } else if (process.argv.includes('--regen-template')) {
+    await regenTemplateChecks({ page, step, savedChat, output, report, root })
+  } else if (process.argv.includes('--regen-anomalies')) {
+    await regenAnomalyChecks({ page, step, savedChat, output, report, serverLog: () => log })
+  } else if (process.argv.includes('--scene-add')) {
+    const images = await startSceneImageServer()
+    try { await sceneAddChecks({ page, step, output, report, images, savedChat }) } finally { await images.close() }
+  } else if (process.argv.includes('--real-card-edit')) {
+    await realCardEditChecks({page,step,root,data,output,report})
   } else if (process.argv.includes('--real-character-design')) {
     await realCharacterDesignChecks({page,step,savedChat,root,data,output,report})
   } else if (process.argv.includes('--real-variables')) {
@@ -320,7 +489,7 @@ try {
       const button=page.getByRole('button',{name:'导出 ▾',exact:true})
       await button.waitFor({timeout:5000})
       await button.click()
-      await page.getByRole('menuitem',{name:'纯对话 TXT',exact:true}).waitFor({timeout:1000})
+      await page.getByRole('menuitem',{name:'故事正文',exact:true}).waitFor({timeout:1000})
       await page.keyboard.press('Escape')
       report.exportReadiness={visibleBeforeSessionView:true}
     }finally{release();await page.unrouteAll({behavior:'wait'})}
@@ -436,18 +605,18 @@ try {
   } else if (!process.argv.includes('--card-memory') && !process.argv.includes('--message-rendering-only') && !process.argv.includes('--sidebar-only') && !process.argv.includes('--card-update') && !process.argv.includes('--card-variables')) {
     await step('生成候选项并选择行动，再玩一轮', async () => {
       await page.getByRole('button', { name: '生成候选项', exact: true }).click()
-      await page.getByText('5 个候选项', { exact: true }).waitFor()
+      await page.getByText('5 个', { exact: true }).waitFor()
       assert.deepEqual(inspectSaved(await savedChat()), report.afterReload, '生成候选不能修改正文或金币')
       const candidates = page.locator('.dsh-tavern-candidate-question')
       if (await candidates.getByTitle('展开行动列表', { exact: true }).isVisible()) await candidates.getByTitle('展开行动列表', { exact: true }).click()
+      // Picking a candidate appends it to the input directly.
       await page.getByRole('button', { name: /再次领取奖励/ }).click()
-      assert.equal(await candidates.locator('.dsh-tavern-question-option').count(), 5)
-      await page.getByRole('button', { name: '追加到输入框', exact: true }).click()
       const composer = page.getByRole('textbox', { name: /发消息|Message/ })
       assert.equal(await composer.innerText(), '再次领取奖励')
       await composer.press('Enter')
-      await page.getByText('你再次领取了奖励，金币累计二十枚。', { exact: true }).waitFor()
-      await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: /^金币：20$/ }).waitFor()
+      // A script reply briefly keeps a second, hidden copy of its body mounted.
+      await page.getByText('你再次领取了奖励，金币累计二十枚。', { exact: true }).filter({ visible: true }).first().waitFor()
+      await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: /^金币：20$/ }).waitFor()
       await inspectRound('second-turn', 20, '你再次领取了奖励，金币累计二十枚。')
     })
     await step('重新生成最新正文', async () => {
@@ -455,7 +624,7 @@ try {
       await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('雨夜重写')
       await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
       await page.getByText('雨夜里，你重新领取了奖励。', { exact: true }).filter({ visible: true }).first().waitFor()
-      await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: /^金币：30$/ }).waitFor()
+      await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: /^金币：30$/ }).waitFor()
       assert.equal(await page.getByText('雨夜里，你重新领取了奖励。', { exact: true }).filter({ visible: true }).count(), 1)
       await inspectRound('regenerated', 30, '雨夜里，你重新领取了奖励。')
       assert.equal(await page.getByText('你再次领取了奖励，金币累计二十枚。', { exact: true }).filter({ visible: true }).count(), 0)
@@ -472,7 +641,7 @@ try {
       await inspectRound('edited', 30, '手工编辑：你把奖励放进了背包。')
       await page.reload()
       await page.getByText('手工编辑：你把奖励放进了背包。', { exact: true }).filter({ visible: true }).first().waitFor()
-      await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: /^金币：30$/ }).waitFor()
+      await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: /^金币：30$/ }).waitFor()
       const afterEdit = (await savedChat()).messages.at(-1)
       assert.deepEqual(afterEdit.variables, beforeEdit.variables, '编辑正文不能重新结算或修改变量')
       assert.deepEqual(afterEdit.mvu.receipt, beforeEdit.mvu.receipt)
@@ -481,7 +650,7 @@ try {
     await step('回退最新一轮，恢复上一轮金币', async () => {
       await page.getByRole('button', { name: '更多 ▾', exact: true }).click()
       await page.getByRole('menuitem', { name: /回退第.*轮|回退本轮/ }).click()
-      await page.frameLocator('.dsh-tavern-status-runtime iframe').locator('#e2e-gold').filter({ hasText: /^金币：10$/ }).waitFor()
+      await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: /^金币：10$/ }).waitFor()
       inspectSaved(await savedChat())
       await page.reload()
       await inspectScreen()
@@ -489,8 +658,26 @@ try {
       assert.equal(await page.getByText('手工编辑：你把奖励放进了背包。', { exact: true }).count(), 0)
       await inspectRound('after-rollback', 10, '你获得了十枚金币。', 1)
     })
+    if (process.argv.includes('--rollback-resettle')) {
+      // Discussion #131: after a rollback, the restored latest round must be re-settleable.
+      await step('回退后对新的最新一轮重新结算变量', async () => {
+        const prose = chat => chat.messages.map(message => ({ role: message.role, text: message.sourceText ?? message.text }))
+        const before = await savedChat()
+        const receipt = page.locator('.dsh-tavern-mvu-receipt').filter({ visible: true }).last()
+        report.rollbackResettle = { receiptStatus: await receipt.getAttribute('data-status') }
+        await receipt.locator('summary').click()
+        await receipt.getByRole('button', { name: '重新结算变量', exact: true }).click()
+        await page.getByPlaceholder('例如：这轮还没有交付物品，不要扣除库存。').fill('E2E 修正金币为四十')
+        await page.getByRole('button', { name: '重新结算', exact: true }).click()
+        await page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])').locator('#e2e-gold').filter({ hasText: /^金币：40$/ }).waitFor()
+        assert.deepEqual(prose(await savedChat()), prose(before), '重新结算不能改写正文或新增轮次')
+        await page.reload()
+        await inspectRound('rollback-resettled', 40, '你获得了十枚金币。', 1)
+      })
+    } else {
     await playControls({ page, step, savedChat, inspectRound, output, report })
     await presetSwitch({ page, step, savedChat, inspectRound, output, report })
+    }
   }
   if (process.argv.includes('--card-memory')) await cardMemoryChecks({ page, step, data, output, report, savedChat })
   if (process.argv.includes('--card-variables')) await cardVariableUpdateChecks({page,step,savedChat,data,output,report})
@@ -501,7 +688,7 @@ try {
     const before=await savedChat()
     await restartServer()
     const expected=[...before.messages].reverse().find(row=>row.variables?.[row.swipeId||0]).variables[0].stat_data.gold
-    await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame').locator('#e2e-gold').filter({hasText:new RegExp('^金币：'+expected+'$')}).waitFor()
+    await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])').locator('#e2e-gold').filter({hasText:new RegExp('^金币：'+expected+'$')}).waitFor()
     // The long-archive fixture deliberately starts with unfinished historical
     // display derivation. Restart may finish those four derived fields; story,
     // variables, receipts and every other extension field must remain identical.
@@ -516,6 +703,17 @@ try {
     assert.deepEqual(persistentMessages((await savedChat()).messages),persistentMessages(before.messages))
     await assertNativeStorage()
     report.nativeFormat.restart=true
+  })
+  // Every scenario ends with the story save agreeing with what the model sees (#196).
+  if (process.env.TAVERN_E2E_BROKEN_STOP !== '1' && !['--settlement-performance', '--display-regression', '--text-colors', '--opening-only'].some(flag => process.argv.includes(flag))) await step('存档与模型上下文一致', async () => {
+    const chat = await savedChat().catch(() => null)
+    if (!chat?.sessionId) return
+    const result = await page.evaluate(async sessionId => (await fetch('/api/dsh-tavern/storyAlignment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) })).json(), chat.sessionId)
+    report.storyAlignment = result.alignment ?? result
+    assert.ok(result.ok !== false, '核对接口失败：' + JSON.stringify(result))
+    assert.ok(!result.alignment || result.alignment.aligned, '存档与模型上下文不一致：' + JSON.stringify(result.alignment))
+    // Rounds played in this run record where they entered the native session.
+    if (result.alignment) assert.ok(result.alignment.anchors.checked > 0 || !chat.messages.some(row => row.role === 'assistant' && !row.greeting), '新回合应记录原生锚点')
   })
   assert.deepEqual(errors, [], '整个验收不得出现未捕获浏览器异常')
   assert.doesNotMatch(log, /服务端模板进程异常|Unsupported or expired template RPC/, '验收期间模板子进程不得异常退出')

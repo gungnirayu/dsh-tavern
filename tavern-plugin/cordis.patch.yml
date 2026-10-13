@@ -53,6 +53,11 @@
   config:
     search: true
     fetch: false
+# 插件配置与 Agent 预设是开发者层面的设置，玩家无需看到；Tavern 固定使用酒馆预设。
+- id: ui-settings-plugins
+  disabled: true
+- id: ui-agent-preset
+  disabled: true
 - insert:
     - id: tavern-cordis-inspect
       name: dsh-tavern-plugin/cordis-inspect

@@ -4,33 +4,6 @@ import { Session } from './fixtures/dsh-session-host.mjs'
 
 import { retireForegroundFrames } from '../tavern-plugin/lib/domain/foreground-frame-retirement.js'
 
-import { readFile } from 'node:fs/promises'
-import vm from 'node:vm'
-const source = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-const helper = source.slice(source.indexOf('  async function retireOldForegroundFrames('), source.indexOf('  autoCompaction = createAutoCompaction('))
-function frames() {
-  const session = Session.create('frame-entry')
-  for (const turn of [1, 2]) session.append('user/message', { id: 'f-' + turn, role: 'user', content: [{ type: 'text', text: 'frame-' + turn }], source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'foreground-frame', trace: { turn } } }, { surfaceOp: 'append' })
-  return session
-}
-
-test('生产手动压缩入口在摘要模型读取之前清理闲置会话的全部指引', async () => {
-  const session = frames(), calls = []
-  const start = source.indexOf('    async compact(id, side, options, signal) {')
-  const method = source.slice(start, source.indexOf('\n  })', start))
-  const context = {
-    retireForegroundFrames, sessionStore: { flush: async () => calls.push('flush') },
-    withCompactionSession: async (_id, work) => work({ session, phase: { kind: 'idle' } }),
-    agentCompaction: async () => ({ compactNow: async () => {
-      assert.doesNotMatch(JSON.stringify(session.deriveMessages().map(message => message.content)), /frame-/)
-      calls.push('summary')
-    } })
-  }
-  const entry = vm.runInNewContext(helper + '\n({' + method + '})', context)
-  await entry.compact('front', 'foreground', {}, undefined)
-  assert.deepEqual(calls, ['flush', 'summary'])
-})
-
 test('旧存档无 trace 的指引可清理，其他插件内容不受影响', () => {
   const session = Session.create('legacy-frames')
   for (const [id, plugin, form] of [['legacy', 'dsh-tavern', 'foreground-frame'], ['foreign', 'other', 'foreground-frame'], ['snapshot', 'dsh-tavern', 'snapshot']]) {

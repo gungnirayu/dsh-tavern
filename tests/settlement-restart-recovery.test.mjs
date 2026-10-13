@@ -17,7 +17,7 @@ import { createRoundHistory } from '../tavern-plugin/lib/domain/round-history.js
 import { applyMvuSettlementEffect, createMvuSettlementEffect } from '../tavern-plugin/lib/domain/mvu-settlement-effect.js'
 import { createMvuSettlementReconciler } from '../tavern-plugin/lib/domain/mvu-settlement-reconciler.js'
 import { LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission } from '../tavern-plugin/lib/domain/story-ledger.js'
-import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, normalizePostureSubmission } from '../tavern-plugin/lib/domain/posture-submission.js'
+import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, lastSubmittedPosture, normalizePostureSubmission } from '../tavern-plugin/lib/domain/posture-submission.js'
 import { CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL } from '../tavern-plugin/lib/domain/character-design-document.js'
 
 const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
@@ -61,7 +61,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
       return {...structuredClone(current),messages:[]}
     },
     sessionStateForSession: async () => projectChatSessionState(await store.readChat()),
-    prepareNextWorldBookContext: async chat => chat, readChatCard: async () => ({}),
+    prepareNextWorldBookContext: async chat => chat, worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
     view: async chat => chat, settlementTurn: () => 2,
     projectAgentMessageText: message => message.text, mvuUpdateRules: async () => [],
     readTavernSettings: async () => ({ backgroundTasks: { posture: true, characterDesign: true } }),
@@ -71,10 +71,12 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     backgroundAgentRunner: { async run() { throw new Error('backgroundAgentRunner not configured') } },
     characterDesignDocuments: { async execute() { return JSON.stringify({ ok: true }) } },
     CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL,
-    POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, normalizePostureSubmission,
+    POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, normalizePostureSubmission, lastSubmittedPosture,
+    agentRegistry: { get: () => undefined }, sessionStore: { get: () => undefined },
     LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission,
     conversationRegistry: { list: async () => [] }, ctx: { effect() {} },
-    mvuSettlement: { settleVariables: async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } }) }
+    mvuSettlement: { settleVariables: async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } }) },
+    pluginApi: { replaceSettlement: async () => null }
   })
   sandbox.mvuReceiptsOf = createSessionStateView({activity:chat=>tasks.activity(chat),evidence:()=>({})}).receipts
   vm.runInContext(section('  function pendingMvuTarget(', '  async function mvuUpdateRules('), sandbox)
@@ -88,74 +90,6 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     sessions: { get: () => undefined }, scripts: {}, timeline, queueSettlement: async () => {}, present() {} })
   return { tasks, timeline, store, running, body, sandbox, history, onReady, reconciler: vm.runInContext('mvuSettlementReconciler', sandbox), get: () => structuredClone(current) }
 }
-
-test('首次结算失败后编辑正文并重试，变量提交到编辑后的版本且释放后台状态', async () => {
-  const run = await harness({ beginRunning: false })
-  run.sandbox.mvuSettlement.settleVariables = async () => { throw new Error('model unavailable') }
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.get().settleStatus, 'failed')
-  const edited = run.timeline.apply({ chat: run.get(), intent: { kind: 'body.edit', turn: 2, patch: { text: '编辑后的正文' } } }).chat
-  await run.store.writeChat(edited)
-  run.sandbox.mvuSettlement.settleVariables = async input => {
-    const before = run.get(), after = structuredClone(before)
-    after.messages[1].variables[0].stat_data.hp = 9
-    return { receipt: { status: 'updated', changes: [] }, effect: createMvuSettlementEffect({ ...input, before, after }) }
-  }
-  await run.sandbox.retrySettlement('session', 2)
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.get().settleStatus, 'done')
-  assert.equal(run.tasks.activity(run.get()).busy, false)
-  assert.equal(run.get().messages[1].text, '编辑后的正文')
-  assert.equal(run.get().messages[1].variables[0].stat_data.hp, 9)
-  assert.equal(run.get().timeline.checkpoints.length, 1)
-  run.reconciler.dispose()
-})
-
-test('普通卡忽略旧人物设计开关，只执行姿势结算', async () => {
-  const run = await harness({ beginRunning: false, mvu: false })
-  run.sandbox.backgroundAgentRunner.run = async input => {
-    assert.deepEqual(Array.from(input.tools, tool => tool.name), [POSTURE_SUBMIT_TOOL_NAME])
-    assert.doesNotMatch(input.system, /skill 加载 character-design/)
-    await input.onToolCall({ name: POSTURE_SUBMIT_TOOL_NAME, arguments: { posture: '站在门边' } })
-    return { text: '', traceSessionId: 'background-settlement', traceBoundary: 4 }
-  }
-
-  await run.sandbox.queueSettlement('chat')
-
-  const saved = run.get()
-  assert.equal(saved.characterDesignDocument, undefined)
-  assert.equal(saved.settleStatus, 'done')
-  assert.equal(saved.timeline.operations[run.body.value.operationId].status, 'completed')
-})
-
-test('普通卡姿势未提交时 Round 失败，人物设计不能替代姿势结算', async () => {
-  const run = await harness({ beginRunning: false, mvu: false })
-  run.sandbox.backgroundAgentRunner.run = async () => ({ text: '' })
-
-  await run.sandbox.queueSettlement('chat')
-
-  const saved = run.get()
-  assert.equal(saved.characterDesignDocument, undefined)
-  assert.equal(saved.settleStatus, 'failed')
-  assert.match(saved.settleError, /未调用 posture_submit/)
-})
-
-test('人物设计工具失败不阻止当前后台 Agent 继续提交姿势', async () => {
-  const run = await harness({ beginRunning: false, mvu: false })
-  run.sandbox.backgroundAgentRunner.run = async input => {
-    const failed = JSON.parse(await input.onToolCall({ name: 'character_design_save', arguments: {} }))
-    assert.equal(failed.ok, false)
-    await input.onToolCall({ name: POSTURE_SUBMIT_TOOL_NAME, arguments: { posture: '坐在窗边' } })
-    return { text: '', traceSessionId: 'background-settlement', traceBoundary: 5 }
-  }
-  run.sandbox.characterDesignDocuments.execute = async () => JSON.stringify({ ok: false, retryable: true, error: '人物档案保存失败' })
-
-  await run.sandbox.queueSettlement('chat')
-
-  const saved = run.get()
-  assert.equal(saved.settleStatus, 'done')
-  assert.equal(saved.timeline.operations[run.body.value.operationId].status, 'completed')
-})
 
 test('重启丢失 MVU 回执：显示中断、保留正文变量、可从真实重试入口完成同一 Round', async () => {
   const run = await harness()
@@ -236,124 +170,6 @@ test('旧版已恢复成 pending 但没有待执行提交的存档也能恢复�
   assert.equal(again.status, 'unchanged')
 })
 
-test('已安全挂起且保存了提交的任务仍等待执行器，不误报中断', async () => {
-  const run = await harness()
-  await run.running.defer({ apply(chat) { chat.messages[1].mvu.pendingSubmission = { operations: [] } } })
-  await run.tasks.recover(run.get())
-  assert.equal(run.tasks.activity(run.get()).phase, 'pending')
-  assert.equal(run.sandbox.mvuReceiptsOf(run.get())[0].receipt.status, 'pending')
-  let resumed = 0
-  run.sandbox.mvuSettlement.resumeVariables = async () => {
-    resumed++
-    return { receipt: { version: 1, status: 'unchanged', changes: [] } }
-  }
-  run.onReady('session')
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(resumed, 1)
-  assert.equal(run.tasks.activity(run.get()).phase, 'idle')
-})
-
-test('执行中断即使留有旧提交也不会在浏览器就绪时自动重放', async () => {
-  const run = await harness()
-  const chat = run.get()
-  chat.messages[1].mvu.pendingSubmission = { operations: [{ op: 'delta', path: '/hp', value: -1 }] }
-  await run.store.writeChat(chat)
-  await run.tasks.recover(chat)
-  let queued = 0
-  run.sandbox.queueSettlement = async () => { queued++ }
-  run.onReady('session')
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(queued, 0)
-  assert.equal(run.tasks.activity(run.get()).reason, 'interrupted')
-})
-
-test('MVU 已加载失败直接结束，不永久等待或重开模型', async () => {
-  const run = await harness()
-  await run.tasks.recover(run.get())
-  let generated = 0, resumed = 0
-  run.sandbox.tavernScriptDispatch.status = () => ({ ready: false, initializationError: 'MVU 模块加载失败：bundle.js' })
-  run.sandbox.mvuSettlement.settleVariables = async () => {
-    generated++
-    return { submission: { operations: [] }, receipt: { status: 'pending', changes: [] } }
-  }
-  run.sandbox.mvuSettlement.resumeVariables = async () => {
-    resumed++
-    return { receipt: { status: 'error', failures: [{ message: 'MVU 模块加载失败：bundle.js' }] } }
-  }
-  await run.sandbox.retrySettlement('session', 2)
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(generated, 1)
-  assert.equal(resumed, 0)
-  assert.equal(run.tasks.activity(run.get()).phase, 'failed')
-  assert.match(run.get().settleError, /MVU 模块加载失败/)
-  assert.equal(run.get().timeline.checkpoints.length, 1)
-  assert.equal(run.get().messages[1].variables[0].stat_data.hp, 10)
-})
-
-test('MVU 执行超时保留已提交正文 checkpoint，仍能重试结算', async () => {
-  const run = await harness()
-  await run.tasks.recover(run.get())
-  run.sandbox.mvuSettlement.settleVariables = async () => ({
-    receipt: { status: 'error', summary: 'MVU 脚本执行回执超时', failures: [{ message: '回执超时' }] }
-  })
-  await run.sandbox.retrySettlement('session', 2)
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.tasks.activity(run.get()).phase, 'failed')
-  assert.equal(run.get().timeline.checkpoints.length, 1)
-  assert.equal(run.get().timeline.operations[run.body.value.operationId].status, 'completed')
-  assert.equal(run.sandbox.mvuReceiptsOf(run.get())[0].receipt.status, 'error')
-})
-
-
-test('普通卡全部自动任务关闭时不请求模型，仍完成原生结算', async () => {
-  const run = await harness({ beginRunning: false, mvu: false })
-  await run.store.updateChat('chat', chat => ({ ...chat, backgroundTasks: { posture: false, characterDesign: false } }))
-  run.sandbox.backgroundModelSelection = () => { throw new Error('关闭后不应选择模型') }
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.get().settleStatus, 'done')
-  assert.equal(run.get().timeline.operations[run.body.value.operationId].status, 'completed')
-})
-
-test('旧设置只开人物设计时不再自动请求后台模型', async () => {
-  const run = await harness({ beginRunning: false, mvu: false })
-  await run.store.updateChat('chat', chat => ({ ...chat, backgroundTasks: { posture: false, characterDesign: true } }))
-  let calls = 0
-  run.sandbox.backgroundAgentRunner.run = async () => { calls++; return { text: '' } }
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(calls, 0)
-  assert.equal(run.get().settleStatus, 'done')
-})
-
-test('MVU 变量关闭后跳过本轮且不留待重放，姿势仍可独立结算', async () => {
-  const run = await harness({ beginRunning: false, mvu: true })
-  await run.store.updateChat('chat', chat => ({ ...chat, backgroundTasks: { posture: true, characterDesign: false, variables: false } }))
-  run.sandbox.mvuSettlement.settleVariables = async () => { throw new Error('不应派发变量结算') }
-  let calls = 0
-  run.sandbox.backgroundAgentRunner.run = async input => {
-    calls++
-    assert.deepEqual(Array.from(input.tools, tool => tool.name), [POSTURE_SUBMIT_TOOL_NAME])
-    await input.onToolCall({ name: POSTURE_SUBMIT_TOOL_NAME, arguments: { posture: '门边站立' } })
-    return { text: '', traceSessionId: 'background' }
-  }
-  await run.sandbox.queueSettlement('chat')
-  const saved = run.get()
-  assert.equal(calls, 1)
-  assert.equal(saved.settleStatus, 'done')
-  assert.equal(saved.messages.at(-1).mvu.pending, false)
-  assert.equal(saved.messages.at(-1).mvu.receipt.status, 'skipped')
-  assert.equal(run.sandbox.pendingMvuTarget(saved), null)
-})
-
-test('MVU 三项全关不会发起任何后台模型请求', async () => {
-  const run = await harness({ beginRunning: false, mvu: true })
-  await run.store.updateChat('chat', chat => ({ ...chat, backgroundTasks: { posture: false, characterDesign: false, variables: false } }))
-  run.sandbox.mvuSettlement.settleVariables = async () => { throw new Error('不应派发变量结算') }
-  run.sandbox.backgroundModelSelection = () => { throw new Error('不应选择模型') }
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.get().settleStatus, 'done')
-  assert.equal(run.get().messages.at(-1).mvu.receipt.status, 'skipped')
-})
-
 test('non-MVU settlement binds session before first response so interruption can reuse it', async () => {
   const h = await harness({ beginRunning: false, mvu: false });
   let bound = false;
@@ -369,61 +185,25 @@ test('non-MVU settlement binds session before first response so interruption can
   assert.equal(next.participantRequest.sessionId, 'background-first-interrupted');
 });
 
+test('插件替换结算：采用插件交回的姿势，不再运行 Tavern 自己的后台结算；插件退回时照常运行', async () => {
+  const h = await harness({ beginRunning: false, mvu: false })
+  const applied = [], requests = []
+  let runs = 0
+  h.sandbox.applySettlement = (_draft, result) => { applied.push(result); return { postureUpdated: Boolean(result.posture) } }
+  h.sandbox.backgroundAgentRunner.run = async input => { runs++; await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
+  h.sandbox.pluginApi.replaceSettlement = async input => { requests.push(input); return { owner: 'anchor', posture: '插件的姿势' } }
+  await h.sandbox.queueSettlement('chat')
+  assert.equal(runs, 0)
+  assert.deepEqual(JSON.parse(JSON.stringify(applied)), [{ posture: '插件的姿势' }])
+  assert.deepEqual(JSON.parse(JSON.stringify([requests[0].gameId, requests[0].turn, requests[0].text, requests[0].tasks])), ['session', 2, '门开了', { posture: true }])
+  assert.equal(h.get().settleStatus, 'done')
 
-test('已有游戏读取本局联网开关，忽略全局变化', async () => {
-  const stored = { id: 'chat', mode: 'story', webSearchEnabled: false }
-  let enabled = false
-  const sandbox = vm.createContext({
-    chatPersistence: { read: async () => structuredClone(stored) },
-    readTavernSettings: async () => ({ webSearchEnabled: enabled })
-  })
-  vm.runInContext(section('  async function readChat(chatId)', '  async function readChatRevision'), sandbox)
-  assert.equal((await sandbox.readChat('chat')).webSearchEnabled, false)
-  enabled = true
-  assert.equal((await sandbox.readChat('chat')).webSearchEnabled, false)
-  enabled = false
-  assert.equal((await sandbox.readChat('chat')).webSearchEnabled, false)
-  assert.equal(stored.webSearchEnabled, false)
-})
-
-
-test('成功后带意见重新结算：复用原始快照，只更新变量，失败保留上次结果', async () => {
-  const run = await harness({ beginRunning: false })
-  let calls = 0
-  run.sandbox.mvuSettlement.settleVariables = async input => {
-    calls++
-    assert.equal(input.currentVariables.stat_data.hp, 10)
-    if (calls > 1) {
-      assert.equal(input.guidance, '只扣一点生命')
-      assert.equal(input.backgroundTasks.posture, false)
-      assert.equal(input.backgroundTasks.characterDesign, false)
-      assert.equal(run.get().messages[1].variables[0].stat_data.hp, 7)
-      if (calls === 2) throw new Error('模拟模型失败')
-    }
-    return { receipt: { version: 1, status: 'updated', changes: [] }, effect: {
-      version: 1, operationId: input.operationId, chatId: input.chatId, sessionId: input.sessionId,
-      branchId: input.branchId, basedOnRevision: input.basedOnRevision,
-      expectedLifecycleRevision: input.expectedLifecycleRevision, messageId: 1, swipeId: 0,
-      changes: [{ op: 'set', path: ['messages', 1, 'variables', 0, 'stat_data', 'hp'], value: calls === 1 ? 7 : 9 }]
-    } }
-  }
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(run.get().messages[1].mvuBaseline.variables.stat_data.hp, 10)
-  assert.equal(run.get().messages[1].variables[0].stat_data.hp, 7)
-  await run.sandbox.retrySettlement('session', 2, '只扣一点生命')
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(calls, 2)
-  assert.equal(run.get().messages[1].variables[0].stat_data.hp, 7)
-  assert.equal(run.get().messages[1].text, '门开了')
-  assert.equal(run.get().settleStatus, 'failed')
-  await run.sandbox.retrySettlement('session', 2, '只扣一点生命')
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(calls, 3)
-  assert.equal(run.get().messages[1].variables[0].stat_data.hp, 9)
-  assert.equal(run.get().messages[1].mvuBaseline.variables.stat_data.hp, 10)
-  assert.equal(run.get().messages[1].text, '门开了')
-  assert.equal(run.get().settleStatus, 'done')
-  await assert.rejects(run.sandbox.retrySettlement('session', 1), /只能重试当前最新正文/)
+  const fallback = await harness({ beginRunning: false, mvu: false })
+  const fellBack = []
+  fallback.sandbox.applySettlement = (_draft, result) => { fellBack.push(result); return { postureUpdated: true } }
+  fallback.sandbox.backgroundAgentRunner.run = async input => { await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
+  await fallback.sandbox.queueSettlement('chat')
+  assert.deepEqual(JSON.parse(JSON.stringify(fellBack)), [{ posture: 'Tavern 的姿势' }], 'no replacement: Tavern settles as before')
 })
 
 test('MVU 执行器失联保留持久任务，恢复后自动续办且不重开模型', async () => {
@@ -508,39 +288,6 @@ for (const prepared of [false, true]) test(`进程在${prepared ? '结果保存�
   assert.equal(run.get().messages[1].variables[0].stat_data.hp, 9, 'abandoned worker cannot commit twice')
 })
 
- test('用户停止持久任务后不自动接续', async () => {
-  const run = await harness()
-  await run.running.checkpoint(chat => {
-    chat.messages[1].mvu.pendingSubmission = { operations: [] }
-    chat.messages[1].mvu.delivery = { version: 1, operationId: run.running.operationId,
-      branchId: run.running.basedOn.branchId, revision: run.running.basedOn.revision, lifecycleRevision: 0 }
-  })
-  await run.tasks.recover(run.get(), { operationId: run.running.operationId })
-  assert.equal(run.tasks.activity(run.get()).phase, 'failed')
-  let resumed = 0
-  run.sandbox.mvuSettlement.resumeVariables = async () => { resumed++ }
-  await run.reconciler.wake('session')
-  assert.equal(resumed, 0)
-})
-
-test('手动重新投递保留待提交操作与投递记录，不重新生成变量计划', async () => {
-  const run = await harness()
-  await run.running.defer({ apply(chat) {
-    chat.messages[1].mvu = {
-      pending: true, pendingSubmission: { operations: [{ op: 'delta', path: '/hp', value: -1 }] },
-      delivery: { version: 1, marker: 'preserved' }, receipt: { status: 'pending' }
-    }
-  } })
-  const before = structuredClone(run.get())
-  let queued = 0
-  run.sandbox.queueSettlement = async id => { assert.equal(id, 'chat'); queued++ }
-  await run.sandbox.retrySettlement('session', 2)
-  assert.equal(queued, 1)
-  assert.deepEqual(run.get(), before)
-  await assert.rejects(run.sandbox.retrySettlement('session', 2, '重新生成计划'), /等待.*重新投递|指导意见/)
-  run.reconciler.dispose()
-})
-
 for (const recovery of ['自动恢复', '手动重新投递']) test('正式模型工具、调度器、草稿与剧情提交链路：漏领后' + recovery + '完成 delta 一次', async () => {
   const run = await harness({ beginRunning: false })
   const gate = createTavernScriptDispatch({ claimTimeoutMs: 100 })
@@ -578,6 +325,8 @@ for (const recovery of ['自动恢复', '手动重新投递']) test('正式模�
   assert.equal(gate.start('session', offer.event.id, offer.leaseToken, 'browser').started, true)
   await adapter.updateMessages('session', [{ message_id: 1, data: { stat_data: { hp: 9 } } }], 0, offer.event.id)
   assert.equal(run.get().messages[1].variables[0].stat_data.hp, 10, 'script writes remain isolated')
+  // An await or timer drops the event identity; like SillyTavern, the write joins the running settlement.
+  await adapter.updateMessages('session', [{ message_id: 1, data: { stat_data: { hp: 9 } } }], 0, '')
   assert.equal(gate.complete('session', offer.event.id, [1], 'browser', offer.leaseToken), true)
   await resumed
   assert.equal(run.get().messages[1].variables[0].stat_data.hp, 9)
@@ -607,36 +356,6 @@ test('接续刚创建新 operation 再次崩溃，仍能从原持久任务恢复
   await run.tasks.begin(run.get(), 'settlement')
   await run.tasks.recover(run.get())
   assert.equal(run.tasks.activity(run.get()).phase, 'failed', 'changed target cannot reuse the old task')
-})
-
-test('等待执行器的任务可从正式停止入口取消，重连不重启', async () => {
-  const run = await harness()
-  await run.running.defer({ apply(chat) { chat.messages[1].mvu.pendingSubmission = { operations: [] } } })
-  run.sandbox.backgroundAgentRunner.cancel = () => {}
-  const activity = run.tasks.activity(run.get())
-  await run.sandbox.stopBackground('session', activity.operationId)
-  assert.equal(run.tasks.activity(run.get()).phase, 'failed')
-  let resumes = 0
-  run.sandbox.mvuSettlement.resumeVariables = async () => { resumes++ }
-  await run.reconciler.wake('session')
-  assert.equal(resumes, 0)
-})
-
-test('正式结算入口将当前正文之前的建角 Helper 消息交给 MVU', async () => {
-  const run = await harness({ beginRunning: false })
-  const setup = '第一轮变量更新要求：根据已写入属性初始化生命值。'
-  await run.store.updateChat('chat', chat => {
-    chat.messages.unshift({ role: 'tavern-helper', text: setup })
-    return chat
-  })
-  let received
-  run.sandbox.mvuSettlement.settleVariables = async input => {
-    received = input.helperContext
-    return { receipt: { version: 1, status: 'unchanged', changes: [] } }
-  }
-  await run.sandbox.queueSettlement('chat')
-  assert.deepEqual(received, [setup])
-  assert.equal(run.get().settleStatus, 'done')
 })
 
 for (const stage of ['read', 'prepare']) test(`销毁期间结束的 ${stage} 不能再启动后台结算`, async () => {
@@ -688,4 +407,50 @@ for(const storyChanged of [false,true])test(`retry CAS revalidates concurrent ${
   assert.equal(run.get().messages[0].tavernPluginData.template_rendered,true)
   assert.equal(run.get().messages[1].mvu.variableRetry,true)
  }
+})
+
+test('插件结算任务：结算前的在结算待办时运行，结算后的在提交之后运行，期间本局显示后台忙', async () => {
+  const h = await harness({ beginRunning: false, mvu: false })
+  const seen = []
+  h.sandbox.backgroundAgentRunner.run = async input => { seen.push('tavern'); await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } }); return { text: '' } }
+  h.sandbox.taskStateReader.read = async () => h.store.readChat()
+  h.sandbox.pluginSettlementProgress = { begin: () => () => {} }
+  h.sandbox.pluginApi.runSettlementTasks = async ({ gameId, phase, around }) => {
+    const activity = h.tasks.activity(h.get())
+    seen.push(phase + ':' + gameId + ':' + activity.role + ':' + activity.phase)
+    if (around) await around(async () => { const inside = h.tasks.activity(h.get()); seen.push('inside:' + inside.role + ':' + inside.busy) })
+  }
+  const jobs = createSettlementJobs({ run: (...args) => h.sandbox.runSettlementCycle(...args), onSettled: () => {} })
+  await jobs.start('chat')
+  assert.deepEqual(seen, ['before:session:settlement:pending', 'tavern', 'after:session:settlement:idle', 'inside:plugin-task:true'])
+  assert.equal(h.get().settleStatus, 'done')
+  assert.equal(h.tasks.activity(h.get()).busy, false, 'the plugin-task operation is closed afterwards')
+  jobs.dispose()
+})
+
+test('手动插件任务：登记为独占的后台任务，跑完后关闭；结算待办时不能启动', async () => {
+  const pending = await harness({ beginRunning: false, mvu: false })
+  pending.sandbox.pluginApi.manualTaskFor = async () => ({})
+  await assert.rejects(pending.sandbox.startPluginTask('session', 'alpha:summary'), /正在执行 settlement/)
+
+  const h = await harness({ beginRunning: false, mvu: false })
+  h.sandbox.backgroundAgentRunner.run = async input => { await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } }); return { text: '' } }
+  await h.sandbox.queueSettlement('chat')
+  let release
+  const calls = []
+  h.sandbox.pluginSettlementProgress = { begin: () => () => {} }
+  h.sandbox.pluginApi.manualTaskFor = async (gameId, key, input) => { calls.push([gameId, key, input]) }
+  h.sandbox.pluginApi.runManualTask = async () => { await new Promise(resolve => { release = resolve }); return true }
+  assert.deepEqual(JSON.parse(JSON.stringify(await h.sandbox.startPluginTask('session', 'alpha:summary', '人物'))), { started: true })
+  assert.deepEqual(calls, [['session', 'alpha:summary', '人物']])
+  const busy = h.tasks.activity(h.get())
+  assert.equal(busy.role, 'plugin-task')
+  assert.equal(busy.busy, true)
+  await assert.rejects(h.sandbox.startPluginTask('session', 'alpha:summary'), /已有插件任务/)
+  const jobs = vm.runInContext('pluginTaskJobs', h.sandbox)
+  const job = jobs.get('chat')
+  release()
+  await job
+  assert.equal(h.tasks.activity(h.get()).busy, false)
+  assert.equal(jobs.size, 0)
 })

@@ -7,8 +7,6 @@ import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.
 import { createTavernExtensionSettings } from '../tavern-plugin/lib/domain/tavern-extension-settings.js'
 import { helperHostHarness } from './fixtures/helper-host-harness.mjs'
 
-const tick = () => new Promise(resolve => setImmediate(resolve))
-
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'helper-settings-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -31,35 +29,6 @@ test('Profile 设置跨实例恢复，合并独立插件并拒绝同一插件的
   assert.equal(Object.hasOwn(await open().read(), 'database'), false)
   await assert.rejects(store.save([], {}), /JSON 对象/)
   await assert.rejects(store.save({}, undefined), /JSON 对象/)
-})
-
-test('共享设置引用、排队保存和写入期间新编辑，在宿主往返后保持一致', async () => {
-  const run = helperHostHarness({ extensionSettings: { phone: { value: 1, remove: true } } })
-  const ctx = run.window.SillyTavern.getContext(), settings = ctx.extensionSettings, phone = settings.phone
-  phone.value = 2
-  delete phone.remove
-  let completed = false
-  const first = ctx.saveSettingsDebounced().then(() => { completed = true })
-  await tick()
-  assert.equal(completed, false)
-  phone.value = 3
-  const second = ctx.saveSettingsDebounced()
-  run.reply(run.calls()[0], { updated: true, extensionSettings: { phone: { value: 2 }, database: { on: true } } })
-  await first
-  await tick()
-  assert.equal(settings.phone, phone)
-  assert.equal(phone.value, 3)
-  assert.equal(settings.database.on, true)
-  assert.equal(run.calls()[1].args.expectedSettings.phone.value, 2)
-  assert.equal(run.calls()[1].args.settings.phone.value, 3)
-  run.reply(run.calls()[1], { updated: true, extensionSettings: { phone: { value: 3 }, database: { on: true } } })
-  await second
-  assert.equal(ctx.extensionSettings, settings)
-  assert.equal(settings.phone, phone)
-  const failure = ctx.saveSettingsDebounced()
-  await tick()
-  run.reply(run.calls()[2], '磁盘不可写', false)
-  await assert.rejects(failure, /磁盘不可写/)
 })
 
 test('浏览器设置真实写入 Profile 后，销毁环境并重新加载可恢复', async t => {

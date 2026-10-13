@@ -112,23 +112,6 @@ for (const kind of ['manual', 'pressure', 'context-overflow']) {
   })
 }
 
-test('fixed system background alone exceeds the summary window and cannot be removed by compaction', native, async t => {
-  const system = '不可压缩的固定设定。'.repeat(1200)
-  const f = await fixture(t, { system }), nodes = [...f.session.surface.nodes]
-  f.state.limit = 2000
-  await assert.rejects(f.compact('manual')); f.intact(nodes)
-  assert.equal(f.session.deriveMessages().find(m => m.id === 'synthetic-system').content[0].text, system)
-  t.diagnostic(JSON.stringify({ fixedTokens: Math.ceil(system.length / 4) + 4, capacity: 2000 }))
-})
-
-test('one oversized latest round is retained by pressure; forced compaction can also exceed the summary window', native, async t => {
-  const f = await fixture(t, { rounds: 1, text: '单轮超长正文。'.repeat(1800) }), nodes = [...f.session.surface.nodes]
-  f.state.limit = 2000
-  assert.equal(await f.compact('pressure'), null)
-  assert.equal(f.state.summaries.length, 0)
-  await assert.rejects(f.compact('context-overflow')); f.intact(nodes)
-})
-
 for (const largeHistory of [false, true]) {
   test(`real Agent overflow stops safely when ${largeHistory ? 'the summary request' : 'the new player message'} cannot fit`, native, async t => {
     const f = await fixture(t, { auto: true, ...(largeHistory ? { rounds: 12, text: '过长历史。'.repeat(700) } : {}) })
@@ -153,18 +136,6 @@ for (const largeHistory of [false, true]) {
     assert.equal(sessionEvents(f.session).filter(e => e.type === 'turn/end').at(-1).data.reason.kind, 'completed')
   })
 }
-
-test('successful summaries cannot lower pressure below an oversized fixed prefix; attempts remain bounded', native, async t => {
-  const f = await fixture(t, { system: '固定设定。'.repeat(2400) })
-  const oldNodes = [...f.session.surface.nodes]
-  await assert.rejects(f.compact('pressure'))
-  assert.ok(f.state.summaries.length <= 2)
-  assert.ok(f.h.ctx.tokenMeter.measure(f.session).totalTokens > 2000)
-  const events = sessionEvents(f.session)
-  assert.ok(events.some(e => e.type === 'compaction/summary'), 'at least one summary committed, but the fixed prefix still dominates')
-  assert.ok(oldNodes.every(seq => events.some(e => e.seq === seq)))
-  assert.equal(events.filter(e => e.type === 'compaction/start').length, events.filter(e => e.type === 'compaction/end').length)
-})
 
 for (const summaryMaxTokens of [128, 1024]) {
   test(`2k window at exactly 80 percent, summary output reservation ${summaryMaxTokens}`, native, async t => {

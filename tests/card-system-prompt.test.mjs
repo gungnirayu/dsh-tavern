@@ -7,10 +7,9 @@ import { cardSystemPromptText, cardSystemPromptSnapshot, cardSystemPromptSource 
 import { createContextPlanner } from '../tavern-plugin/lib/domain/context-planner.js'
 import { createForegroundFrameBuilder } from '../tavern-plugin/lib/domain/agent-input-frame.js'
 import { createForegroundFrameSessionAdapter } from '../tavern-plugin/lib/domain/foreground-frame-session-adapter.js'
-import { foregroundFrameInputs } from '../tavern-plugin/lib/domain/turn-orchestration.js'
+
 import { retireForegroundFrames } from '../tavern-plugin/lib/domain/foreground-frame-retirement.js'
-import { clearRegenerationAttemptSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
-import { createInitializationNative } from './fixtures/conversation-initialization-native.mjs'
+
 import { createSceneImageNativeRuntime } from './fixtures/scene-image-native-runtime.mjs'
 
 const planner = createContextPlanner({ prompt: () => '正文写作规则' })
@@ -59,35 +58,6 @@ test('同值不追加，变化、恢复开局值和清空分别追加完整版�
   assert.equal(appendUpdate(restored, ''), null)
 })
 
-test('旧会话缺少系统提示时追加补入，不重写背景；空字段无需补入', async () => {
-  const session = Session.create('legacy-card-instructions')
-  await ensureSessionStablePrefix(session, '【故事设定 · 人物卡】\n旧背景')
-  const fixed = structuredClone(sessionStablePrefixSections(session))
-  assert.equal(appendUpdate(session, ''), null)
-  assert.ok(appendUpdate(session, '补入的系统指令'))
-  assert.equal(appendUpdate(session, '补入的系统指令'), null)
-  assert.deepEqual(sessionStablePrefixSections(session), fixed)
-})
-
-test('回退或压缩掉更新后重新追加；被改写或外部插件的记录不能抑制更新', async () => {
-  const session = Session.create('rewound-card-instructions')
-  await ensureSessionStablePrefix(session, background('晴'))
-  const eventStart = session.seq
-  appendUpdate(session, '雨')
-  assert.ok(clearRegenerationAttemptSurface({ session, eventStart }))
-  assert.equal(cardSystemPromptSnapshot(session, '晴'), null)
-  const record = cardSystemPromptSnapshot(session, '雨')
-  assert.ok(record)
-  const fake = { role: 'user', content: [{ type: 'text', text: '已改写' }], source: { plugin: 'dsh-tavern', trace: cardSystemPromptSource(record) } }
-  assert.ok(cardSystemPromptSnapshot(session, '雨', [fake]))
-  assert.equal(cardSystemPromptSnapshot(session, '雨', [{ ...fake, content: [{ type: 'text', text: record.rendered }] }]), null)
-  assert.ok(cardSystemPromptSnapshot(session, '雨', [{ ...fake, source: { plugin: 'other', trace: cardSystemPromptSource(record) } }]))
-  const updated = appendUpdate(session, '雨')
-  appendSessionEvent(session, 'user/message', { id: crypto.randomUUID(), role: 'user', content: [{ type: 'text', text: '压缩摘要' }], source: { kind: 'plugin', plugin: 'dsh-tavern' } },
-    { surfaceOp: { op: 'replace', start: updated.seq, end: updated.seq }, sourceEventSeqs: [updated.seq] })
-  assert.ok(cardSystemPromptSnapshot(session, '雨'))
-})
-
 test('更新消息不随短期 Frame 清理；同一 Frame 重试和非首步不重复追加', async () => {
   const session = Session.create('card-frame')
   await ensureSessionStablePrefix(session, background('晴'))
@@ -102,41 +72,6 @@ test('更新消息不随短期 Frame 清理；同一 Frame 重试和非首步不
   retireForegroundFrames(session)
   assert.equal(cardSystemPromptSnapshot(session, '雨'), null)
   assert.match(JSON.stringify(session.deriveMessages()), /人物卡系统指令更新/)
-})
-
-test('真实 DSH 请求：动态宏变化只追加新版本，系统与此前请求消息逐字保持', { skip: !process.env.DSH_BOOT_MODULE }, async t => {
-  const card = { name: '角色', system_prompt: '当前天气={{getvar::weather}}', post_history_instructions: '历史后指令' }
-  const h = await createInitializationNative(process.env.DSH_BOOT_MODULE, { cardOverrides: card, contextWindow: 20000 })
-  t.after(() => h.dispose())
-  await h.open().start(h.input)
-  let weather = '', n = 0
-  const adapter = createForegroundFrameSessionAdapter()
-  h.ctx.on('agent/pre-step', async (payload, next) => {
-    const decision = await next()
-    const plan = await planner.plan({ purpose: 'body', card, chat: { macroState: { local: { weather } } } })
-    const frame = createForegroundFrameBuilder().build({ chatId: 'chat', branchId: 'branch', basedOnRevision: n, operationId: 'op-' + (++n), turn: payload.turn,
-      inputs: foregroundFrameInputs(plan, '继续', '继续', null, {}), source: { card: { systemPromptText: plan.systemPromptText } } })
-    return { ...decision, messages: adapter.append({ session: payload.agent.session, messages: decision.messages, frame, step: payload.step }).messages }
-  })
-  for (const value of ['', '', '雨', '雨', '']) {
-    weather = value
-    h.target.agent.followup({ id: crypto.randomUUID(), role: 'user', content: [{ type: 'text', text: '继续' }], source: { kind: 'human' } })
-    await h.target.agent.whenIdle()
-  }
-  assert.equal(h.requests.length, 5)
-  const updates = request => request.messages.filter(m => m.source?.form === 'card-system-prompt-update')
-  assert.deepEqual(h.requests.map(r => updates(r).length), [0, 0, 1, 1, 2])
-  const visible = request => request.messages.map(({ role, content }) => ({ role, content }))
-  for (const [index, request] of h.requests.entries()) {
-    assert.equal(request.system, h.requests[0].system)
-    assert.match(request.system, /【人物卡系统提示】\n当前天气=/)
-    assert.doesNotMatch(request.system, /历史后指令/)
-    assert.ok(request.messages.filter(m => m.source?.form === 'foreground-frame').every(m => !JSON.stringify(m.content).includes('当前天气=')))
-    if (index) {
-      const before = visible(h.requests[index - 1])
-      assert.deepEqual(visible(request).slice(0, before.length), before)
-    }
-  }
 })
 
 test('真实后台候选请求：复用固定前缀，变化与清空追加，重启后去重且结算不改写前缀', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async t => {

@@ -1,5 +1,6 @@
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { sessionEvents, appendSessionEvent } from './session-events.js'
+import { markRequestHandled, requestHandledBy } from './request-lineage.js'
 
 const PLUGIN = 'dsh-tavern-context-window'
 const eventMessage = event => event.type === 'user/message' ? event.data : event.type === 'assistant/message' ? event.data.message : null
@@ -60,10 +61,14 @@ export function planImportContext({ session, request, operationId, contextWindow
   return result
 }
 
-export function createImportContextPreparation({ readChat, updateChat, getSession, flush, modelInfo, estimateMessage }) {
-  const preparedRequests = new WeakSet()
+const PREPARED = 'import-context-preparation'
+
+export function createImportContextPreparation({ readChat, readHeader, updateChat, getSession, flush, modelInfo, estimateMessage }) {
   async function prepare(request) {
-    if (request.purpose !== undefined || preparedRequests.has(request)) return request
+    if (request.purpose !== undefined || requestHandledBy(request, PREPARED)) return request
+    // Only an imported chat awaiting its first check needs history rows.
+    const header = readHeader && await readHeader(request.sessionId, ['importHistory'])
+    if (header && !(header.importHistory && !header.importHistory.contextPreparation)) return request
     const chat = await readChat(request.sessionId)
     if (!needsImportContextPreparation(chat)) return request
     const session = getSession(request.sessionId)
@@ -95,9 +100,7 @@ export function createImportContextPreparation({ readChat, updateChat, getSessio
     }, { source: 'chat-import.context-preparation' })
     if (!removedIds.length) return request
     const removed = new Set(removedIds)
-    const projected = { ...request, messages: request.messages.filter(m => !removed.has(m.id) && m.id !== markerId) }
-    preparedRequests.add(projected)
-    return projected
+    return markRequestHandled({ ...request, messages: request.messages.filter(m => !removed.has(m.id) && m.id !== markerId) }, PREPARED)
   }
-  return { prepare, isPrepared: request => preparedRequests.has(request) }
+  return { prepare, isPrepared: request => requestHandledBy(request, PREPARED) }
 }

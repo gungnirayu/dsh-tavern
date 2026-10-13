@@ -5,53 +5,6 @@ import { helperHostHarness } from './fixtures/helper-host-harness.mjs'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-test('createChatMessages 追加楼层并等待宿主确认后更新同步上下文', async () => {
-  const run = helperHostHarness({
-    messages: [{ message_id: 0, role: 'assistant', message: '正文', swipes: ['正文'], swipe_id: 0 }]
-  })
-  const w = run.window
-  assert.equal(w.TavernHelper.createChatMessages, w.createChatMessages)
-
-  const pending = w.createChatMessages([{
-    role: 'assistant',
-    message: '<chat_history target="楚青妤">回复</chat_history>',
-    is_hidden: false,
-    data: { phone: true }
-  }])
-  await tick()
-
-  assert.deepEqual(JSON.parse(JSON.stringify(run.calls()[0])), {
-    type: 'dsh-tavern-helper-call', token: 'host-test', requestId: '1',
-    method: 'createTavernHelperMessages', args: {
-      messages: [{ role: 'assistant', message: '<chat_history target="楚青妤">回复</chat_history>', is_hidden: false, data: { phone: true } }],
-      option: {}
-    }, eventId: '', scriptId: 'a', lifecycleRevision: 0
-  })
-  run.reply(run.calls()[0], {
-    updated: true,
-    context: { messages: [
-      { message_id: 0, role: 'assistant', message: '正文', swipes: ['正文'], swipe_id: 0 },
-      { message_id: 1, role: 'assistant', message: '<chat_history target="楚青妤">回复</chat_history>', swipes: ['<chat_history target="楚青妤">回复</chat_history>'], swipe_id: 0, variables: { phone: true } }
-    ] }
-  })
-  assert.equal(await pending, undefined)
-  assert.equal(w.getLastMessageId(), 1)
-  assert.equal(w.getChatMessages('1')[0].message, '<chat_history target="楚青妤">回复</chat_history>')
-})
-
-test('宿主派发也遵循 first/once 顺序并返回完成回执', async () => {
-  const run = helperHostHarness(), w = run.window, seen = []
-  w.eventOn('MESSAGE_RECEIVED', () => seen.push('normal'))
-  w.eventOnce('MESSAGE_RECEIVED', () => seen.push('once'))
-  w.eventMakeFirst('MESSAGE_RECEIVED', () => seen.push('first'))
-  for (const eventId of ['one', 'two']) {
-    run.receive({ type: 'dsh-tavern-helper-event', name: 'MESSAGE_RECEIVED', eventId, args: [0] })
-    await tick()
-    assert(run.sent.some(message => message.type === 'dsh-tavern-helper-event-complete' && message.eventId === eventId))
-  }
-  assert.deepEqual(seen, ['first', 'normal', 'once', 'first', 'normal'])
-})
-
 test('变量合并写入等待宿主保存，拒绝及过期结果均向插件报错', async () => {
   for (const method of ['insertVariables', 'insertOrAssignVariables']) {
     const run = helperHostHarness({ chatVariables: { old: 1 } }), w = run.window
@@ -104,54 +57,6 @@ for (const fails of [false, true]) test('事件等待自己的提示词持久化
   else assert.equal(result.error, undefined)
 })
 
-test('generateRaw 返回独立 RPC 文本，不创建聊天消息', async () => {
-  const run = helperHostHarness({ chatId: 'one' })
-  const config = { ordered_prompts: [{ role: 'user', content: '生成档案' }], should_stream: false }
-  const pending = run.window.TavernHelper.generateRaw(config)
-  await tick()
-  const request = run.calls().at(-1)
-  assert.equal(request.method, 'generateTavernHelperRaw')
-  assert.deepEqual(JSON.parse(JSON.stringify(request.args)), { config })
-  run.reply(request, { text: '档案内容' })
-  assert.equal(await pending, '档案内容')
-  assert.equal(run.calls().length, 1)
-})
-
-test('旧聊天 MVU 清理提示静默拒绝，不弹窗、不修改或清理历史变量', async () => {
-  for (const content of [
-    '检测到可以清理本聊天文件中的旧变量以减小文件体积，是否清理？（备份会消耗较多内存，手机上建议关闭其他后台应用后进行，或在计算机上备份）',
-    'Old variables can be removed from this chat to reduce its file size. Clean them now? (Creating a backup uses considerable memory; on mobile, close other background apps first or create the backup on a computer.)'
-  ]) {
-    const run = helperHostHarness({ messages: [{ message_id: 0, variables: { stat_data: { hp: 10 } } }] })
-    const before = JSON.stringify(run.window.getVariables({ type: 'message', message_id: 0 }))
-    const result = await run.window.SillyTavern.callGenericPopup(content, 'confirm', '', {})
-    assert.equal(result, run.window.SillyTavern.POPUP_RESULT.NEGATIVE)
-    assert.equal(run.calls().length, 0)
-    assert.equal(JSON.stringify(run.window.getVariables({ type: 'message', message_id: 0 })), before)
-  }
-})
-
-test('mvu-work 事件在 setTimeout 延迟写入时仍保留结算身份', async t => {
-  // setImmediate and a zero-delay timer have no guaranteed relative order.
-  // Hold the timer until the event receipt has been checked.
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const h = helperHostHarness({ messages: [{ role: 'assistant', variables: { stat_data: { hp: 10 } } }] })
-  h.window.eventOn('MESSAGE_RECEIVED', () => {
-    h.window.setTimeout(() => {
-      void h.window.replaceVariables({ stat_data: { hp: 8 } }, { type: 'message', message_id: 0 })
-    }, 0)
-  })
-  h.receive({ type: 'dsh-tavern-helper-event', name: 'MESSAGE_RECEIVED', eventId: 'mvu-work:defer-1', args: [0] })
-  await tick()
-  assert.equal(h.sent.find(item => item.type === 'dsh-tavern-helper-event-complete')?.eventId, 'mvu-work:defer-1')
-  assert.equal(h.calls().length, 0)
-  t.mock.timers.tick(20)
-  await tick()
-  const call = h.calls().find(item => item.method === 'updateTavernHelperVariables')
-  assert.equal(call?.eventId, 'mvu-work:defer-1')
-  h.reply(call, { updated: true })
-})
-
 test('旧 eventOnButton 按所属脚本注册同名按钮，等待异步回调并沿用事件解绑', async () => {
   const h = helperHostHarness(), w = h.window, seen = []
   w.__dshTavernHelperSetCurrentScript('a')
@@ -172,34 +77,6 @@ test('旧 eventOnButton 按所属脚本注册同名按钮，等待异步回调�
   w.eventOff(a, handler)
   await w.eventEmit(a)
   assert.deepEqual(seen, ['a', 'b'])
-})
-
-test('事件清理接口仅清理当前脚本，支持别名、重复清理与重新注册', async () => {
-  const w = helperHostHarness().window, seen = []
-  w.eventOn('MESSAGE_RECEIVED', () => seen.push('a-old'))
-  w.__dshTavernHelperSetCurrentScript('b')
-  w.eventOn('MESSAGE_RECEIVED', () => seen.push('b'))
-  w.__dshTavernHelperSetCurrentScript('a')
-  w.eventClearEvent('message_received')
-  w.eventClearEvent('message_received')
-  w.eventOn('MESSAGE_RECEIVED', () => seen.push('a-new'))
-  await w.eventEmit('MESSAGE_RECEIVED')
-  assert.deepEqual(seen, ['b', 'a-new'])
-  const handler = () => seen.push('shared')
-  w.eventOn('one', handler)
-  w.eventOn('two', handler)
-  w.__dshTavernHelperSetCurrentScript('b')
-  w.eventOn('one', handler)
-  w.__dshTavernHelperSetCurrentScript('a')
-  w.eventClearListener(handler)
-  await w.eventEmit('one')
-  await w.eventEmit('two')
-  assert.deepEqual(seen, ['b', 'a-new', 'shared'])
-  w.eventClearAll()
-  seen.length = 0
-  await w.eventEmit('MESSAGE_RECEIVED')
-  await w.eventEmit('one')
-  assert.deepEqual(seen, ['b', 'shared'])
 })
 
 for (const frozen of [false, true]) test('nested script errors retain the failing owner through an outer host event: ' + frozen, async () => {

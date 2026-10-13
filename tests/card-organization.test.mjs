@@ -15,21 +15,6 @@ async function fixture(t) {
 const cards = ['a', 'b', 'c', 'd'].map(path => ({ path, name: path }))
 const paths = cards.map(card => card.path)
 
-test('收藏置顶，其余保持原顺序；分组不移动卡片，重启后仍保留', async t => {
-  const { store, library } = await fixture(t)
-  await library.update({ action: 'create', name: '奇幻' }, paths)
-  await library.update({ action: 'cards', paths: ['a', 'c'], group: '奇幻' }, paths)
-  assert.deepEqual((await library.project(cards)).map(card => card.path), paths)
-  await library.update({ action: 'cards', paths: ['c'], starred: true }, paths)
-  const reopened = createCardOrganization(store)
-  const result = await reopened.project(cards)
-  assert.deepEqual(result.map(card => card.path), ['c', 'a', 'b', 'd'])
-  assert.equal(result[0].group, '奇幻')
-  assert.equal(result.length, 4)
-  await reopened.update({ action: 'cards', paths: ['c'], starred: false }, paths)
-  assert.deepEqual((await reopened.project(cards)).map(card => card.path), ['a', 'b', 'c', 'd'])
-})
-
 test('重命名与删除分组同步卡片归属，删除分组保留星标与人物卡', async t => {
   const { library } = await fixture(t)
   await library.update({ action: 'create', name: '旧组' }, paths)

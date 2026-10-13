@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import test from 'node:test'
 
+import { adaptedDshVersion } from '../bin/dsh-compatibility.mjs'
 import { ensureUserExtensions, userExtensionPaths } from '../tavern-plugin/lib/domain/user-extensions.js'
 
 async function fixture(t) {
@@ -31,7 +32,7 @@ test('实际 Unix 安装脚本更新程序两次，用户工具、清单和 Skil
   await mkdir(path.join(source, 'bin'), { recursive: true })
   await mkdir(mockBin)
   for (const command of ['pnpm', 'dsh']) {
-    await writeFile(path.join(mockBin, command), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    await writeFile(path.join(mockBin, command), '#!/bin/sh\n' + (command === 'dsh' ? `echo '${adaptedDshVersion}'\n` : '') + 'exit 0\n', { mode: 0o755 })
   }
   // Mock external package installation and the launcher; run the actual release
   // download/extract/copy path against a local Git repository (no network).

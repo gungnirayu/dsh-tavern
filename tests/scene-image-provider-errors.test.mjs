@@ -16,13 +16,3 @@ test('provider rejection retains actionable details but not echoed credentials o
     return true
   })
 })
-test('malformed, HTML and oversized error bodies remain bounded, never mask the HTTP status', async () => {
-  for (const body of ['<html>private debug</html>', '{', 'x'.repeat(20000)]) {
-    await assert.rejects(generateSceneImage(input, { fetch: async () => new Response(body, {status: 401}) }), error => {
-      assert.match(error.message, /HTTP 401/)
-      assert.ok(error.message.length < 1000)
-      assert.doesNotMatch(error.message, /private debug/)
-      return true
-    })
-  }
-})

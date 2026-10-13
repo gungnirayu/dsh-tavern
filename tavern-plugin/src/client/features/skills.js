@@ -8,14 +8,33 @@
             const [dragging, setDragging] = React.useState(null);
             const [dropGroup, setDropGroup] = React.useState(null);
 			const [busy, setBusy] = React.useState(false);
+			const [notice, setNotice] = React.useState("");
+			const importInput = React.useRef(null);
 			const [error, setError] = usePersistentError("Skill 库");
 			const roles = [["card", "卡片 Agent"], ["foreground", "前台"], ["background", "后台"], ["image", "文生图"]];
 			async function refresh() {
 				const result = await rpc("listSkills", {}, props.sessionId);
 				setSkills(result.skills || []);
 			}
+			// A single SKILL.md, or a .zip of the skill folder (SKILL.md plus references/*.md).
+			async function importSkill(file) {
+				if (!file) return;
+				const zip = /\.zip$/i.test(file.name);
+				if (!zip && !/\.md$/i.test(file.name)) throw new Error("请选择 SKILL.md 或 Skill 文件夹的 .zip 压缩包");
+				if (file.size > 20 * 1024 * 1024) throw new Error("文件不能超过 20 MB");
+				const bytes = new Uint8Array(await file.arrayBuffer());
+				const payload = zip ? { fileB64: bytesToBase64(bytes) } : { text: decodeTextResource(bytes.buffer) };
+				let result = await rpc("importSkill", payload, props.sessionId);
+				if (result.conflict) {
+					if (!await askConfirm("已有同名 Skill「" + result.name + "」，用导入的版本覆盖？")) return;
+					result = await rpc("importSkill", Object.assign({ overwrite: true }, payload), props.sessionId);
+				}
+				await refresh();
+				const skipped = Array.isArray(result.skipped) && result.skipped.length ? "；忽略了 " + result.skipped.length + " 个非 references/*.md 文件" : "";
+				setNotice("已导入 Skill「" + result.skill.name + "」" + (result.skill.overwritten ? "（已覆盖）" : "") + skipped);
+			}
 			async function run(action) {
-				setBusy(true); setError("");
+				setBusy(true); setError(""); setNotice("");
 				try { await action(); } catch (err) { setError(String(err.message || err)); }
 				finally { setBusy(false); }
 			}
@@ -48,9 +67,13 @@
                             h("div", { className: "dsh-skill-document" }, skillDraft && !skillPreview ? editor(ref.path, ref.content, content => setSkillDraft({ ...skillDraft, references: skillDraft.references.map(item => item.path === ref.path ? { ...item, content } : item) })) : markdown(ref.content))))));
             }
 			return h("div", { className: "dsh-tavern-resources dsh-tavern-skills" },
-				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "Skill 库"), h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: () => run(refresh) }, "刷新")),
+				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "Skill 库"),
+					h("input", { ref: importInput, type: "file", accept: ".md,.zip,text/markdown,application/zip", hidden: true, onChange: event => { const file = event.target.files && event.target.files[0]; event.target.value = ""; run(() => importSkill(file)); } }),
+					h("button", { className: "dsh-tavern-btn", disabled: busy, title: "导入 SKILL.md，或包含 SKILL.md 与 references/ 的文件夹压缩包", onClick: () => importInput.current && importInput.current.click() }, "导入 Skill"),
+					h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: () => run(refresh) }, "刷新")),
 				h("p", { className: "dsh-tavern-question-sub" }, "拖动 Skill 调整用途，不需要的 Skill 可直接删除。"),
 				error ? h("div", { className: "dsh-tavern-dock-error" }, error) : null,
+				notice ? h("p", { role: "status", className: "dsh-tavern-question-sub" }, notice) : null,
 				h("div", { className: "dsh-tavern-resource-body" }, roles.map(([group, title]) => {
                     const items = skills.filter(skill => skill.agents.includes(group) || (!skill.agents.length && group === (skill.purpose === "writing" ? "foreground" : skill.purpose === "image" ? "image" : skill.purpose === "background" ? "background" : "card")));
                     return h("details", { key: group, open: true, className: "dsh-tavern-skill-group" + (dropGroup === group ? " is-drop-target" : ""),

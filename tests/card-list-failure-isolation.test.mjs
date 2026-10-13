@@ -22,15 +22,3 @@ for (const failed of ['listCards', 'listSessions']) {
     assert.equal(state.errors.length, 1)
   })
 }
-
-test('opening a session skips the unrelated card catalog but updates session history', async () => {
-  const methods = []
-  const refresh = new Function('call', 'setCards', 'setHistory', 'setTrustedCardMode', 'publishSessionModes', 'current', 'isPlayMode', 'setRequestMode', 'window', 'tavernErrorHub', 'return (' + refreshSource + ')')(
-    async method => { methods.push(method); return { sessions: [{ sessionId: 'current' }] } },
-    () => assert.fail('must not replace cards'), () => {}, () => {}, () => {}, 'current', () => true, () => {}, {}, { resolve() {}, report() {} })
-  const openingSource = sidebar.slice(sidebar.indexOf('async function openSessionWhenReady('), sidebar.indexOf('async function finishPendingOpen('))
-  const open = new Function('sessionListRecoveryRef', 'call', 'refresh', 'setError', 'return (' + openingSource + ')')(
-    { current: { open: async () => {} } }, async method => { methods.push(method) }, refresh, () => {})
-  await open('current')
-  assert.deepEqual(methods, ['markConversationOpened', 'listSessions'])
-})

@@ -21,14 +21,6 @@ function harness(source = chat) {
   return { reader, fullReads: () => fullReads }
 }
 
-test('legacy foreground migration retains full story fallback in both reader routes', async () => {
-  const legacy = { ...chat, messages: [{ role: 'assistant', text: 'body' }], timeline: { ...chat.timeline, operations: { old: { kind: 'body', status: 'foreground-completed' } } } }
-  const { reader, fullReads } = harness(legacy)
-  assert.equal(await reader.read('chat'), legacy)
-  assert.equal(await reader.forSession('session'), legacy)
-  assert.equal(fullReads(), 2)
-})
-
 test('task reads never materialize rollback snapshots',async()=>{
  const source={...chat,timeline:{...chat.timeline}}
  Object.defineProperty(source.timeline,'checkpoints',{enumerable:true,get(){throw Error('rollback snapshot read')}})

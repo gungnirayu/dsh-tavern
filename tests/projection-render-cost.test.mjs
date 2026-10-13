@@ -30,33 +30,3 @@ for(const count of [20,400,10000])test(`render projection and story turn queries
  assert.equal(h.context.tavernProjectionForTurn(first,count).text,'old')
  assert.ok(reads<8)
 })
-
-test('projection versions, duplicate turns, maximum and old views retain existing semantics',()=>{
- const h=harness(),row=(turn,version=2)=>({turn,version})
- const first=h.begin('s').accept({viewCursor:'a',view:{mode:'story',replyProjections:[row(1),row(1,3),row(100),row(-1)]}}).view
- assert.equal(h.context.tavernProjectionForTurn(first,1),null,'unsupported last match shadows an older supported projection')
- assert.equal(h.context.tavernLatestProjectionTurn(first),100)
- const next=h.begin('s').accept({viewCursor:'b',viewDelta:{baseCursor:'a',set:[[['replyProjections',1],row(1,1)],[['replyProjections',2],row(2)],[['replyProjections','length'],3]],remove:[['replyProjections',3]]}}).view
- assert.equal(h.context.tavernProjectionForTurn(next,1).version,1)
- assert.equal(h.context.tavernLatestProjectionTurn(next),2)
- assert.equal(h.context.tavernLatestProjectionTurn(first),100)
- assert.equal(h.context.tavernProjectionForTurn({...next,mode:'card'},1),null)
- const empty=h.begin('s').accept({viewCursor:'c',view:{mode:'story',replyProjections:[]}}).view
- assert.equal(h.context.tavernLatestProjectionTurn(empty),0)
-})
-
-test('story turn reverse index keeps first-match ordering and mutable unregistered fallback',()=>{
- const h=harness()
- const mappings={'2':7,'1':7,'bad':9,'negative':-1}
- const view=h.begin('s').accept({viewCursor:'a',view:{regeneratedDshTurns:mappings}}).view
- assert.equal(h.context.tavernStoryTurnForDshTurn(view,7),1)
- assert.ok(Number.isNaN(h.context.tavernStoryTurnForDshTurn(view,9)))
- assert.equal(h.context.tavernStoryTurnForDshTurn(view,8),8)
- const mutable={regeneratedDshTurns:{1:10}}
- assert.equal(h.context.tavernStoryTurnForDshTurn(mutable,10),1)
- mutable.regeneratedDshTurns={2:10}
- assert.equal(h.context.tavernStoryTurnForDshTurn(mutable,10),2)
- const replaced=h.begin('s').accept({viewCursor:'b',viewDelta:{baseCursor:'a',set:[[['regeneratedDshTurns'],{3:7}]],remove:[]}}).view
- assert.equal(h.context.tavernStoryTurnForDshTurn(replaced,7),3)
- assert.equal(h.context.tavernStoryTurnForDshTurn(view,7),1)
-})

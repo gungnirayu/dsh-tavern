@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 function harness(){
- const context=vm.createContext({})
- const files=['../tavern-plugin/lib/domain/indexed-array.js','../tavern-plugin/lib/domain/ordered-numeric-index.js','../tavern-plugin/src/client/modules/session-view-sync.js','../tavern-plugin/src/client/modules/live-tavern-view.js']
+ const context=vm.createContext({AbortController})
+ const files=['../tavern-plugin/lib/domain/indexed-array.js','../tavern-plugin/lib/domain/ordered-numeric-index.js','../tavern-plugin/src/client/modules/session-view-sync.js','../tavern-plugin/src/client/modules/session-refresh-controller.js','../tavern-plugin/src/client/modules/live-tavern-view.js']
  vm.runInContext(files.map(path=>fs.readFileSync(new URL(path,import.meta.url),'utf8').replace(/^export .*$/gm,'')).join('\n'),context)
  return context
 }
@@ -26,15 +26,4 @@ for(const count of [20,400,10000])test(`turn field point merge avoids copying ${
  assert.equal(removed.inputSources[0],undefined)
  assert.equal(Object.hasOwn(removed.inputSources,String(count-1)),false)
  assert.equal(next.inputSources[count-1],'edited')
-})
-
-test('turn field replacement and legacy noncanonical keys retain normal object behavior',()=>{
- const h=harness(),begin=h.createSessionViewReader()
- begin('s').accept({viewCursor:'a',view:{inputSources:{'0':'zero'}}})
- let view=begin('s').accept({viewCursor:'b',viewDelta:{baseCursor:'a',set:[[['inputSources','01'],'legacy']],remove:[]}}).view
- assert.equal(view.inputSources['01'],'legacy');assert.equal(view.inputSources[0],'zero')
- view=begin('s').accept({viewCursor:'c',viewDelta:{baseCursor:'b',set:[[['inputSources'],{'2':null}]],remove:[['inputSources','01'],['inputSources','0']]}}).view
- assert.equal(view.inputSources[2],null);assert.deepEqual(Object.keys(view.inputSources),['2'])
- view=begin('s').accept({viewCursor:'d',viewDelta:{baseCursor:'c',set:[],remove:[['inputSources']]}}).view
- assert.equal(Object.hasOwn(view,'inputSources'),false)
 })

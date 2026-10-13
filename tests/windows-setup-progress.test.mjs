@@ -53,11 +53,13 @@ async function runSetup(t, {installer, pnpmRuntime}) {
   return {code,err,log:await readFile(path.join(root,'data/setup-upgrade.log'),'utf8')}
 }
 
-test('Setup failure names the installer step and hides proxy credentials', {skip: process.platform === 'win32'}, async t => {
-  const {code,err}=await runSetup(t,{installer:`process.stderr.write('安装失败：步骤 dependencies.install 失败（退出码 1）。 代理 http://user:secret@127.0.0.1:7890\\n第二行输出\\n');process.exit(1)`})
+test('Setup failure names the installer step, keeps its reason and hides proxy credentials', {skip: process.platform === 'win32'}, async t => {
+  const {code,err}=await runSetup(t,{installer:`process.stderr.write('安装失败：步骤 profile.install 失败（退出码 1）。 代理 http://user:secret@127.0.0.1:7890\\nINSTALLATION_BUSY: 已有安装或更新任务占用此目录\\n    at acquireInstallation (x.cjs:1:1)\\n诊断日志：/tmp/update-diagnostics.jsonl\\n');process.exit(1)`})
   assert.equal(code,1)
-  assert.match(err,/^下载并安装酒馆失败：安装依赖（dependencies\.install）失败（退出码 1）。/)
-  assert.doesNotMatch(err,/secret|第二行输出/)
+  assert.match(err,/^下载并安装酒馆失败：注册 Tavern（profile\.install）失败（退出码 1）。/)
+  // The step name alone cannot be diagnosed (issue #145): the command's own error follows.
+  assert.match(err,/原因：INSTALLATION_BUSY: 已有安装或更新任务占用此目录/)
+  assert.doesNotMatch(err,/secret|at acquireInstallation|诊断日志/)
   assert.match(err,/详细日志：.*setup-upgrade\.log/)
 })
 

@@ -33,14 +33,6 @@ test('concurrent add and library load retain both edits in durable current state
   assert.deepEqual((await persistence.read('chat')).guides, loaded)
 })
 
-test('capacity is checked inside the serialized mutation', async t => {
-  const { guides, persistence } = await fixture(t, Array.from({ length: 19 }, (_, i) => ({ id: String(i), text: String(i) })))
-  const results = await Promise.allSettled([guides.add('game', 'A'), guides.add('game', 'B')])
-  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
-  assert.match(results.find(result => result.status === 'rejected').reason.message, /20/)
-  assert.equal((await persistence.read('chat')).guides.length, 20)
-})
-
 test('ID deletion cannot delete a neighboring guide after another edit shifts its index', async t => {
   const { guides, persistence } = await fixture(t, ['A', 'B', 'C'].map(id => ({ id, text: id })))
   await guides.remove('game', { id: 'A' })

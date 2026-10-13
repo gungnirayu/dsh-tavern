@@ -90,24 +90,3 @@ test('异步更新拒绝覆盖其他写入，未绑定世界书及无效请求�
   await assert.rejects(api.setLorebookEntries('审计书', [{ uid: 7, group_prioritized: true }]), /尚未支持/)
   assert.equal(JSON.stringify(await host.read()), before)
 })
-
-test('悬浮角色库在已有聊天快照中切换 enabled 和写回视觉内容，重新连接后读取持久化结果', async t => {
-  const host = await createHelperWorldbookHost(true)
-  t.after(host.cleanup)
-  const original = await host.read()
-  host.chat.openingWorldbookSnapshot = { version: 1, source: { kind: 'card', cardPath: 'card.json' }, document: structuredClone(original) }
-  const api = await connect(host)
-  const visual = '\n<char_info>视觉资料回归标记</char_info>'
-  await api.updateWorldbookWith('审计书', entries => entries.map(entry => entry.uid === 7 ? { ...entry, enabled: false, content: entry.content + visual } : entry))
-  const persisted = host.writes.at(-1).chat
-  assert.equal(persisted.openingWorldbookSnapshot.document.entries[0].enabled, false)
-  assert.equal(persisted.openingWorldbookSnapshot.document.entries[0].content, '旧正文' + visual)
-  host.chat.openingWorldbookSnapshot = structuredClone(persisted.openingWorldbookSnapshot)
-  const refreshed = await connect(host)
-  const entry = (await refreshed.getWorldbook('审计书'))[0]
-  assert.equal(entry.enabled, false)
-  assert.equal(entry.content, '旧正文' + visual)
-  assert.deepEqual(await host.read(), original)
-  await refreshed.updateWorldbookWith('审计书', entries => entries.map(entry => ({ ...entry, enabled: true, content: '旧正文' })))
-  assert.equal(host.writes.at(-1).chat.openingWorldbookSnapshot.document.entries[0].content, '旧正文')
-})

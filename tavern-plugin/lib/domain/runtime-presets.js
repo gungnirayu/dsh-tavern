@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto'
 import { resolveRuntimeMacroText } from './runtime-content-projection.js'
-
-function emptyState() {
-  return { version: 6, activePreset: '', presetOrder: [], entries: {}, regexes: {}, initialized: {}, plans: [], lastError: null, updatedAt: 0 }
-}
+import { entryRandom, renderWorldbookRandom } from './worldbook-random.js'
 
 function normalizeState(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -11,20 +8,6 @@ function normalizeState(value) {
   const entries = currentVersion && source.entries && typeof source.entries === 'object' && !Array.isArray(source.entries) ? source.entries : {}
   const regexes = currentVersion && source.regexes && typeof source.regexes === 'object' && !Array.isArray(source.regexes) ? source.regexes : {}
   const initialized = currentVersion && source.initialized && typeof source.initialized === 'object' && !Array.isArray(source.initialized) ? source.initialized : {}
-  const plans = Array.isArray(source.plans) ? source.plans.filter(function (plan) {
-    return plan && typeof plan === 'object' && typeof plan.id === 'string' && plan.id !== '' && typeof plan.name === 'string' && plan.name.trim() !== ''
-  }).map(function (plan) {
-    return {
-      id: plan.id,
-      name: plan.name.trim(),
-      presetPath: typeof plan.presetPath === 'string' ? plan.presetPath : '',
-      entryKeys: Array.isArray(plan.entryKeys) ? plan.entryKeys.filter(function (key) { return typeof key === 'string' && key !== '' }) : [],
-      regexKeys: Array.isArray(plan.regexKeys) ? plan.regexKeys.filter(function (key) { return typeof key === 'string' && key !== '' }) : [],
-      presetDigest: typeof plan.presetDigest === 'string' ? plan.presetDigest : '',
-      createdAt: Number(plan.createdAt) || 0,
-      updatedAt: Number(plan.updatedAt) || 0
-    }
-  }) : []
   return {
     version: 6,
     activePreset: typeof source.activePreset === 'string' ? source.activePreset : '',
@@ -38,7 +21,6 @@ function normalizeState(value) {
       return [path, Object.fromEntries(Object.entries(enabled).filter(function ([key, active]) { return key !== '' && active === true }))]
     })),
     initialized: Object.fromEntries(Object.entries(initialized).filter(function ([path, ready]) { return path !== '' && ready === true })),
-    plans,
     lastError: source.lastError && typeof source.lastError === 'object' ? source.lastError : null,
     updatedAt: Number(source.updatedAt) || 0
   }
@@ -75,16 +57,6 @@ function phaseValue(entries) {
     entries: value,
     text: value.map(function (entry) { return String(entry.content || '') }).filter(Boolean).join('\n\n')
   }
-}
-
-function presetDigest(preset) {
-  const entryKeys = dshEntries(preset).map(function (entry) { return entry.entryKey })
-  const regexKeys = regexesWithKeys(preset).map(function (script) { return script.regexKey })
-  return createHash('sha256').update(JSON.stringify({ entryKeys, regexKeys })).digest('hex')
-}
-
-function enabledKeys(record) {
-  return Object.keys(record || {}).filter(function (key) { return record[key] === true })
 }
 
 function regexesWithKeys(preset) {
@@ -135,10 +107,15 @@ export function resolveRuntimePresetMacros(snapshot, options = {}) {
         macroState: state
       })
       state = rendered.macroState
+      // The front is the fixed system prefix and keeps its macros literal; the middle and
+      // back are rebuilt every turn, so dice/random roll there from the turn's seed.
+      const text = phase !== 'front' && typeof options.randomSeed === 'string' && options.randomSeed !== ''
+        ? renderWorldbookRandom(rendered.text, entryRandom(options.randomSeed, phase + ':' + entries.length + ':' + (entry.id || entry.entryKey || '')))
+        : rendered.text
       diagnostics.push.apply(diagnostics, rendered.diagnostics.map(function (item) {
         return Object.assign({ phase, entryId: entry.id || entry.entryKey || '' }, item)
       }))
-      entries.push(Object.assign({}, entry, { content: rendered.text }))
+      entries.push(Object.assign({}, entry, { content: text }))
     }
     resolvedPhases[phase] = phaseValue(entries)
   }
@@ -486,103 +463,6 @@ export function createRuntimePresetModule(options = {}) {
     return result
   }
 
-  async function inspectPlan(plan) {
-    const preset = await readPreset(plan.presetPath)
-    if (!manageable(preset)) return Object.assign({}, plan, { valid: false, outdated: true, error: '预设不存在或无法读取：' + plan.presetPath })
-    const entries = new Map(dshEntries(preset).map(function (entry) { return [entry.entryKey, entry] }))
-    const regexes = new Map(regexesWithKeys(preset).map(function (script) { return [script.regexKey, script] }))
-    const missingEntries = plan.entryKeys.filter(function (key) { return !entries.has(key) || entries.get(key).injectable !== true })
-    const missingRegexes = plan.regexKeys.filter(function (key) { return !regexes.has(key) || String(regexes.get(key).findRegex || '') === '' })
-    const issues = missingEntries.concat(missingRegexes)
-    const digest = presetDigest(preset)
-    return Object.assign({}, plan, {
-      valid: issues.length === 0,
-      outdated: plan.presetDigest !== '' && plan.presetDigest !== digest,
-      error: issues.length > 0 ? '配置方案失效，预设内容已不存在：' + issues.join('、') : '',
-      warning: issues.length === 0 && plan.presetDigest !== '' && plan.presetDigest !== digest ? '原预设已发生变化，当前勾选仍可用' : ''
-    })
-  }
-
-  async function plans() {
-    const current = await state()
-    return await Promise.all(current.plans.map(inspectPlan))
-  }
-
-  async function savePlan({ id, name }) {
-    const planName = typeof name === 'string' ? name.trim() : ''
-    if (planName === '') throw new Error('配置方案名称不能为空')
-    const current = await state()
-    const path = current.activePreset
-    if (path === '') throw new Error('当前没有启用外部预设，无法保存配置方案')
-    const preset = await readPreset(path)
-    if (!manageable(preset)) throw new Error('当前预设不存在或无法读取：' + path)
-    const existing = typeof id === 'string' && id !== '' ? current.plans.find(function (plan) { return plan.id === id }) : undefined
-    if (id && !existing) throw new Error('配置方案不存在：' + id)
-    const duplicate = current.plans.find(function (plan) { return plan.name === planName && (!existing || plan.id !== existing.id) })
-    if (duplicate) throw new Error('配置方案名称已存在：' + planName)
-    const stamp = now()
-    const planId = existing ? existing.id : 'plan-' + createHash('sha256').update(planName + '\n' + path + '\n' + stamp).digest('hex').slice(0, 12)
-    const plan = {
-      id: planId,
-      name: planName,
-      presetPath: path,
-      entryKeys: enabledKeys(current.entries[path]),
-      regexKeys: enabledKeys(current.regexes[path]),
-      presetDigest: presetDigest(preset),
-      createdAt: existing ? existing.createdAt : stamp,
-      updatedAt: stamp
-    }
-    await mutate(function (latest) {
-      const index = latest.plans.findIndex(function (item) { return item.id === planId })
-      if (index === -1) latest.plans.push(plan)
-      else latest.plans[index] = plan
-      latest.lastError = null
-      return latest
-    })
-    return await inspectPlan(plan)
-  }
-
-  async function applyPlan(id) {
-    const current = await state()
-    const plan = current.plans.find(function (item) { return item.id === id })
-    if (!plan) throw new Error('配置方案不存在：' + id)
-    const inspected = await inspectPlan(plan)
-    if (!inspected.valid) throw new Error(inspected.error)
-    await mutate(function (latest) {
-      if (!latest.presetOrder.includes(plan.presetPath)) latest.presetOrder.push(plan.presetPath)
-      latest.activePreset = plan.presetPath
-      latest.entries[plan.presetPath] = Object.fromEntries(plan.entryKeys.map(function (key) { return [key, true] }))
-      latest.regexes[plan.presetPath] = Object.fromEntries(plan.regexKeys.map(function (key) { return [key, true] }))
-      latest.lastError = null
-      return latest
-    })
-    return inspected
-  }
-
-  async function renamePlan(id, name) {
-    const planName = typeof name === 'string' ? name.trim() : ''
-    if (planName === '') throw new Error('配置方案名称不能为空')
-    let result
-    await mutate(function (current) {
-      const plan = current.plans.find(function (item) { return item.id === id })
-      if (!plan) throw new Error('配置方案不存在：' + id)
-      if (current.plans.some(function (item) { return item.id !== id && item.name === planName })) throw new Error('配置方案名称已存在：' + planName)
-      plan.name = planName
-      plan.updatedAt = now()
-      result = Object.assign({}, plan)
-      return current
-    })
-    return await inspectPlan(result)
-  }
-
-  async function removePlan(id) {
-    await mutate(function (current) {
-      if (!current.plans.some(function (plan) { return plan.id === id })) throw new Error('配置方案不存在：' + id)
-      current.plans = current.plans.filter(function (plan) { return plan.id !== id })
-      return current
-    })
-  }
-
   async function rename(from, to) {
     return mutate(function (current) {
       current.presetOrder = current.presetOrder.map(function (path) { return path === from ? to : path })
@@ -599,7 +479,6 @@ export function createRuntimePresetModule(options = {}) {
         current.initialized[to] = current.initialized[from]
         delete current.initialized[from]
       }
-      current.plans = current.plans.map(function (plan) { return plan.presetPath === from ? Object.assign({}, plan, { presetPath: to }) : plan })
       current.lastError = null
       return current
     })
@@ -617,5 +496,5 @@ export function createRuntimePresetModule(options = {}) {
     })
   }
 
-  return { register, state, view, select, toggle, toggleRegex, disablePreset, disableAll, snapshot, fullSnapshot, prepareFullSnapshot, claimPreparedFullSnapshot, regexScriptsFor, plans, savePlan, applyPlan, renamePlan, removePlan, rename, remove }
+  return { register, state, view, select, toggle, toggleRegex, disablePreset, disableAll, snapshot, fullSnapshot, prepareFullSnapshot, claimPreparedFullSnapshot, regexScriptsFor, rename, remove }
 }

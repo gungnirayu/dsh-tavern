@@ -46,18 +46,7 @@ export function parseSessionLog(buffer) {
   return { headerLine, header, events }
 }
 
-export function prepareLegacySessionLog(text, catalog) {
-  const lines = text.split('\n').filter(Boolean)
-  if (!lines.length) return refuse('空日志')
-  let header
-  try { header = JSON.parse(lines[0]) } catch { return refuse('文件头不是 JSON') }
-  if (header?.version !== 0) return { ok: true, changed: false }
-  let events
-  try { events = lines.slice(1).map(line => JSON.parse(line)) } catch { return refuse('事件不是 JSON') }
-  return prepareParsedLegacySession(header, events, lines[0], catalog, () => lines.slice(1).map(line => JSON.parse(line)))
-}
-
-function prepareLegacySessionBuffer(buffer, catalog) {
+export function prepareLegacySessionBuffer(buffer, catalog) {
   let frames
   try { frames = scanZstdFrames(buffer) }
   catch (error) { return refuse(error.message || String(error)) }
@@ -452,25 +441,8 @@ function encodeFramedSessionLog(headerLine, events, stringify) {
   return Buffer.concat(parts)
 }
 
-export function reframeConcatenatedSessionLog(buffer) {
-  const frames = scanZstdFrames(buffer)
-  const first = zstdDecompressSync(buffer.subarray(frames[0].start, frames[0].end))
-  if (isHeaderFrame(first)) return null
-  const text = decodeSessionLog(buffer)
-  const split = text.indexOf('\n')
-  if (split <= 0) throw new Error('会话日志缺少单独的文件头行')
-  const header = compressFrame(Buffer.from(text.slice(0, split + 1)))
-  const rest = text.slice(split + 1)
-  if (!rest) throw new Error('会话日志第一帧不是单独的文件头，后面也没有事件')
-  return Buffer.concat([header, compressFrame(Buffer.from(rest.endsWith('\n') ? rest : rest + '\n'))])
-}
-
 function compressFrame(bytes) {
   return zstdCompressSync(bytes, { params: { [constants.ZSTD_c_checksumFlag]: 1 } })
-}
-
-function isHeaderFrame(plaintext) {
-  return plaintext.length > 0 && plaintext.indexOf(10) === plaintext.length - 1
 }
 
 export async function migrateLegacySessionDirectory(directory, catalog) {

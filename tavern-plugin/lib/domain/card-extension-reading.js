@@ -87,6 +87,7 @@ function helperScriptsOf(extensions) {
       dataText,
       info,
       buttons: object(script.button) && Array.isArray(script.button.buttons) ? clone(script.button.buttons) : [],
+      buttonsEnabled: !object(script.button) || script.button.enabled !== false,
       buttonCount: buttonCount(script.button),
       exportWith: script.export_with === undefined ? null : script.export_with,
       chars: content.length + dataText.length

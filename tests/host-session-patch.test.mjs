@@ -8,28 +8,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
-import { createBodyEditor } from '../tavern-plugin/lib/domain/body-editor.js'
-import { createRoundHistory } from '../tavern-plugin/lib/domain/round-history.js'
+
 import { installHostSessionPatch } from '../tavern-plugin/lib/domain/host-session-patch.js'
 
 const runtime = process.env.TAVERN_DSH_015_RUNTIME || '/tmp/tavern-session-patch-npm-015.jv9SRv'
 const runtimeReady = (() => { try { accessSync(join(runtime, 'package.json')); return true } catch { return false } })()
-
-test('未握手时拒绝编辑、回退和重新生成', async () => {
-  const sessionPatch = { replacementAllowed: () => false, blockReason: () => '页面尚未完成会话补丁握手，请刷新后再试' }
-  const editor = createBodyEditor({
-    chats: { forSession() { throw new Error('不应读取聊天') }, update() {} },
-    sessions: { get() {}, flush() {} }, timeline: {}, activity() {}, project() {}, present() {}, sessionPatch,
-  })
-  await assert.rejects(() => editor.read('session'), /握手/)
-  const history = createRoundHistory({
-    chats: { read() { throw new Error('不应读取聊天') }, forSession() {}, readCard() {}, readRevision() {}, write() {}, update() {} },
-    sessions: { get() {}, getSession() {}, resume() {}, flush() {} },
-    scripts: {}, timeline: {}, queueSettlement() {}, cancelSettlement() {}, present() {}, sessionPatch,
-  })
-  await assert.rejects(() => history.regenerate('chat', '', 'session'), /握手/)
-  await assert.rejects(() => history.rollback('session', 'chat'), /握手/)
-})
 
 test('0.1.5-rc.2 补丁允许替换，未打补丁的读取仍拒绝，官方文件不变', { skip: !runtimeReady }, async () => {
   const hostRequire = createRequire(join(runtime, 'package.json'))

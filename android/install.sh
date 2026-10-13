@@ -133,6 +133,9 @@ pnpm --dir "${WEB_PROFILE_DIR}" install
 node "${SCRIPT_DIR}/configure-profiles.mjs" "${REPO_ROOT}" "${TAVERN_PROFILE_DIR}" "${WEB_PROFILE_DIR}"
 run_dsh --profile tavern --dump-config >/dev/null
 run_dsh --profile "${WEB_PROFILE_NAME}" --dump-config >/dev/null
+# --dump-config never imports the plugin. Fail (and let setup.sh roll back) when the
+# Profile installs above left the plugin without one of its runtime packages.
+node "${REPO_ROOT}/bin/runtime-dependencies.mjs" "${REPO_ROOT}"
 
 if [ "${DSH_TAVERN_ANDROID_STANDALONE:-0}" = 1 ]; then
   printf '\n安装完成。请返回 DSH Tavern 应用并重新启动酒馆。\n'

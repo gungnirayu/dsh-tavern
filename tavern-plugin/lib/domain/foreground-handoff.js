@@ -22,15 +22,27 @@ export function createForegroundHandoff(options = {}) {
 
   async function prepare(input) {
     if (typeof turns.prepare !== 'function') throw new Error('Foreground Handoff 缺少 prepare adapter')
-    const chat = await store.chatForSession(input.sessionId)
+    // A save being reconciled (#196) finishes that first; both write the story.
+    await options.waitReconcile?.(input.sessionId)
+    // Task metadata and the opening check need the header and floor count only.
+    const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
+    const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
     const activity = chat === undefined ? { phase: 'idle', busy: false, role: '' } : tasks.activity(chat)
     if (chat !== undefined && activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
       await queueBackground(chat.id)
     }
+    // Plugin tasks of the last turn (or one the player started) finish before the next turn.
+    if (chat !== undefined) await options.waitBackground?.(chat.id)
+    // An unfinished prefilter is optional: sending cancels it instead of waiting.
+    if (chat !== undefined) await options.cancelPrefilter?.(chat.id)
+    // A failed turn is cleaned up after the failure, but that may not have happened (no live
+    // session then, or it failed). Its input must not reach this request beside the new one.
+    if (chat !== undefined) await options.clearFailedTurns?.(input.sessionId)
     // A greeting is already story text. Direct typing may bypass candidate
     // preparation, so project its keywords locally before the first body request.
-    if (chat && ['story', 'script'].includes(chat.mode) && !chat.preparedWorldBook &&
-        chat.messages?.length === 1 && chat.messages[0]?.greeting === true &&
+    const onlyGreeting = opening ? opening.messageCount === 1 && opening.firstGreeting === true
+      : chat?.messages?.length === 1 && chat.messages[0]?.greeting === true
+    if (chat && ['story', 'script'].includes(chat.mode) && !chat.preparedWorldBook && onlyGreeting &&
         typeof options.prepareOpeningWorldBook === 'function') {
       const latest = await store.chatForSession(input.sessionId)
       if (latest && !latest.preparedWorldBook) await options.prepareOpeningWorldBook(latest)
@@ -50,7 +62,7 @@ export function createForegroundHandoff(options = {}) {
     const reason = str(input.reason)
     if (reason === 'completed' || reason === 'max-tokens') {
       later(async function () {
-        const chat = await store.chatForSession(input.sessionId)
+        const chat = await (store.stateForSession || store.chatForSession)(input.sessionId)
         if (chat === undefined) return
         // 正文重生成会先产生一个临时 DSH 回合，再把它合并为原楼层的新 Swipe。
         // 临时回合不能启动变量结算，否则可能把尚未采用的正文写进正式状态。
@@ -58,6 +70,9 @@ export function createForegroundHandoff(options = {}) {
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)
+        } else {
+          // No settlement this turn; the prefilter otherwise starts once settlement finishes.
+          void options.prefilterWorldbook?.(chat.id)
         }
       }, '启动后台结算')
       return true

@@ -4,7 +4,7 @@ function createTavernSessionRetention(options) {
     const host = options.window;
     const now = options.now || Date.now;
     const duration = options.durationMs === undefined ? 10 * 60 * 1000 : options.durationMs;
-    const records = new Map();
+    const records = new Map(), leaveListeners = new Set();
     let selected = "", managed = false;
     function record(id) {
         if (!records.has(id)) records.set(id, { id: id, resources: new Map(), mounts: 0, busy: false, leftAt: now(), timer: null });
@@ -62,7 +62,9 @@ function createTavernSessionRetention(options) {
                 if (item.id === previous || item.id === selected) item.leftAt = now();
                 schedule(item);
             }
+            if (previous) for (const listener of Array.from(leaveListeners)) listener(previous);
         },
+        onLeave: function (listener) { leaveListeners.add(listener); return function () { leaveListeners.delete(listener); }; },
         busy: function (id, value) { const item = records.get(id); if (item) { item.busy = value; schedule(item); } },
         release: release,
         clear: function () { for (const id of Array.from(records.keys())) release(id); },

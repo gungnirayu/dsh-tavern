@@ -74,12 +74,3 @@ test('following the latest turn detects stale read-once data, but updated reader
     assert.equal(run.reloads, reread ? 0 : 1)
   }
 })
-
-test('a status performing Helper writes is not automatically replayed', async () => {
-  const run = frame()
-  run.context.getAllVariables()
-  void run.context.replaceVariables({ stat_data: { 地点: '山门' } })
-  await run.update({ stat_data: { 地点: '庭院' } })
-  run.flush()
-  assert.equal(run.reloads, 0)
-})

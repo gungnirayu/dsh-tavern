@@ -112,14 +112,17 @@ export function mergeProfileManifest({ source, current = {}, pluginPath, dataRoo
   }
 }
 
-// Optional packages must not leave mandatory pnpm patches behind when disabled.
+// Each host installs only one mobile layout package (see mergeProfileManifest).
+// A patch for a layout this host does not install must be dropped, or pnpm fails
+// with ERR_PNPM_UNUSED_PATCH. Patches of always-installed packages stay strict.
+const HOST_OPTIONAL_PACKAGES = ['dsh-pocket', 'dsh-web-mobile', '@dsh-external/dsh-mobile-nav']
+
 export function prepareProfileWorkspace(workspaceText, manifest) {
   const document = parseDocument(String(workspaceText || ''))
   if (document.errors.length > 0) throw new Error(`无法读取 pnpm workspace 配置：${document.errors[0].message}`)
-  if (!manifest.dependencies?.['dsh-pocket']) {
-    for (const name of Object.keys(object(document.toJS()?.patchedDependencies))) {
-      if (name === 'dsh-pocket' || name.startsWith('dsh-pocket@')) document.deleteIn(['patchedDependencies', name])
-    }
+  for (const key of Object.keys(object(document.toJS()?.patchedDependencies))) {
+    const name = HOST_OPTIONAL_PACKAGES.find(item => key === item || key.startsWith(`${item}@`))
+    if (name && !manifest.dependencies?.[name]) document.deleteIn(['patchedDependencies', key])
   }
   return String(document)
 }

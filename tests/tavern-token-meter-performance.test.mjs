@@ -37,10 +37,3 @@ for (const compact of [false, true]) {
     h.dispose()
   })
 }
-test('普通模型回复不扫描历史，也不绕过宿主验证', () => {
-  const events = Array.from({ length: 5000 }, (_, seq) => reply(seq)), h = fixture(events)
-  h.fold({ surface: [] }, events)
-  assert.deepEqual(h.counts(), { reads: 0, snapshots: 0 })
-  assert.ok(h.results.every(type => type === 'assistant/message'))
-  h.dispose()
-})

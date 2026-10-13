@@ -1,3 +1,29 @@
+import { compileHelperGenerate } from './helper-generation-prompts.js'
+import { randomUUID } from 'node:crypto'
+
+/** DSH Message requires identity and attribution even for independent requests. */
+export function identifyHelperModelMessages(messages) {
+  return messages.map(message => ({ ...message, id: message.id || randomUUID(),
+    source: message.source || { kind: 'plugin', plugin: 'dsh-tavern' } }))
+}
+
+/** Compile actual DSH card/preset/worldbook context without Session writes. */
+export async function generateHelper(config, context) {
+  const ordered_prompts = compileHelperGenerate(config, context)
+  const document = context.presetSnapshot?.compatibilityPresetDocument || {}
+  const sampling = { ...config.custom_api }
+  for (const [key, fallback] of [['temperature', document.temperature], ['max_tokens', document.openai_max_tokens ?? document.max_completion_tokens ?? document.max_tokens]]) {
+    const value = sampling[key] ?? (key === 'max_tokens' ? sampling.max_completion_tokens : undefined)
+    if (value === 'unset') delete sampling[key]
+    else if (value === undefined || value === 'same_as_preset') {
+      if (fallback === undefined) delete sampling[key]
+      else sampling[key] = fallback
+    } else sampling[key] = value
+  }
+  delete sampling.max_completion_tokens
+  return generateHelperRaw({ ordered_prompts, custom_api: sampling }, context)
+}
+
 /** Compile the explicitly ordered, text-only generateRaw contract without Session writes. */
 export async function generateHelperRaw(config, { callModel, sessionId = '', history = [] }) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('generateRaw 参数必须是对象')

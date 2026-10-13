@@ -12,8 +12,17 @@ function chatRows(index) {
   return index && Array.isArray(index.chats) ? index.chats : []
 }
 
+// Chat ids are uid('chat'): the base36 segment is the creation time. Older index
+// rows predate the stored createdAt, so the id is their only record of it.
+function createdAtFromId(id) {
+  const match = /^chat-([0-9a-z]+)-/.exec(str(id))
+  const value = match ? parseInt(match[1], 36) : 0
+  return value > Date.UTC(2020, 0, 1) && value < Date.UTC(2100, 0, 1) ? value : 0
+}
+
 function chatSummary(chat, preservedLastOpenedAt = 0) {
   const updatedAt = Math.max(0, Number(chat && (chat.updatedAt || chat.createdAt)) || 0)
+  const createdAt = Math.max(0, Number(chat && chat.createdAt) || 0) || createdAtFromId(chat && chat.id) || updatedAt
   return {
     id: str(chat && chat.id),
     cardPath: str(chat && chat.cardPath),
@@ -23,13 +32,14 @@ function chatSummary(chat, preservedLastOpenedAt = 0) {
     requestMode: chat && chat.requestMode === 'sillytavern' ? 'sillytavern' : 'dsh',
     ...(currentBackgroundSessionId(chat) === null ? {} : { backgroundSessionId: currentBackgroundSessionId(chat) }),
     ...(Array.isArray(chat?.backgroundHistoryIds) ? { backgroundHistoryIds: chat.backgroundHistoryIds } : {}),
+    createdAt,
     updatedAt,
     lastOpenedAt: Math.max(0, Number(chat && chat.lastOpenedAt) || 0, Number(preservedLastOpenedAt) || 0) || updatedAt
   }
 }
 
 function sameSummary(left, right) {
-  return left && right && JSON.stringify(left.backgroundHistoryIds || []) === JSON.stringify(right.backgroundHistoryIds || []) && ['id', 'cardPath', 'cardName', 'title', 'mode', 'requestMode', 'updatedAt', 'lastOpenedAt', 'backgroundSessionId'].every(function (key) { return left[key] === right[key] })
+  return left && right && JSON.stringify(left.backgroundHistoryIds || []) === JSON.stringify(right.backgroundHistoryIds || []) && ['id', 'cardPath', 'cardName', 'title', 'mode', 'requestMode', 'createdAt', 'updatedAt', 'lastOpenedAt', 'backgroundSessionId'].every(function (key) { return left[key] === right[key] })
 }
 
 /**
@@ -174,9 +184,10 @@ export function createTavernConversationRegistry(options = {}) {
       const summary = summaries.get(chatId)
       if (!summary) continue
       const normalized = chatSummary(summary)
-      rows.push({ sessionId, chatId, ...(normalized.backgroundHistoryIds ? { backgroundHistoryIds: normalized.backgroundHistoryIds } : {}), ...(typeof normalized.backgroundSessionId === 'string' ? { backgroundSessionId: normalized.backgroundSessionId } : {}), cardPath: normalized.cardPath, cardName: normalized.cardName, title: normalized.title, mode: normalized.mode, requestMode: normalized.requestMode, updatedAt: normalized.updatedAt, lastOpenedAt: normalized.lastOpenedAt })
+      rows.push({ sessionId, chatId, ...(normalized.backgroundHistoryIds ? { backgroundHistoryIds: normalized.backgroundHistoryIds } : {}), ...(typeof normalized.backgroundSessionId === 'string' ? { backgroundSessionId: normalized.backgroundSessionId } : {}), cardPath: normalized.cardPath, cardName: normalized.cardName, title: normalized.title, mode: normalized.mode, requestMode: normalized.requestMode, createdAt: normalized.createdAt, updatedAt: normalized.updatedAt, lastOpenedAt: normalized.lastOpenedAt })
     }
-    rows.sort(function (left, right) { return right.lastOpenedAt - left.lastOpenedAt || right.updatedAt - left.updatedAt })
+    // Conversations keep a fixed place: opening or continuing one must not move it.
+    rows.sort(function (left, right) { return right.createdAt - left.createdAt || right.lastOpenedAt - left.lastOpenedAt })
     return rows
   }
 

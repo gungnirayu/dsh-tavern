@@ -236,3 +236,27 @@ restoreSource = replaceExactlyOnce(restoreSource, `    const last_not_has_variab
         }
     }`, 'bound restoration eligibility to its existing recent-floor threshold')
 await writeFile(restorePath, restoreSource)
+
+// An opening <initvar> replaces stat_data after the lorebook schema was built,
+// and upstream neither derives a schema from it nor strips its metadata: $meta
+// (strictSet, extensible) stays inert and $arrayMeta elements remain real data
+// until some later update reconciles. Treat it like the lorebook path does.
+const initPath = path.join(root, 'src/function/initvar/variable_init.ts')
+let initSource = await readFile(initPath, 'utf8')
+initSource = replaceExactlyOnce(initSource, `                            //重新进行其他全局世界书的初始化。
+                            await loadInitVarData(current_data);
+`, `                            //重新进行其他全局世界书的初始化。
+                            await loadInitVarData(current_data);
+                            const opening_schema: SchemaNode & RootAdditionalProps = generateSchema(
+                                klona(current_data.stat_data)
+                            );
+                            if (isObjectSchema(opening_schema)) {
+                                for (const key of ['strictTemplate', 'concatTemplateArray', 'strictSet'] as const) {
+                                    if (_.has(current_data.stat_data, ['$meta', key]))
+                                        opening_schema[key] = current_data.stat_data['$meta']?.[key] as boolean;
+                                }
+                                current_data.schema = opening_schema;
+                            }
+                            cleanUpMetadata(current_data.stat_data);
+`, 'derive schema and strip metadata for opening initvar')
+await writeFile(initPath, initSource)

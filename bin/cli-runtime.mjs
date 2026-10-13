@@ -1,7 +1,8 @@
-import { copyFileSync, symlinkSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { adaptedDshVersion } from './dsh-compatibility.mjs'
+import { copyTreeSync, removeTreeSync } from './portable-fs.mjs'
 
 export function cliRuntimeCommand(root, platform = process.platform) {
   return platform === 'win32' ? path.join(root, 'dsh.cmd') : path.join(root, 'bin', 'dsh')
@@ -21,7 +22,7 @@ export function healthyCliRuntime(root, platform = process.platform) {
   } catch { return false }
 }
 
-export function installCliRuntime({ root, run, platform = process.platform, force = process.env.DSH_TAVERN_REINSTALL_RUNTIME === '1' }) {
+export async function installCliRuntime({ root, run, platform = process.platform, force = process.env.DSH_TAVERN_REINSTALL_RUNTIME === '1' }) {
   if (!force && healthyCliRuntime(root, platform)) {
     return { command: cliRuntimeCommand(root, platform), reused: true, commit() {}, rollback() {} }
   }
@@ -39,7 +40,7 @@ export function installCliRuntime({ root, run, platform = process.platform, forc
     const manifest = JSON.parse(readFileSync(new URL('../config/cli-runtime/package.json', import.meta.url), 'utf8'))
     if (manifest.dependencies['@deepseek-ai/dsh'] !== adaptedDshVersion) throw new Error('独立 DSH 依赖锁与适配版本不一致。')
     for (const name of ['package.json', 'package-lock.json']) copyFileSync(new URL('../config/cli-runtime/' + name, import.meta.url), path.join(installRoot, name))
-    run('npm', ['ci', '--prefix', installRoot, '--no-audit', '--no-fund', '--registry', process.env.DSH_TAVERN_NPM_REGISTRY || 'https://registry.npmmirror.com'])
+    await run('npm', ['ci', '--prefix', installRoot, '--no-audit', '--no-fund', '--registry', process.env.DSH_TAVERN_NPM_REGISTRY || 'https://registry.npmmirror.com'])
     const installedPackage = path.join(installRoot, 'node_modules/@deepseek-ai/dsh/package.json')
     const pkg = JSON.parse(readFileSync(installedPackage, 'utf8'))
     const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.dsh
@@ -62,17 +63,18 @@ export function installCliRuntime({ root, run, platform = process.platform, forc
     promoted = true
     return {
       command: cliRuntimeCommand(root, platform),
-      commit() { settled = true; if (backedUp) rmSync(backup, { recursive: true, force: true }) },
+      commit() { settled = true; if (backedUp) removeTreeSync(backup) },
       rollback() {
         if (settled) return
         settled = true
-        rmSync(root, { recursive: true, force: true })
+        removeTreeSync(root)
         if (backedUp) renameSync(backup, root)
       },
     }
   } catch (error) {
+    if (error.unsafeToRetry) throw error
     if (!promoted && backedUp) renameSync(backup, root)
-    rmSync(staging, { recursive: true, force: true })
+    removeTreeSync(staging)
     throw error
   }
 }
@@ -105,9 +107,9 @@ export function migrateCliHome({ source, target }) {
     mkdirSync(path.dirname(to), { recursive: true })
     const staging = `${to}.migration-${process.pid}`
     try {
-      cpSync(from, staging, { recursive: true, dereference: true })
+      copyTreeSync(from, staging, { dereference: true })
       renameSync(staging, to)
-    } finally { rmSync(staging, { recursive: true, force: true }) }
+    } finally { removeTreeSync(staging) }
   }
   writeFileSync(marker, JSON.stringify({ source, migratedAt: new Date().toISOString() }) + '\n')
   return true

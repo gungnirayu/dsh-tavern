@@ -16,12 +16,6 @@ export function normalizeBackgroundModel(value) {
   return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }
 }
 
-export function snapshotBackgroundModel(configured) {
-  // Null means resolve the current foreground selection when each task starts.
-  // Retain a legacy snapshot; later global revisions supersede it.
-  return normalizeBackgroundModel(configured)
-}
-
 export function configuredChatBackgroundModel(chat, settings) {
   const game = object(chat)
   const config = object(settings)

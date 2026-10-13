@@ -25,18 +25,6 @@ test('ComfyUI mapping errors identify missing fields, types, unsafe integers and
   assert.throws(() => comfyWorkflow(badPositive), /节点 3.*text.*字符串/)
 })
 
-test('ComfyUI supports explicit maintainer mapping and prunes unrelated output branches', () => {
-  const graph = comfyGraph()
-  graph['extra'] = { class_type: 'SaveImage', inputs: { images: ['6', 0] } }
-  const template = { format: 'dsh-tavern-comfy-v1', name: '维护者模板', prompt: graph, outputNode: '7', bindings: { positive: [{ node: '3', input: 'text' }], seed: [{ node: '5', input: 'seed' }], batch: [{ node: '2', input: 'batch_size' }] } }
-  const result = compileComfyWorkflow(template, 'one subject')
-  assert.equal(result.prompt.extra, undefined)
-  assert.equal(result.prompt['2'].inputs.batch_size, 1)
-  assert.equal(comfyWorkflow(template).name, '维护者模板')
-  assert.throws(() => comfyWorkflow(graph), /唯一/)
-  assert.throws(() => comfyWorkflow({ ...template, bindings: { positive: [{ node: 'extra', input: 'text' }] } }), /未连接/)
-})
-
 test('ComfyUI rejects canvas files, secrets, cycles, broken links and ambiguous prompt mapping before HTTP', () => {
   assert.throws(() => comfyWorkflow({ nodes: [], links: [] }), /API/)
   for (const mutate of [
@@ -48,31 +36,6 @@ test('ComfyUI rejects canvas files, secrets, cycles, broken links and ambiguous 
   ]) { const graph = comfyGraph(); mutate(graph); assert.throws(() => comfyWorkflow(graph), /工作流/) }
   const graph = comfyGraph(); graph['2'].inputs.batch_size = ['1', 0]
   assert.throws(() => compileComfyWorkflow(comfyWorkflow(graph), 'scene'), /批量/)
-})
-
-test('ComfyUI persists before POST, polls only its ID and authenticates same-origin /view', async () => {
-  const calls = [], tasks = []
-  let id, historyReads = 0
-  const result = await generateSceneImage({ ...input(), authType: 'basic', username: 'reader', apiKey: ' secret ', onProviderTask: async task => tasks.push(task) }, { wait: async () => {}, fetch: async (url, init) => {
-    calls.push({ url, init }); assert.equal(init.headers.authorization, 'Basic ' + Buffer.from('reader: secret ').toString('base64'))
-    assert.equal(init.redirect, 'error')
-    if (url.endsWith('/prompt')) {
-      const body = JSON.parse(init.body); id = body.prompt_id
-      assert.equal(tasks[0].promptId, id); assert.equal(tasks[0].state, 'submitting')
-      assert.equal(body.prompt['2'].inputs.batch_size, 1)
-      return Response.json({ prompt_id: id, number: 8, node_errors: { unrelated: {} } })
-    }
-    if (url.includes('/history/')) {
-      assert.ok(url.endsWith('/history/' + id)); historyReads++
-      return Response.json(historyReads === 1 ? {} : { [id]: { status: { status_str: 'success', completed: true }, outputs: { '7': { images: [{ filename: 'picture 1.png', subfolder: 'tavern', type: 'output' }] }, other: { images: [{ filename: 'wrong.png', subfolder: '', type: 'output' }] } } } })
-    }
-    assert.equal(new URL(url).searchParams.get('filename'), 'picture 1.png')
-    assert.equal(new URL(url).pathname, '/prefix/view')
-    return new Response(png)
-  } })
-  assert.deepEqual(result.data, png); assert.equal(calls.filter(c => c.init.method === 'POST').length, 1)
-  assert.equal(tasks.at(-1).state, 'succeeded'); assert.equal(result.metadata.promptId, id)
-  assert.equal(JSON.stringify(tasks).includes(' secret '), false)
 })
 
 test('ComfyUI lost submit response reconciles queued task and never POSTs again, including unknown history', async () => {

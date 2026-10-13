@@ -13,7 +13,7 @@ export async function playControls({ page, step, savedChat, inspectRound, output
     await bodies.nth(1).waitFor({ state: 'hidden' })
     assert.equal(await bodies.count(), 1)
   }
-  const gold = value => page.frameLocator('.dsh-tavern-status-runtime iframe')
+  const gold = value => page.frameLocator('.dsh-tavern-status-runtime iframe:not([aria-hidden="true"])')
     .locator('#e2e-gold').filter({ hasText: new RegExp('^金币：' + value + '$') }).waitFor()
   const prose = chat => chat.messages.map(message => ({ role: message.role, text: message.sourceText ?? message.text }))
   await step('撤销回退：恢复被编辑的正文与变量，刷新仍保留', async () => {
@@ -30,7 +30,8 @@ export async function playControls({ page, step, savedChat, inspectRound, output
   await step('Guide：添加、刷新、删除，正文与变量保持不变', async () => {
     const before = await savedChat()
     const guide = 'E2E 指导：多写酒馆窗外的雨声。'
-    await page.getByPlaceholder('例如：多用短句，多写心理活动，对话不要超过三句').fill(guide)
+    // Locate by accessible name: the placeholder is example copy and changes with the UI.
+    await page.getByRole('textbox', { name: '新 Guide 内容', exact: true }).fill(guide)
     await page.getByRole('button', { name: '添加 Guide', exact: true }).click()
     const item = page.locator('.dsh-tavern-guide-item').filter({ hasText: guide })
     await item.waitFor()
@@ -42,7 +43,7 @@ export async function playControls({ page, step, savedChat, inspectRound, output
     await item.waitFor({ state: 'hidden' })
     assert.deepEqual((await savedChat()).guides, [])
     await page.reload()
-    await page.getByText('暂无 Guide。添加后会自动注入正文和候选项生成。', { exact: true }).waitFor()
+    await page.getByText(/^暂无 Guide。/).waitFor()
     const after = await savedChat()
     assert.deepEqual(prose(after), prose(before))
     assert.deepEqual(after.messages.at(-1).variables, before.messages.at(-1).variables)
@@ -61,14 +62,14 @@ export async function playControls({ page, step, savedChat, inspectRound, output
     await gold(40)
     await inspectRound('resettled-after-reload', 40, edited)
   })
-  await step('导出纯对话：下载内容与当前可见剧情一致', async () => {
+  await step('导出故事正文：下载内容与当前可见剧情一致', async () => {
     const before = await savedChat()
-    await page.getByRole('button', { name: '导出 ▾', exact: true }).click()
+    await page.getByRole('button', { name: '导出', exact: true }).click()
     const downloading = page.waitForEvent('download')
-    await page.getByRole('menuitem', { name: '纯对话 TXT', exact: true }).click()
+    await page.getByRole('menuitem', { name: '故事正文', exact: true }).click()
     const download = await downloading
     assert.equal(await download.failure(), null)
-    const path = join(output, 'conversation.txt')
+    const path = join(output, 'conversation.md')
     await download.saveAs(path)
     const text = await readFile(path, 'utf8')
     for (const expected of ['欢迎领取奖励。', '领取任务奖励', '你获得了十枚金币。', '再次领取奖励', edited]) assert.ok(text.includes(expected), '导出遗漏：' + expected)

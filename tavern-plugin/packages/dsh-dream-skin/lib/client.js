@@ -259,6 +259,7 @@ window.__ModuleLoader__.load({
 {
   "id": "tavern-terracotta",
   "colorScheme": "light",
+  "schemeFamily": "tavern-terracotta",
   "tokens": {
     "--dsw-alias-brand-primary": "#cc785c",
     "--dsw-alias-brand-text": "#ffffff",
@@ -291,6 +292,7 @@ window.__ModuleLoader__.load({
 {
   "id": "tavern-terracotta-dark",
   "colorScheme": "dark",
+  "schemeFamily": "tavern-terracotta",
   "tokens": {
     "--dsw-alias-brand-primary": "#d4896c",
     "--dsw-alias-brand-text": "#181715",
@@ -1548,6 +1550,10 @@ window.__ModuleLoader__.load({
 		/** Persist a skin choice; DEFAULT_SKIN clears the stored value. */
 		function writeSavedSkin(id) {
 			writeStorage(STORAGE_KEY, id === DEFAULT_SKIN ? null : id);
+			// Tavern: picking one half of a scheme family is also a scheme choice.
+			// Record it, or the next restore would flip back to the other half.
+			const skin = SKINS.find((skinDefinition) => skinDefinition.id === id);
+			if (typeof skin?.schemeFamily === "string") writeBuiltinLast(skin.colorScheme);
 		}
 
 		/** Wallpaper data URL (null when unset). */
@@ -1764,6 +1770,44 @@ window.__ModuleLoader__.load({
 		let popupTokenOverrides = {};
 		let accentTokenOverrides = {};
 
+		/**
+		 * Tavern: the native ui-theme.preference (light/dark/system) and the
+		 * third-party skin selection share ONE preference slot, so a skin takes the
+		 * slot over and the native choice is no longer readable from
+		 * snapshot.preference. Recover the scheme the user actually asked for: a
+		 * concrete built-in preference answers directly, system resolves through the
+		 * built-in active theme, and a skin id falls back to the last concrete
+		 * built-in choice this plugin recorded (BUILTIN_LAST_KEY).
+		 */
+		function nativeScheme(snapshot) {
+			const preference = snapshot?.preference;
+			if (preference === "light" || preference === "dark") return preference;
+			// A remote browser's host preference is process-local and falls back to
+			// `system` on every reconnect (lock screen, app resume). That `system` is a
+			// reset, not a choice: a recorded concrete scheme (built-in light/dark, or
+			// one half of a family picked in the skin picker) must outrank it.
+			const recorded = readBuiltinLast();
+			if (recorded !== null) return recorded;
+			if (preference === "system") {
+				const scheme = snapshot?.active?.colorScheme;
+				return scheme === "light" || scheme === "dark" ? scheme : null;
+			}
+			return null;
+		}
+		/**
+		 * Map a skin to the same-family member matching scheme: skins sharing a
+		 * schemeFamily are light/dark variants of one look, so the native pointer
+		 * can drive which one is active. Returns skinId unchanged when the scheme
+		 * is unknown, the skin declares no family, or the family has no member for
+		 * that scheme -- unpaired skins and imported packs are never rewritten.
+		 */
+		function resolveSchemeSkin(skinId, scheme) {
+			if (scheme !== "light" && scheme !== "dark") return skinId;
+			const self = SKINS.find((skin) => skin.id === skinId);
+			if (self === undefined || typeof self.schemeFamily !== "string") return skinId;
+			const match = SKINS.find((skin) => skin.schemeFamily === self.schemeFamily && skin.colorScheme === scheme);
+			return match === undefined ? skinId : match.id;
+		}
 		function rawActiveTheme(snapshot) {
 			// `preference` is the authoritative selected theme id. In the production
 			// dynamic-package event facade, `snapshot.active` can already be the
@@ -1778,7 +1822,8 @@ window.__ModuleLoader__.load({
 				: snapshot.preference === "system"
 				? snapshot.active?.id
 				: snapshot.preference;
-			return snapshot.themes?.find((theme) => theme.id === selectedId)
+			const wantedId = resolveSchemeSkin(selectedId, nativeScheme(snapshot));
+			return snapshot.themes?.find((theme) => theme.id === wantedId)
 				|| snapshot.themes?.find((theme) => theme.id === snapshot.active?.id)
 				|| snapshot.active;
 		}
@@ -4604,7 +4649,11 @@ window.__ModuleLoader__.load({
 			const saved = readSavedSkin();
 			if (typeof saved === "string" && saved !== DEFAULT_SKIN && (SKINS.some((skinDefinition) => skinDefinition.id === saved) || importedPacks.some((p) => p.id === saved))) {
 				const current = ctx.theme.getTheme().preference;
-				if (current !== saved) ctx.theme.setTheme(saved);
+				// The saved id can be the LIGHT half of a scheme family, and the shipped
+				// factory default is exactly that: apply the member the native preference
+				// asks for instead of the raw saved id.
+				const target = resolveSchemeSkin(saved, nativeScheme(ctx.theme.getTheme()));
+				if (current !== target) ctx.theme.setTheme(target);
 			} else {
 				// No third-party skin active — restore the last concrete built-in
 				// preference (dark/light) the user committed, so a remote browser's
@@ -5183,7 +5232,8 @@ window.__ModuleLoader__.load({
 				const known = SKINS.some((skinDefinition) => skinDefinition.id === savedSkin) || importedPacks.some((p) => p.id === savedSkin);
 				if (!known) return;
 				const current = ctx.theme.getTheme().preference;
-				if (current === savedSkin) {
+				const target = resolveSchemeSkin(savedSkin, nativeScheme(ctx.theme.getTheme()));
+				if (current === target) {
 					// already in effect — reset the budget so an isolated adoption
 					// later is still honored; the count is about consecutive failures.
 					skinRestoreCount = 0;
@@ -5194,7 +5244,7 @@ window.__ModuleLoader__.load({
 					// Count the attempt before setTheme(): ThemeRuntime publishes the
 					// successful saved-skin theme/change synchronously, and that event
 					// resets this consecutive-failure budget below.
-					ctx.theme.setTheme(savedSkin);
+					ctx.theme.setTheme(target);
 				}
 			};
 			const scheduleSkinRestore = () => {

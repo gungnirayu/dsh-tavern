@@ -15,9 +15,10 @@ export function worldbookSnapshot(session, text, pendingMessages = []) {
     const content = (message.content || []).filter(block => block.type === 'text').map(block => block.text).join('')
     if (content.includes(record.rendered)) previous = record
   }
-  if (previous ? previous.text === text : !text) return null
+  // Only the entries triggered this turn; an untriggered turn adds nothing.
+  if (!text || previous?.text === text) return null
   const version = createHash('sha256').update(text).digest('hex').slice(0, 16)
   // One complete ordered snapshot keeps cross-entry XML wrappers intact.
-  const rendered = `【动态世界书快照 · ${version}】\n以下是当前完整状态，替代此前所有动态世界书快照；未列出的旧内容已失效。\n${text || '当前无有效动态条目，此前动态世界书内容全部失效。'}`
+  const rendered = `【本轮世界书上下文】\n${text.replace(/^【本轮世界书上下文】\n?/, '')}`
   return { schemaVersion: 1, text, version, rendered }
 }

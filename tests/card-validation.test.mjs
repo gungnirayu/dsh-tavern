@@ -17,6 +17,7 @@ test('production tool reads disk through native DSH schema and rejects play-mode
   const { join } = await import('node:path')
   const { createFileResourceStore } = await import('../tavern-plugin/lib/domain/file-resources.js')
   const { registerCardReadingTools } = await import('../tavern-plugin/lib/tools/card-reading.js')
+  const { createCardValidationCheck } = await import('../tavern-plugin/lib/tools/card-validation-check.js')
   const root = await mkdtemp(join(tmpdir(), 'tavern-validate-tool-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const files = createFileResourceStore({ dataRoot: root })
@@ -28,7 +29,8 @@ test('production tool reads disk through native DSH schema and rejects play-mode
     tools: { register(value) { if (value.name === 'tavern_validate_card') tool = value } },
     chatForSession: async () => ({ mode, cardPath: path }),
     str: value => String(value || ''), fileResources: files,
-    cardMemory: { recordValidation: async () => {} }
+    cardMemory: { recordValidation: async () => {} },
+    checkCard: createCardValidationCheck({ cardMemory: { recordValidation: async () => {} }, fileResources: files })
   })
   const exec = { agent: { session: { id: 'test' } } }
   const broken = await tool.execute({}, exec)
