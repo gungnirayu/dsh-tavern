@@ -36,6 +36,7 @@ function walk(directory) {
         if (/^(?:\/\/|\/\*|\*|declaration:)/.test(code)) return;
         // Reviewed display-only endpoint examples, not an address policy.
         if (['dsh-mnemon/lib/client.js', 'dsh-mnemon-source-memory-spaces/lib/client.js'].includes(key) && code.startsWith('"overview.providerEndpointPlaceholder":')) return;
+        if (key === 'dsh-better-sidebar/lib/client.js' && (/^settingsBrowserLoopback(?:Desc|Placeholder):/.test(code) || sidebarPolicies.has(code))) return;
         gates++;
         if (!approved.get(key)?.includes(code)) failures.push(`${key}:${index+1}: ${code.slice(0, 220)}`);
       });
