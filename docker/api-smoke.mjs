@@ -31,10 +31,21 @@ assert.equal((await request(api, {...options, headers: {...options.headers, Host
 console.log('PASS: NAS-origin login, authenticated Tavern POST, guest rejection, Host/Origin rejection');
 
 // Verify the delivered browser module selects host persistence for an authenticated LAN page.
-const settingsClient = await request('/plugins/@deepseek-ai/dsh-client-ui-settings/client.js', {headers: {Cookie: cookie}});
-assert.equal(settingsClient.status, 200, 'settings client must be served');
-assert.match(settingsClient.text, /DSH_DOCKER_AUTHENTICATED_SETTINGS/);
-assert.ok(!settingsClient.text.includes('const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";'));
+// ClientModuleRegistry serves revisioned batches, not individual package URLs.
+// Follow the script/preload URLs from the actual boot HTML as the browser does.
+const index = await request('/', {headers: {Cookie: cookie}});
+const moduleUrls = [...index.text.matchAll(/(?:src|href)="([^"<>]+)"/g)]
+  .map(match => match[1].replaceAll('&amp;', '&'))
+  .filter(url => url.startsWith('/plugins/'));
+assert.ok(moduleUrls.length, 'boot HTML must reference client module batches');
+let settingsSource;
+for (const url of new Set(moduleUrls)) {
+  const client = await request(url, {headers: {Cookie: cookie}});
+  assert.equal(client.status, 200, 'boot client module batch must be served');
+  if (client.text.includes('DSH_DOCKER_AUTHENTICATED_SETTINGS')) settingsSource = client.text;
+}
+assert.ok(settingsSource, 'browser boot modules must include the authenticated LAN settings adapter');
+assert.ok(!settingsSource.includes('const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";'));
 const settingsRead = await request('/api/settings/describe', {
   method: 'POST', headers: {Cookie: cookie, 'Content-Type': 'application/json'},
   body: JSON.stringify({type: 'client-request', rpcId: 'docker-settings-probe', method: 'settings/describe', payload: {args: {}}})
