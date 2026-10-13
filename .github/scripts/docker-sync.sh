@@ -3,15 +3,27 @@ set -euo pipefail
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 merge_ref() {
-    if git merge --no-edit "$1"; then return; fi
+    # Keep the merge pending so excluded workflow files never enter the final tree.
+    git merge --no-commit --no-ff "$1" || true
+    if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+        git merge-base --is-ancestor "$1" HEAD
+        return
+    fi
+    if [[ "${2:-}" == preserve-workflows ]]; then
+        # GITHUB_TOKEN cannot modify workflow YAML. The fork owns its CI layer;
+        # sync upstream runtime/source changes while retaining the fork's workflows.
+        git restore --source=origin/main --staged --worktree -- .github/workflows
+    fi
     conflicts=$(git diff --name-only --diff-filter=U)
-    if [[ "$conflicts" != dsh-tavern-runtime.json ]]; then
+    if [[ -n "$conflicts" && "$conflicts" != dsh-tavern-runtime.json ]]; then
         echo '::error::Source conflict requires manual resolution; no force push performed'
         git status --short
         return 1
     fi
-    git checkout --ours dsh-tavern-runtime.json
-    git add dsh-tavern-runtime.json
+    if [[ "$conflicts" == dsh-tavern-runtime.json ]]; then
+        git checkout --ours dsh-tavern-runtime.json
+        git add dsh-tavern-runtime.json
+    fi
     git commit --no-edit
 }
 git fetch origin main
@@ -23,7 +35,7 @@ else
     git remote add upstream "$upstream_url"
 fi
 git fetch upstream main
-merge_ref upstream/main
+merge_ref upstream/main preserve-workflows
 # Preserve the upstream merge. Plain rebase would replay its complete history.
 # Retry a concurrent manifest push by merging the refreshed fork, never rewriting it.
 for attempt in 1 2 3; do
