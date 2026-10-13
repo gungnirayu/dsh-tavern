@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "e878ab850151d8c9eb8b5db8ecd8123e7ee93c2e",
-  "releaseSequence": 17,
+  "revision": "7ee667ed99d8105835ff0694fbbd784f527e8bdd",
+  "releaseSequence": 18,
   "version": "2.6.0",
   "files": [
     {
@@ -1876,8 +1876,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/user-preference-profile.js",
-      "sha256": "ba189e0f41dcbac4c91651d48650e7d3ee4fe707217d9c581a709dbaf30b5e6b",
-      "size": 14472
+      "sha256": "67804ed01c329b0feace6d340832d81755ce8ced15306819a89e8abff8e1bffd",
+      "size": 13638
     },
     {
       "path": "tavern-plugin/lib/domain/workspace-instruction-presentation.js",
