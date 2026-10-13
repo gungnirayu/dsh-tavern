@@ -4,7 +4,8 @@ on:
     branches: [main]
     paths-ignore: [dsh-tavern-runtime.json]
   schedule:
-    - cron: '17 */6 * * *'
+    # Daily clock + UTC day gate gives a true three-day cadence across months.
+    - cron: '17 3 * * *'
   workflow_dispatch:
 permissions:
   contents: write
@@ -13,9 +14,29 @@ concurrency:
   group: docker-publish
   cancel-in-progress: false
 jobs:
-  docker:
-    # Never publish to the upstream repository.
+  cadence:
     if: github.repository == 'gungnirayu/dsh-tavern'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          day=$(( $(date -u +%s) / 86400 ))
+          anchor=$(( $(date -u -d '2026-10-13' +%s) / 86400 ))
+          if [ "$EVENT_NAME" != schedule ] || [ $(( (day - anchor) % 3 )) -eq 0 ]; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          fi
+  docker:
+    needs: cadence
+    # Never publish to the upstream repository.
+    if: github.repository == 'gungnirayu/dsh-tavern' && needs.cadence.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

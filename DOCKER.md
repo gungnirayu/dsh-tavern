@@ -1,6 +1,6 @@
 # Docker / TOS 7
 
-本 fork 每 6 小时尝试合并 flizzywine/dsh-tavern 的 main，然后在同一条 Actions 流程中构建、启动测试并发布 GHCR 镜像。支持手动运行 `Docker sync, test and publish`；默认分支推送也会构建。GitHub 调度可能延迟，长期无活动的公开仓库可能暂停调度。fork 的 Actions 需要在网页启用。同步保留 fork 的 `.github/workflows`，仅跟随上游程序源码和其他文件，避免 GITHUB_TOKEN 无 workflows 权限导致同步失败；需要更新上游 CI 时单独审核修改。
+本 fork 每 72 小时尝试合并 flizzywine/dsh-tavern 的 main，然后在同一条 Actions 流程中构建、启动测试并发布 GHCR 镜像。以 2026-10-13 为起点，每隔三天北京时间 11:17 执行；工作流每日检查日期，其余日期跳过构建，跨月也保持三天间隔。支持手动运行 `Docker sync, test and publish`；默认分支推送也会构建。GitHub 调度可能延迟，长期无活动的公开仓库可能暂停调度。fork 的 Actions 需要在网页启用。同步保留 fork 的 `.github/workflows`，仅跟随上游程序源码和其他文件，避免 GITHUB_TOKEN 无 workflows 权限导致同步失败；需要更新上游 CI 时单独审核修改。
 
 镜像为 linux/amd64，标签为 `latest`、`sha-<12 位提交号>` 和完整提交号。只有容器通过空目录初始化、HTTP、重启持久化和升级路径测试及 NAS Origin 下的 token 登录、真实 Tavern API POST、未登录和跨站拒绝测试后，才发布镜像。合并冲突时流程失败，保留原分支和旧镜像，不强制覆盖。
 
