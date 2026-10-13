@@ -19,7 +19,7 @@
 | http-proxy / sidebar browser loopback allowlist | 防止不受信页面访问本机服务 | 保留；不因 Docker 打包放开 loopback 网络限制 |
 | 存档救援、侧边栏新对话直接调用 crypto.randomUUID | 非安全上下文 HTTP 可能缺少 API | bootstrap 在业务模块前统一补充基于 getRandomValues 的 RFC 4122 v4 UUID，保留原生实现 |
 | Tavern 其他 UUID、DSH UUID helpers、iframe SHA-256 | 已有 fallback / scoped polyfill | 核查后保留；不伪造 isSecureContext，不移除浏览器安全边界 |
-| sandbox="allow-scripts" 的人物卡请求 Origin:null | 原代理误拒绝只读资源 | 精确开放上游已公开的 GET 静态资源；session-resource/helper-history 必须有独立 cap 并由上游验证。POST 和一般 API 不适用例外 |
+| sandbox="allow-scripts" 的人物卡请求 Origin:null | 原代理误拒绝只读资源 | 精确开放上游已公开的 GET 静态资源；session-resource/helper-history 必须有独立 cap 并由上游验证。公开资源补齐 CORS/CORP 响应头；POST 和一般 API 不适用例外 |
 | 浏览器 API / SSE URL 使用 location.origin | 正确使用外部地址 | 非 loopback Chromium 与实际 RPC 测试 |
 | 原 status 输出内部 127.0.0.1 URL | 用户容易复制到错误 IP/端口 | 新增 tavern-url，启动输出与 status helper 显示 PUBLIC_URL，保留 token |
 | new URL(req.url, 'http://localhost') | 解析相对路径的基址，没有发起网络访问 | 保留 |

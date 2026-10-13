@@ -80,6 +80,10 @@ export function createProxy({ publicUrl, upstreamPort = 3081 }) {
     const upstream = http.request({ hostname: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method, headers: upstreamHeaders(req) }, reply => {
       // Preserve Set-Cookie and streaming bodies; DSH still authenticates every request.
       const headers = { ...reply.headers };
+      if (publicRead(req)) {
+        headers['access-control-allow-origin'] = '*';
+        headers['cross-origin-resource-policy'] = 'cross-origin';
+      }
       if (headers.location?.startsWith(internalOrigin + '/')) headers.location = publicOrigin.origin + headers.location.slice(internalOrigin.length);
       res.writeHead(reply.statusCode, headers);
       reply.pipe(res);

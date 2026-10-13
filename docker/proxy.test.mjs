@@ -8,6 +8,7 @@ async function fixture(t) {
   const upstream = http.createServer((req, res) => {
     assert.equal(req.headers.host, `127.0.0.1:${upstream.address().port}`);
     if (req.headers.origin && req.headers.origin !== 'null') assert.equal(req.headers.origin, `http://${req.headers.host}`);
+    if (req.url === '/api/dsh-tavern/client-assets/tavern.css') { res.writeHead(200, {'Content-Type': 'text/css'}); res.end('body{}'); return; }
     if (req.url.startsWith('/api/dsh-tavern/vendor/')) { res.writeHead(200, {'Access-Control-Allow-Origin': '*'}); res.end('public script'); return; }
     if (req.url.startsWith('/api/dsh-tavern/session-resource')) {
       if (new URL(req.url, 'http://x').searchParams.get('cap') === 'signed-cap') { res.writeHead(200, {'Access-Control-Allow-Origin': '*'}); res.end('scoped resource'); }
@@ -93,6 +94,10 @@ test('public URL must be an explicit origin', () => {
 test('opaque sandbox reads only explicit public assets or an upstream-verified capability', async t => {
   const port = await fixture(t);
   const sandbox = {Origin: 'null', 'Sec-Fetch-Site': 'cross-site'};
+  const css = await request(port, {method: 'GET', path: '/api/dsh-tavern/client-assets/tavern.css', headers: sandbox, body: ''});
+  assert.equal(css.status, 200);
+  assert.equal(css.headers['access-control-allow-origin'], '*');
+  assert.equal(css.headers['cross-origin-resource-policy'], 'cross-origin');
   assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/vendor/magvarupdate/bundle.js', headers: sandbox, body: ''})).status, 200);
   assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/session-resource?cap=signed-cap', headers: sandbox, body: ''})).status, 200);
   assert.equal((await request(port, {method: 'GET', path: '/api/dsh-tavern/session-resource?cap=forged', headers: sandbox, body: ''})).status, 403);
