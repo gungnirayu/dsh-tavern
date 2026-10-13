@@ -27,6 +27,7 @@ elif [[ $(cat /data/.docker-image-revision) != "$revision" ]]; then
     CI=true node "$app" install --host cli
     cp "$seed/.docker-image-revision" /data/.docker-image-revision
 fi
+node /usr/local/lib/tavern-settings-adapter.mjs /data
 mkdir -p /data/logs
 rm -f /data/logs/tavern.pid.json
 proxy_pid= log_pid= monitor_pid=

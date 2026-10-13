@@ -16,10 +16,12 @@ RUN test -n "$SOURCE_COMMIT" \
     && pnpm install --frozen-lockfile \
     && printf '{"commit":"%s"}\n' "$SOURCE_COMMIT" > .dsh-tavern-release.json \
     && node bin/dsh-tavern.mjs install --host cli \
+    && node docker/settings-adapter.mjs /data \
     && printf '%s\n' "$SOURCE_COMMIT" > /data/.docker-image-revision \
     && mkdir /opt/tavern-seed && cp -a /data/. /opt/tavern-seed/ \
     && rm -rf /data && mkdir /data
 COPY docker/entrypoint.sh /usr/local/bin/tavern-entrypoint
+COPY docker/settings-adapter.mjs /usr/local/lib/tavern-settings-adapter.mjs
 COPY docker/proxy.mjs /usr/local/lib/tavern-proxy.mjs
 COPY docker/healthcheck.mjs /usr/local/lib/tavern-healthcheck.mjs
 RUN chmod +x /usr/local/bin/tavern-entrypoint

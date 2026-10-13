@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/docker-sync.sh
       - name: Test Docker HTTP adapter
-        run: node --test docker/proxy.test.mjs
+        run: node --test docker/proxy.test.mjs docker/settings-adapter.test.mjs
       - name: Select exact source revision
         id: source
         shell: bash

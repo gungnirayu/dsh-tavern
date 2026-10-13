@@ -36,3 +36,7 @@ docker build --build-arg SOURCE_COMMIT="$(git rev-parse HEAD)" -t dsh-tavern:loc
 ```
 
 Dockerfile 直接安装 checkout 源码，避免 install.sh 的 Git 路径重新拉 main、覆盖指定目标提交。使用仓库锁文件及上游 CLI/profile 安装模块，不在镜像构建时启动服务。健康检查验证内外两个端口；连续失败会让容器退出并由重启策略恢复。tini 负责回收子进程，退出时通过上游 stop 命令停止服务。
+
+## 模型设置的局域网适配
+
+DSH 0.1.5-rc.2 的设置前端对非 loopback 浏览器地址主动使用 memory 模式，会显示 `settings are unavailable in this browser`。镜像的 settings-adapter 仅修改该客户端的持久化选择，允许已通过 Docker 代理认证的 NAS 页面读取和保存服务端设置。构建和启动时均检查适配；上游实现变化会明确失败，避免静默发布不可用设置页。代理的 Host/Origin 和登录验证继续生效。CI 验证实际提供的客户端模块和 settings describe RPC。

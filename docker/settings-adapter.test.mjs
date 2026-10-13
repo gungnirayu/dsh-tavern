@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { adaptSettingsClient } from './settings-adapter.mjs';
+test('enables host settings only in the settings client and is idempotent', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'docker-settings-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  const file = path.join(root, 'runtime/lib/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js');
+  mkdirSync(path.dirname(file), {recursive: true});
+  const original = 'const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";';
+  writeFileSync(file, original + '\nconst otherSetting = 1;');
+  assert.equal(adaptSettingsClient(root), 1);
+  assert.match(readFileSync(file, 'utf8'), /const persistence = "host";/);
+  assert.match(readFileSync(file, 'utf8'), /const otherSetting = 1;/);
+  assert.equal(adaptSettingsClient(root), 1);
+  writeFileSync(file, 'changed upstream implementation');
+  assert.throws(() => adaptSettingsClient(root), /Settings client changed/);
+});

@@ -29,3 +29,17 @@ assert.equal((await request(api, {...options, headers: {'Content-Type': 'applica
 assert.equal((await request(api, {...options, headers: {...options.headers, Origin: 'http://evil.example'}})).status, 403, 'cross-origin API request must be rejected');
 assert.equal((await request(api, {...options, headers: {...options.headers, Host: 'evil.example'}})).status, 403, 'unconfigured authority must be rejected');
 console.log('PASS: NAS-origin login, authenticated Tavern POST, guest rejection, Host/Origin rejection');
+
+// Verify the delivered browser module selects host persistence for an authenticated LAN page.
+const settingsClient = await request('/plugins/ui-settings/client.js', {headers: {Cookie: cookie}});
+assert.equal(settingsClient.status, 200, 'settings client must be served');
+assert.match(settingsClient.text, /DSH_DOCKER_AUTHENTICATED_SETTINGS/);
+assert.ok(!settingsClient.text.includes('const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";'));
+const settingsRead = await request('/api/settings/describe', {
+  method: 'POST', headers: {Cookie: cookie, 'Content-Type': 'application/json'},
+  body: JSON.stringify({type: 'client-request', rpcId: 'docker-settings-probe', method: 'settings/describe', payload: {}})
+});
+assert.equal(settingsRead.status, 200, 'settings describe RPC should succeed');
+const described = JSON.parse(settingsRead.text);
+assert.equal(described.result?.ok, true, 'settings describe must return a valid settings snapshot');
+console.log('PASS: LAN settings client and settings describe RPC');
