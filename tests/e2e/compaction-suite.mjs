@@ -6,7 +6,7 @@ const source = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const base = resolve(process.env.TAVERN_E2E_OUTPUT || join(source, 'output/e2e-compaction'))
 await mkdir(base, { recursive: true })
 const output = await mkdtemp(join(base, 'suite-'))
-const cases = ['manual', 'foreground', 'background', 'both', 'rounds', 'overflow', 'legacy']
+const cases = ['manual', 'foreground', 'background', 'both', 'rounds', 'overflow', 'provider-overflow', 'legacy']
 const requested = process.argv.slice(2)
 if (requested.some(name => !cases.includes(name))) throw Error('Scenarios: ' + cases.join(', '))
 const queue = [...(requested.length ? requested : cases)], results = []

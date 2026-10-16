@@ -307,6 +307,12 @@ export function createTavernPluginApi(deps) {
       return data
     },
 
+    // The picture of the game's character card, as a URL a page can show.
+    async getCardImage({ gameId } = {}) {
+      const game = await requireGame(gameId)
+      return (await deps.readCardImage?.(game.sessionId)) ?? null
+    },
+
     // Settled turns from..to (at most 50), each with the player's input and the shown text.
     async getHistory({ gameId, from, to } = {}) {
       const game = await requireGame(gameId)
@@ -374,7 +380,12 @@ export function createTavernPluginApi(deps) {
 
     async backgroundModel({ gameId } = {}) {
       const selection = await deps.backgroundModel(gameIdOf(gameId))
-      return selection && selection.provider && selection.model ? { provider: String(selection.provider), model: String(selection.model) } : null
+      if (!selection || !selection.provider || !selection.model) return null
+      return {
+        provider: String(selection.provider),
+        model: String(selection.model),
+        ...(selection.reasoningEffort ? { reasoningEffort: String(selection.reasoningEffort) } : {})
+      }
     },
 
     async attach({ gameId, turn, textVersion, item } = {}) {

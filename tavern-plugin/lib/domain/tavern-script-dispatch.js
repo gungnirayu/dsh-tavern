@@ -24,6 +24,7 @@ export function createTavernScriptDispatch(options = {}) {
   const presenceTtlMs = Math.max(executionTimeoutMs, Number(options.presenceTtlMs) || 120000)
   const publishSignal = typeof options.publishSignal === 'function' ? options.publishSignal : function () {}
   const renewableExecution = options.renewableExecution !== false
+  const priority = typeof options.priority === 'function' ? options.priority : () => 0
   const records = new Map()
   const presence = new Map()
   // Execution receipts contain identities only; durable MVU effects remain in delivery.
@@ -76,7 +77,10 @@ export function createTavernScriptDispatch(options = {}) {
     const owner = str(runtimeId)
     if (id === '' || owner === '') return false
     const current = presence.get(id)
-    if (current && current.owner !== owner && now() - current.seenAt <= presenceTtlMs) return false
+    // A higher-priority runtime takes over an idle session (priority may
+    // depend on the session: the page in front of the player, else the server).
+    if (current && current.owner !== owner && now() - current.seenAt <= presenceTtlMs
+      && !(priority(owner, id) > priority(current.owner, id) && !records.has(id))) return false
     const wasReady = Boolean(current && current.owner === owner && now() - current.seenAt <= presenceTtlMs && current.ready === true)
     const error = redactDiagnostic(str(initializationError).slice(0, 4000)).trim()
     ready = ready === true && error === ''

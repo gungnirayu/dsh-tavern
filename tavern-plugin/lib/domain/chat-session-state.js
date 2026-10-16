@@ -166,6 +166,8 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       scriptProgress,
       statusBarPlacement: chat.statusBarPlacement === 'body' ? 'body' : 'sidebar',
       updatedAt: chat.updatedAt || 0,
+      // Compaction writes only this header field; cached views must not keep a stale notice.
+      contextCompaction: chat.contextCompaction || null,
       mvuReceipts: mvuReceiptsOf(chat, changes)
     }
   }

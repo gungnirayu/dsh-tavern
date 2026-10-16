@@ -14,6 +14,7 @@ const LEGACY_MANAGED_BUNDLES = [
   '@deepseek-ai/dsh-base',
   '@deepseek-ai/dsh-web-app',
   '@dsh-external/dsh-mobile-nav',
+  'dsh-web-mobile',
   'dsh-better-sidebar',
   'dsh-tavern-plugin',
   'dsh-codex-connect',
@@ -21,6 +22,7 @@ const LEGACY_MANAGED_BUNDLES = [
 
 const LEGACY_MANAGED_DEPENDENCIES = [
   '@dsh-external/dsh-mobile-nav',
+  'dsh-web-mobile',
   'dsh-better-sidebar',
   'dsh-tavern-plugin',
   '@deepseek-ai/dsh-tools',
@@ -51,14 +53,16 @@ export function mergeProfileManifest({ source, current = {}, pluginPath, dataRoo
   const currentProfile = object(currentDsh.profile)
   const currentTavern = { ...object(currentDocument.dshTavern) }
   delete currentTavern.cliPocketEnabled
-  // Pocket includes mobile-nav itself. Select one layout owner per host,
-  // including old/manual installs, so upgrades cannot reintroduce both.
-  const excludedMobileBundles = host === 'android'
-    ? ['dsh-pocket', '@dsh-external/dsh-mobile-nav']
-    : ['dsh-web-mobile', '@dsh-external/dsh-mobile-nav', ...(host !== 'desktop' ? ['dsh-pocket'] : [])]
+  // Pocket and web-mobile each include mobile-nav, so they cannot load together.
+  // Desktop and Android ship one of them and drop whatever collides with it;
+  // CLI ships none, so a layout the user installed there is left alone.
+  const selectedLayout = host === 'android' ? 'dsh-web-mobile' : host === 'desktop' ? 'dsh-pocket' : null
+  const excludedMobileBundles = selectedLayout
+    ? ['dsh-pocket', 'dsh-web-mobile', '@dsh-external/dsh-mobile-nav'].filter(name => name !== selectedLayout)
+    : []
   const sourceBundles = uniqueStrings(sourceProfile.bundles)
-    .map(name => host !== 'android' && name === 'dsh-web-mobile' ? 'dsh-pocket' : name)
-    .filter(name => !excludedMobileBundles.includes(name))
+    .map(name => name === 'dsh-web-mobile' ? selectedLayout : name)
+    .filter(name => name && !excludedMobileBundles.includes(name))
   const previousManagedBundles = uniqueStrings(currentTavern.managedBundles).length > 0
     ? uniqueStrings(currentTavern.managedBundles)
     : LEGACY_MANAGED_BUNDLES
@@ -122,7 +126,11 @@ export function prepareProfileWorkspace(workspaceText, manifest) {
   if (document.errors.length > 0) throw new Error(`无法读取 pnpm workspace 配置：${document.errors[0].message}`)
   for (const key of Object.keys(object(document.toJS()?.patchedDependencies))) {
     const name = HOST_OPTIONAL_PACKAGES.find(item => key === item || key.startsWith(`${item}@`))
-    if (name && !manifest.dependencies?.[name]) document.deleteIn(['patchedDependencies', key])
+    if (!name) continue
+    // A user-installed layout may pin another version than the one patched.
+    const version = key.slice(name.length + 1)
+    const installed = manifest.dependencies?.[name]
+    if (!installed || (version && installed !== version)) document.deleteIn(['patchedDependencies', key])
   }
   return String(document)
 }

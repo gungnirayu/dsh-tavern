@@ -65,7 +65,7 @@ test('process death before head publication preserves old state and recovers wri
  const {root}=await fixture(t,4)
  const {spawn}=await import('node:child_process')
  const moduleUrl=new URL('../tavern-plugin/lib/domain/conversation-page-store.js',import.meta.url).href
- const source=`import {createConversationPageStore} from ${JSON.stringify(moduleUrl)};await createConversationPageStore({root:process.argv[1],onIO:e=>{if(e.kind==='write'&&e.type==='head')process.exit(42)}}).commit('a',{expectedRevision:1,state:{gold:0},append:[{id:'interrupted'}]})`
+ const source=`import {createConversationPageStore} from ${JSON.stringify(moduleUrl)};await createConversationPageStore({root:process.argv[1],onIO:e=>{if((e.kind==='write'||e.kind==='link')&&e.type==='head')process.exit(42)}}).commit('a',{expectedRevision:1,state:{gold:0},append:[{id:'interrupted'}]})`
  const code=await new Promise((resolve,reject)=>{const child=spawn(process.execPath,['--input-type=module','-e',source,root],{stdio:'ignore'});child.on('error',reject);child.on('exit',resolve)})
  assert.equal(code,42)
  const fresh=createConversationPageStore({root})

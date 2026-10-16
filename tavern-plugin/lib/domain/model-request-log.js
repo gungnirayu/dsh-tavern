@@ -45,10 +45,13 @@ function evidenceRecord(record, result) {
 }
 
 // Request bodies are debugging evidence (every agent step of a long chat is
-// several MB); keep the full text of the most recent turns only. Index rows,
-// timing and responses stay for every request.
-export const MODEL_REQUEST_KEEP_TURNS = 30
-const PRUNED_NOTE = '该请求原文已清理（只保留最近 ' + MODEL_REQUEST_KEEP_TURNS + ' 轮）'
+// several MB); keep the full text of the most recent turns only, and within
+// them at most MODEL_REQUEST_KEEP_BYTES per game (one turn of tool steps or
+// rerolls can hold dozens of near-identical bodies). Index rows, timing and
+// responses stay for every request; the newest body of each session stays.
+export const MODEL_REQUEST_KEEP_TURNS = 3
+export const MODEL_REQUEST_KEEP_BYTES = 8 * 1024 * 1024
+const PRUNED_NOTE = '该请求原文已清理（只保留最近 ' + MODEL_REQUEST_KEEP_TURNS + ' 轮、每局 8 MB 以内的请求原文）'
 
 export function createModelRequestLog(options = {}) {
   const readJson = options.readJson
@@ -102,12 +105,47 @@ export function createModelRequestLog(options = {}) {
   // Mark rows beyond the retained window; the caller deletes their bodies afterwards.
   function retainRecentBodies(requests, latestTurn, pruned) {
     const cutoff = latestTurn - MODEL_REQUEST_KEEP_TURNS
-    if (cutoff < 1) return requests
-    return requests.map(function (entry) {
-      const turn = Number(entry && entry.turn)
-      if (!entry || entry.pruned || !(turn > 0 && turn <= cutoff)) return entry
+    const newestOfSession = new Set()
+    let kept = 0
+    const decisions = new Array(requests.length).fill(false)
+    for (let index = requests.length - 1; index >= 0; index--) {
+      const entry = requests[index]
+      if (!entry || entry.pruned) continue
+      const session = str(entry.sessionId) + '|' + str(entry.scope)
+      const newest = !newestOfSession.has(session)
+      newestOfSession.add(session)
+      const turn = Number(entry.turn)
+      const old = cutoff >= 1 && turn > 0 && turn <= cutoff
+      kept += Math.max(0, Number(entry.bytes) || 0)
+      decisions[index] = !newest && (old || kept > MODEL_REQUEST_KEEP_BYTES)
+    }
+    return requests.map(function (entry, index) {
+      if (!decisions[index]) return entry
       pruned.push(entry.id)
       return Object.assign({}, entry, { pruned: true })
+    })
+  }
+  // Apply the retention window to a game already on disk (maintenance).
+  function prune(chatId) {
+    return enqueue(str(chatId), async function () {
+      const base = 'model-requests/' + str(chatId) + '/'
+      const index = await readJson(base + 'index.json')
+      const requests = Array.isArray(index && index.requests) ? index.requests : []
+      if (requests.length === 0) return { pruned: 0 }
+      // Older rows have no recorded size; measure their bodies once.
+      const sizes = new Map()
+      if (typeof options.size === 'function') {
+        for (const entry of requests) if (entry && !entry.pruned && !(Number(entry.bytes) > 0)) sizes.set(entry.id, await options.size(base + entry.id + '.json'))
+      }
+      const latestTurn = requests.reduce((max, entry) => Math.max(max, Number(entry && entry.turn) || 0, Number(entry && entry.agentTurn) || 0), 0)
+      const pruned = []
+      await updateJson(base + 'index.json', function (value) {
+        const current = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+        const rows = (Array.isArray(current.requests) ? current.requests : []).map(entry => sizes.has(entry?.id) ? { ...entry, bytes: sizes.get(entry.id) } : entry)
+        return { ...current, requests: retainRecentBodies(rows, latestTurn, pruned) }
+      })
+      for (const prunedId of pruned) await remove(base + prunedId + '.json')
+      return { pruned: pruned.length }
     })
   }
 
@@ -147,6 +185,7 @@ export function createModelRequestLog(options = {}) {
     const base = 'model-requests/' + chat.id + '/'
     // The body was cloned above; the model request itself must not wait for the disk.
     enqueue(chat.id, async function () {
+      const bytes = Buffer.byteLength(JSON.stringify(record))
       await writeBody(base + requestId + '.json', record)
       // Persist timing separately so completion after a restart never loads the body.
       await writeJson(base + requestId + '.result.json', { createdAt: stamp, status: 'running' })
@@ -160,7 +199,7 @@ export function createModelRequestLog(options = {}) {
           requests: retainRecentBodies(requests.concat([{
             id: requestId, scope, task: record.task, sessionId: record.sessionId,
             turn: record.turn, agentTurn: record.agentTurn, step: record.step,
-            createdAt: record.createdAt, preset: record.preset
+            createdAt: record.createdAt, preset: record.preset, bytes
           }]), Math.max(turn, record.agentTurn), pruned)
         }
       })
@@ -247,5 +286,5 @@ export function createModelRequestLog(options = {}) {
     const chatId = owner?.chatId || fallbackChatId;
     return chatId ? latest(chatId, knownId, sessionId) : null;
   }
-  return Object.freeze({ record, complete, evidence, list, detail, latest, latestForSession })
+  return Object.freeze({ record, complete, evidence, list, detail, latest, latestForSession, prune })
 }

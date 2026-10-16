@@ -47,7 +47,7 @@ export async function regenAnomalyChecks({ page, step, savedChat, output, report
     if (!await button.isVisible().catch(() => false)) return 'no regenerate button'
     const before = await state(), logStart = serverLog().length
     await button.click()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill(guidance)
+    await page.getByPlaceholder('指导意见（可选）').fill(guidance)
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
     if (stopAfter) { await pause(stopAfter); if (!await stopGeneration()) return 'stop button not found' }
     for (let i = 0; i < 90; i++) {
@@ -174,7 +174,7 @@ export async function regenTemplateChecks({ page, step, savedChat, output, repor
   }
   async function regen(guidance) {
     await page.getByRole('button', { name: '重新生成正文', exact: true }).filter({ visible: true }).last().click()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill(guidance)
+    await page.getByPlaceholder('指导意见（可选）').fill(guidance)
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
     for (let i = 0; i < 90; i++) { await pause(500); const chat = await savedChat(); if (!chat.regenInProgress && i > 4) break }
     await page.getByText('后台结算已完成').last().waitFor({ timeout: 30000 }).catch(() => {})

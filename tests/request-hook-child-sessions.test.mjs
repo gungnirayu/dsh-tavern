@@ -2,13 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { registerRequestHooks } from '../tavern-plugin/lib/hooks/request.js'
 
-function preStep() {
+function preStep(chats = {}) {
   const handlers = {}
   const prepared = []
   registerRequestHooks({
     backgroundAgentRunner: { owns: () => false },
     cardMemory: { appendRecall: async ({ decision }) => decision },
-    chatForSession: async () => undefined,
+    chatForSession: async id => chats[id],
     ctx: { on: (name, handler) => { handlers[name] = handler } },
     foregroundStrategies: { prepareStep: async input => { prepared.push(input.sessionId); return { ...input.decision, status: true } } },
     requestCoordinates: new Map(),
@@ -28,5 +28,11 @@ test('child agent sessions get no Tavern turn frame or status', async () => {
 test('top-level sessions still go through foreground preparation', async () => {
   const hook = preStep()
   assert.equal((await hook.run({})).status, true)
+  assert.deepEqual(hook.prepared, ['s1'])
+})
+
+test('a native fork of a game is still a game session', async () => {
+  const hook = preStep({ s1: { id: 'chat-fork', mode: 'story', messages: [] } })
+  assert.equal((await hook.run({ parentSession: 'game-1', isSeeded: true })).status, true)
   assert.deepEqual(hook.prepared, ['s1'])
 })

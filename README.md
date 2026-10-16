@@ -13,7 +13,7 @@
 
 [![观看 3 分钟实机演示：兼容酒馆生态，更快、更稳、更鲜活](docs/images/readme/promo-video.jpg)](https://www.bilibili.com/video/BV1MHaU6NE7S/)
 
-[下载安装](#快速开始) · [使用文档](https://flizzywine.github.io/dsh-tavern/) · [宣传视频](https://www.bilibili.com/video/BV1MHaU6NE7S/) · [讨论区](https://github.com/flizzywine/dsh-tavern/discussions)
+[下载安装](#快速开始) · [使用文档](https://flizzywine.github.io/dsh-tavern/) · [宣传视频](https://www.bilibili.com/video/BV1MHaU6NE7S/) · [讨论区](https://github.com/flizzywine/dsh-tavern/discussions) · [Discord 交流群](https://discord.gg/hYAEjKnpra)
 
 - **兼容 SillyTavern 生态**：人物卡、世界书、预设、正则美化、MVU、酒馆助手脚本，导入就能用。
 - **更快**：一轮约 10 秒，缓存命中率 95% 以上。
@@ -96,7 +96,6 @@
 | [dsh-card-updater](https://github.com/flizzywine/dsh-tavern/discussions/149) | 卡片更新器，作者发布新版时提醒你                   |
 | [dsh-wrongbook](https://github.com/flizzywine/dsh-tavern/discussions/150)    | 错题库，按人物卡记下调试踩过的坑                   |
 | [动态世界书生成](https://github.com/flizzywine/dsh-tavern/discussions/147)          | 后台结算时生成世界书条目                       |
-| [SQLite V2](https://github.com/flizzywine/dsh-tavern/discussions/156)        | SQLite 存档，回退时清掉被回退的内容              |
 
 以上均为社区作者开发，更多插件见[讨论区的 Show and tell](https://github.com/flizzywine/dsh-tavern/discussions/categories/show-and-tell)。
 
@@ -186,8 +185,9 @@ curl -fsSL https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/install.sh | D
 欢迎交流使用经验、分享人物卡或反馈问题：
 
 - **[GitHub Discussions](https://github.com/flizzywine/dsh-tavern/discussions)**：任何人都可以直接发帖。
+- **[Discord](https://discord.gg/hYAEjKnpra)**：DSH Tavern 交流频道，任何人都可以加入。
 
-本项目没有官方的 QQ 群、微信群或其他群聊。想建群的朋友可以在 Discussions 发帖招呼大家，但我不会加入。
+除 Discord 外，本项目没有官方的 QQ 群、微信群或其他群聊。
 
 反馈故障时，可从对话顶部的“日志”下载执行记录；分享前请检查其中的对话和附件隐私。
 

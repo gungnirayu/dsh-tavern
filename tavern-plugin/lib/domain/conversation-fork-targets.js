@@ -7,6 +7,9 @@ import { sessionEvents } from './session-events.js'
 // Regenerated rounds map their new native turn back to the story turn that the
 // fork request expects. Superseded or rolled-back replies are not rendered, so
 // extra entries are harmless; the server validates every fork request again.
+// Earlier turns lose their history after save maintenance (only the latest
+// FORK_HISTORY_TURNS turns stay forkable), so they get no fork button.
+export const FORK_HISTORY_TURNS = 50
 export function forkTurnsByMessageId(session, regeneratedDshTurns = {}) {
   const storyByNative = new Map()
   for (const [story, native] of Object.entries(regeneratedDshTurns || {})) {
@@ -29,5 +32,7 @@ export function forkTurnsByMessageId(session, regeneratedDshTurns = {}) {
     if (!storyByNative.has(native) && regeneratedStories.has(native)) continue
     result[messageId] = storyByNative.get(native) ?? native
   }
+  const latest = Math.max(0, ...Object.values(result))
+  for (const [messageId, turn] of Object.entries(result)) if (turn <= latest - FORK_HISTORY_TURNS) delete result[messageId]
   return result
 }

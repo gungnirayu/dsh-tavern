@@ -21,7 +21,9 @@ export async function collectSaveRevisions(chat, readRevision) {
       const revision = Number(checkpoint?.beforeRevision)
       if (!Number.isSafeInteger(revision) || revision < 0 || states.has(revision)) continue
       if (states.size >= MAX_REVISIONS) throw new Error('这局的回退历史过长，暂不能导出')
-      const value = await readRevision(chat.id, revision)
+      // History older than the kept window was cleaned up; export what remains.
+      let value
+      try { value = await readRevision(chat.id, revision) } catch (error) { if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') continue; throw error }
       if (!value || value._storageRevision !== revision) continue
       states.set(revision, value)
       pending.push(value)

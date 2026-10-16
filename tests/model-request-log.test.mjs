@@ -152,7 +152,7 @@ test('请求凭据脱敏不修改原请求或提示词内容', async () => {
   assert.equal(options.headers.get('Authorization'), 'Bearer secret-b')
 })
 
-test('只保留最近 30 轮的请求原文，更早的保留索引与结果', async () => {
+test('只保留最近 3 轮的请求原文，更早的保留索引与结果', async () => {
   const files = new Map(), removed = []
   const log = createModelRequestLog({
     readJson: async path => structuredClone(files.get(path)),
@@ -168,12 +168,41 @@ test('只保留最近 30 轮的请求原文，更早的保留索引与结果', a
   }
   const index = await log.list('c')
   assert.equal(index.length, 35)
-  assert.deepEqual(index.filter(entry => entry.pruned).map(entry => entry.turn), [1, 2, 3, 4, 5])
-  assert.deepEqual(removed, ids.slice(0, 5).map(id => 'model-requests/c/' + id + '.json'))
+  assert.deepEqual(index.filter(entry => entry.pruned).map(entry => entry.turn), Array.from({ length: 32 }, (_, i) => i + 1))
+  assert.deepEqual(removed, ids.slice(0, 32).map(id => 'model-requests/c/' + id + '.json'))
   await assert.rejects(log.detail('c', ids[0]), /已清理/)
-  assert.equal((await log.detail('c', ids[5])).request.messages[0].content[0].text, '第6轮')
+  assert.equal((await log.detail('c', ids[32])).request.messages[0].content[0].text, '第33轮')
   const [old] = (await log.evidence('c', 1)).requests
   assert.equal(old.pruned, true)
   assert.equal(old.request, null)
   assert.equal(old.response.text, '回复1')
+})
+
+test('同一轮的大量请求原文按每局大小上限清理，并可整理已有记录', async () => {
+  const files = new Map(), removed = []
+  const adapters = {
+    readJson: async path => structuredClone(files.get(path)),
+    writeJson: async (path, value) => files.set(path, structuredClone(value)),
+    updateJson: async (path, fn) => files.set(path, fn(structuredClone(files.get(path)))),
+    remove: async path => { removed.push(path); files.delete(path) },
+    size: async path => files.has(path) ? JSON.stringify(files.get(path)).length : 0
+  }
+  const log = createModelRequestLog(adapters)
+  const big = 'x'.repeat(3 * 1024 * 1024)
+  const ids = []
+  for (let step = 1; step <= 8; step++) {
+    const item = await log.record({ chat: { id: 'c' }, coordinates: { turn: 1, step }, options: { sessionId: 's', messages: [{ role: 'user', content: [{ type: 'text', text: big + step }] }] } })
+    ids.push(item.id)
+  }
+  const index = await log.list('c')
+  // About 3 MB each: the newest two fit in 8 MB, the older six go.
+  assert.deepEqual(index.filter(entry => entry.pruned).map(entry => entry.step), [1, 2, 3, 4, 5, 6])
+  assert.equal((await log.detail('c', ids[7])).request.messages[0].content[0].text, big + 8)
+  // Rows written before sizes were recorded are measured by the maintenance pass.
+  await adapters.updateJson('model-requests/c/index.json', value => ({ ...value, requests: value.requests.map(({ bytes, ...entry }) => entry) }))
+  for (const id of ids.slice(0, 6)) files.set('model-requests/c/' + id + '.json', { request: big })
+  await adapters.updateJson('model-requests/c/index.json', value => ({ ...value, requests: value.requests.map(entry => ({ ...entry, pruned: false })) }))
+  const result = await log.prune('c')
+  assert.equal(result.pruned, 6)
+  assert.equal((await log.list('c')).filter(entry => entry.pruned).length, 6)
 })

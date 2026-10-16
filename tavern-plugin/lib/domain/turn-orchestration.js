@@ -433,7 +433,7 @@ export function createTurnOrchestrator(options) {
       chat.lastWorldBookRecall = clone(chat.preparedWorldBook)
       chat.worldBookError = foregroundWorldBook.error
     }
-    const sceneWorldbook = typeof options.captureSceneWorldbook === 'function' ? await options.captureSceneWorldbook(chat, card) : null
+    const sceneWorldbook = typeof options.captureSceneWorldbook === 'function' ? await options.captureSceneWorldbook(chat, card, undefined, turn) : null
     const plan = await planner.plan({ purpose: 'body', card, chat: templateWorldBook?.macroState ? { ...chat, macroState: templateWorldBook.macroState } : chat, userText: runtimeUserText, sessionId: input.sessionId, nativeTurn: turn, scriptReference, worldBookContext })
     // Seam to the plugin layer; it never throws and drops a failing plugin's part.
     const pluginSections = typeof options.pluginTurnContext === 'function'
@@ -492,7 +492,7 @@ export function createTurnOrchestrator(options) {
     chat = begun.chat
     const operation = chat.timeline.operations[begun.value.operationId]
     if (operation && !Object.hasOwn(operation, 'sceneWorldbook') && typeof options.captureSceneWorldbook === 'function') {
-      operation.sceneWorldbook = await options.captureSceneWorldbook(chat, await store.readCard(cardPathOf(chat), chat))
+      operation.sceneWorldbook = await options.captureSceneWorldbook(chat, await store.readCard(cardPathOf(chat), chat), undefined, turn)
     }
     chat.foregroundError = null
     let projectedText = runtimeInputFor(chat, turn, userText)
@@ -910,7 +910,7 @@ export function createTurnOrchestrator(options) {
     const mode = chat.mode || 'story'
     const webTools = chat.webSearchEnabled === true ? ['web_search'] : []
     if (mode === 'script') return ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', ...webTools]
-    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_read_play_chat', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
+    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
     return ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', ...webTools]
   }
 

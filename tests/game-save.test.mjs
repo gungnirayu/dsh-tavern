@@ -46,3 +46,12 @@ test('存档包带上插件数据、媒体与其文件；旧存档包没有插�
   assert.deepEqual([...read.plugins.attachments[0].data], [7, 8, 9])
   assert.equal(readGameSave(buildGameSave({ chat: current, revisions: [], session, tavernVersion: '2.5.0', exportedAt: 1 })).plugins, null)
 })
+
+test('导出时跳过已清理的早期历史版本', async () => {
+  const current = { id: 'c', _storageRevision: 9, timeline: { checkpoints: [{ beforeRevision: 3 }, { beforeRevision: 7 }] } }
+  const revisions = await collectSaveRevisions(current, async (id, revision) => {
+    if (revision === 3) throw Object.assign(new Error('gone'), { code: 'DSH_TAVERN_REVISION_NOT_FOUND' })
+    return { id, _storageRevision: revision }
+  })
+  assert.deepEqual(revisions.map(item => item.revision), [7])
+})

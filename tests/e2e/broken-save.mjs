@@ -59,7 +59,7 @@ export async function brokenSaveChecks({ page, step, savedChat, output, report, 
   })
   await step('旧版：重新生成如用户所见地失败', async () => {
     await page.getByRole('button', { name: '重新生成正文', exact: true }).filter({ visible: true }).last().click()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('雨夜重写')
+    await page.getByPlaceholder('指导意见（可选）').fill('雨夜重写')
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
     for (let i = 0; i < 60 && !rpcErrors.length; i++) await pause(500)
     report.brokenSave.oldRegenErrors = rpcErrors.splice(0)
@@ -104,7 +104,7 @@ export async function brokenSaveChecks({ page, step, savedChat, output, report, 
   await step('当前版本：重新生成先补记漏掉的一轮，再正常完成', async () => {
     rpcErrors.splice(0)
     await page.getByRole('button', { name: '重新生成正文', exact: true }).filter({ visible: true }).last().click()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('雨夜重写')
+    await page.getByPlaceholder('指导意见（可选）').fill('雨夜重写')
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
     await page.getByText('雨夜里，你重新领取了奖励。', { exact: true }).filter({ visible: true }).first().waitFor({ timeout: 60000 })
     for (let i = 0; i < 60 && (await savedChat()).regenInProgress; i++) await pause(500)

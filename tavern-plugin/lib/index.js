@@ -163,6 +163,9 @@ import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, lastSubmittedPosture, no
 import { TAVERN_COMPATIBILITY_CAPABILITIES, createTavernCompatibilityDiagnosticStore } from './domain/tavern-compatibility-diagnostics.js'
 import { createMvuDiagnosticStore, createMvuDiagnosticExport, sanitizeRuntimeDiagnostics, sanitizeModuleFailure, sanitizeMvuLoadDiagnostic, redactMvuLoadError } from './domain/mvu-diagnostics.js'
 import { createPlayChatDebugReference, readPlayChatDebugTurn } from './domain/play-chat-debug.js'
+import { createSaveMaintenance } from './domain/save-maintenance.js'
+import { createServerScriptExecutor } from './domain/server-script-executor.js'
+import { createDisplayRuntimeStore, displayRuntimeReceipt } from './domain/display-runtime-store.js'
 import { createPhoneChat } from './domain/phone-chat.js'
 import { createPresetLibrary } from './domain/preset-library.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
@@ -194,7 +197,7 @@ import { readZipEntries, writeZipEntries } from './domain/zip-entries.js'
 import { createGameFootprint } from './domain/game-footprint.js'
 import { buildGameSave, collectSaveRevisions, readGameSave } from './domain/game-save.js'
 import { readFileSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 const TAVERN_PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -258,6 +261,10 @@ export async function apply(ctx) {
   const compactionTimers = new Map()
   const compactionAbort = new AbortController()
   const sessionSignals = createSessionSignalTransport()
+  let serverScripts = null, tavernHttpHandle = null
+  // Sessions whose page last reported being visible, in front, on a desktop.
+  const pagesInFront = new Map()
+  const pageInFront = sessionId => Date.now() - (pagesInFront.get(String(sessionId || '')) || 0) < 25000
   function queueAutoCompaction(sessionId) {
     if (!autoCompaction || compactionAbort.signal.aborted || compactionTimers.has(sessionId)) return
     const timer = setTimeout(async () => {
@@ -271,7 +278,11 @@ export async function apply(ctx) {
   }
   ctx.effect(() => () => { compactionAbort.abort(); for (const timer of compactionTimers.values()) clearTimeout(timer) })
 	const tavernScriptDispatch = createTavernScriptDispatch({
-    publishSignal: function (sessionId, signal) { sessionSignals.publish(sessionId, signal) }
+    publishSignal: function (sessionId, signal) { sessionSignals.publish(sessionId, signal) },
+    // A page in front of the player executes card scripts itself; otherwise
+    // (closed, hidden, or a phone) the server runtime takes over.
+    priority: (runtimeId, sessionId) => !serverScripts ? 0
+      : String(runtimeId).startsWith('server-') ? (pageInFront(sessionId) ? 0 : 1) : (pageInFront(sessionId) ? 1 : 0)
   })
   async function promptTemplateRuntime(sessionId) { return fullTemplateRuntime.forSession(sessionId) }
   const commands = ctx.get('commands')
@@ -295,6 +306,7 @@ export async function apply(ctx) {
   const cardMemory = createCardMemory({ dataRoot })
   const stablePrefixStorage = createSessionStablePrefixStorage(dataRoot + '/session-prefixes')
   const profileData = createProfileDataStore({ dataRoot })
+  const displayRuntimeStore = createDisplayRuntimeStore({ store: profileData })
   const gameFootprint = createGameFootprint({ dataRoot })
   const deletedSessionIds = new Set()
   try { const removed = await gameFootprint.processDeferredDeletions(); if (removed) console.log('dsh-tavern: 已清理已删除游戏的原生会话', removed) }
@@ -336,11 +348,11 @@ export async function apply(ctx) {
   const sceneWorldbooks = TAVERN_RELEASE_CAPABILITIES.sceneImages ? createSceneWorldbooks({ store: profileData }) : null
   const imageHostDiagnostic = createSceneImageHostLogger(ctx.logger)
   const sceneDiagnostics = TAVERN_RELEASE_CAPABILITIES.sceneImages ? createSceneImageDiagnostics(profileData, { onDiagnostic: imageHostDiagnostic }) : null
-  async function captureSceneWorldbook(chat, card, preparedBook) {
+  async function captureSceneWorldbook(chat, card, preparedBook, turn) {
     if (sceneWorldbooks === null) return null
     try {
       const worldBook = preparedBook === undefined ? await worldBooks.bound(chat.cardPath, card, chat) : preparedBook
-      return await sceneWorldbooks.capture({ worldBook, chat, card })
+      return await sceneWorldbooks.capture({ worldBook, chat, card, turn })
     } catch (_error) {
       console.warn('dsh-tavern: 场景世界书快照保存失败，正文继续；不会用后来的世界书补历史。')
       return null
@@ -425,7 +437,8 @@ export async function apply(ctx) {
     writeJson: async function (path, value) { return await profileData.writeJson(path, value) },
     updateJson: async function (path, updater) { return await profileData.updateJson(path, updater) },
     writeText: async function (path, text) { return await profileData.writeBytes(path, Buffer.from(text, 'utf8')) },
-    remove: async function (path) { return await profileData.remove(path) }
+    remove: async function (path) { return await profileData.remove(path) },
+    size: path => profileData.size(path)
   })
   // A single SKILL.md arrives as text; a skill folder arrives as a ZIP. Only UTF-8 Markdown is read.
   function skillImportFiles(args) {
@@ -962,6 +975,21 @@ export async function apply(ctx) {
     readSlice: chatPersistence.readSlice, readState: chatPersistence.readSessionState,
     headerForSession: chatHeaderForSession, stateForSession: sessionStateForSession
   })
+  const saveMaintenance = createSaveMaintenance({
+    chats: chatJournalStore, requestLog: modelRequestLog, recallLog: worldbookRecallLog, store: profileData,
+    listChatIds: async () => [...new Set((await readdir(path.join(dataRoot, 'chats'), { withFileTypes: true }).catch(() => []))
+      .map(entry => entry.isDirectory() ? entry.name : entry.name.endsWith('.json') ? entry.name.slice(0, -5) : '')
+      .filter(id => id.startsWith('chat-') && !deletedChatIds.has(id)))],
+    isIdle: async chatId => {
+      if (deletedChatIds.has(chatId)) return false
+      const state = await taskStateReader.read(chatId).catch(() => null)
+      if (!state || state.regenInProgress) return false
+      if (agentRegistry.get(state.sessionId)?.phase?.kind === 'running') return false
+      const activity = backgroundTasks.activity(state)
+      return !activity.busy && !['pending', 'running'].includes(activity.phase)
+    }
+  })
+  ctx.effect(() => () => saveMaintenance.dispose(), 'dsh-tavern: save maintenance')
   const historyRecall = createHistoryRecall()
   const foregroundRecallScopes = new WeakMap()
   async function recallHistoryForSession(sessionId, args, scope, audience) {
@@ -1282,6 +1310,8 @@ export async function apply(ctx) {
     deletedChatIds.add(chatId)
     await pluginMedia.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件媒体记录清理失败', chatId))
     await pluginData.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件数据清理失败', chatId))
+    await displayRuntimeStore.remove(chatId).catch(() => {})
+    await sceneWorldbooks?.forgetChat(chatId).catch(() => {})
     pluginApi.gameRemoved(footprint?.foregroundSessionId || chat?.sessionId)
     if (footprint) {
       deletedSessionIds.add(footprint.foregroundSessionId)
@@ -1349,7 +1379,7 @@ export async function apply(ctx) {
       const files = await gameFootprint.readSceneFiles(chat.id)
       for (const file of files) attachmentRefs(JSON.parse(file.content.toString('utf8')), media, new Set(['deletedVersions']))
       const digest = chat.sceneOpeningWorldbook?.digest
-      const book = digest ? await gameFootprint.readSceneWorldbook(digest) : null
+      const book = digest ? (sceneWorldbooks ? await sceneWorldbooks.exportSnapshot(digest) : null) ?? await gameFootprint.readSceneWorldbook(digest) : null
       scene = { files, worldbooks: book ? [{ digest, content: book }] : [], attachments: [] }
     }
     const attachments = []
@@ -1575,8 +1605,16 @@ export async function apply(ctx) {
       presetDiagnostics = { ...createPresetDiagnostics(chat, cardDiagnostics.extensions || {}),
         error: '远程正则解析失败，ordered 保留解析前配置。' }
     }
-    const exported = await createMvuDiagnosticExport({ presetDiagnostics, cardDiagnostics, performanceDiagnostics: { ...performanceDiagnostics.read(), requests: requestPerformance.read(), replyProjection: incrementalReplyView.stats() }, updateDiagnostics: applicationUpdater.diagnostics(), sessionId, backgroundSessionIds, displayDiagnostics: { version: 1, frames: (chat.messages || []).filter(message => message.displayRuntime).slice(-20).flatMap(message => (message.displayRuntime.frames || []).map(frame => ({ turn: message.turn, partIndex: frame.partIndex, panelId: frame.panelId, placement: frame.placement, capturedAt: frame.capturedAt, console: frame.console, errors: frame.errors, network: frame.network }))) }, apiDiagnostics: await apiDiagnostics.read(sessionId).catch(() => null), compatibilityDiagnostics: compatibilityDiagnostic, store: mvuDiagnostics, sceneDiagnostics: imageDiagnostic, sessions: sessionStore, persistence: ctx.get('sessionPersistence'), query: ctx.get('sessionQuery'), attachments: ctx.get('attachments'), environment: { templateRuntime: await fullTemplateRuntime.inspect(sessionId), mvu: OFFICIAL_MVU_VERSION, mvuAsset: inspectOfficialMvuAsset(), runtime: { hostCompatibility, sessionPatch: sessionPatch.view(), generation: runtimeGeneration, platform: process.platform, arch: process.arch, nodeVersion: process.version } } })
+    const exported = await createMvuDiagnosticExport({ presetDiagnostics, cardDiagnostics, performanceDiagnostics: { ...performanceDiagnostics.read(), requests: requestPerformance.read(), replyProjection: incrementalReplyView.stats() }, updateDiagnostics: applicationUpdater.diagnostics(), sessionId, backgroundSessionIds, displayDiagnostics: { version: 1, frames: await displayDiagnosticFrames(chat) }, apiDiagnostics: await apiDiagnostics.read(sessionId).catch(() => null), compatibilityDiagnostics: compatibilityDiagnostic, store: mvuDiagnostics, sceneDiagnostics: imageDiagnostic, sessions: sessionStore, persistence: ctx.get('sessionPersistence'), query: ctx.get('sessionQuery'), attachments: ctx.get('attachments'), environment: { templateRuntime: await fullTemplateRuntime.inspect(sessionId), mvu: OFFICIAL_MVU_VERSION, mvuAsset: inspectOfficialMvuAsset(), runtime: { hostCompatibility, sessionPatch: sessionPatch.view(), generation: runtimeGeneration, platform: process.platform, arch: process.arch, nodeVersion: process.version } } })
     return { filename: exported.filename, base64: exported.buffer.toString('base64') }
+  }
+  // Captures from the diagnostics store, falling back to ones old saves kept inline.
+  async function displayDiagnosticFrames(chat) {
+    const stored = await displayRuntimeStore.recent(chat.id).catch(() => ({}))
+    return (chat.messages || []).filter(message => message.displayRuntime).slice(-20).flatMap(message => {
+      const runtime = message.displayRuntime.version === 2 ? stored[String(message.turn)] : message.displayRuntime
+      return (runtime?.frames || []).map(frame => ({ turn: message.turn, partIndex: frame.partIndex, panelId: frame.panelId, placement: frame.placement, capturedAt: frame.capturedAt, console: frame.console, errors: frame.errors, network: frame.network }))
+    })
   }
   async function attachPlayChatDebug(targetSessionId, sourceSessionId, turn) {
     const editorChat = await chatForSession(str(targetSessionId))
@@ -1679,14 +1717,20 @@ export async function apply(ctx) {
       if (chat.messageIndex < 0) throw new Error('游玩记录中不存在第 ' + turn + ' 轮回复')
       const index = Math.max(0, Math.min(100, Number(partIndex) || 0))
       let capture = sanitizeDisplayRuntime(runtime)
-      const existingRuntime = chat.displayRuntime && typeof chat.displayRuntime === 'object' ? chat.displayRuntime : null
-      const sourceActivityAt = Math.max(0, Number(existingRuntime && existingRuntime.sourceActivityAt) || Number(chat.updatedAt) || 0)
+      // Full captures live outside the save; old saves still carry them inline.
+      // The save keeps a receipt per panel, merged under its own CAS so
+      // concurrent panels cannot drop each other. A reply without a receipt yet
+      // (new, or rolled back and regenerated) starts its stored captures over.
+      const receipt = chat.displayRuntime && typeof chat.displayRuntime === 'object' ? chat.displayRuntime : null
+      const inline = receipt && receipt.version !== 2 ? receipt : null
+      const stored = receipt ? (await displayRuntimeStore.read(chat.id, turn)) || inline : null
+      const sourceActivityAt = Math.max(0, Number(stored && stored.sourceActivityAt) || Number(chat.updatedAt) || 0)
       const latestTurn = chat.latestTurn
       capture.captureKind = turn === latestTurn && Date.now() - sourceActivityAt < 300000 ? 'live' : 'replay'
-      const current = existingRuntime || { frames: [] }
-      const currentFrames = Array.isArray(current.frames) ? current.frames : []
-      const existingFrame = currentFrames.find(function (item) { return Number(item && item.partIndex) === index && str(item.panelId) === capture.panelId })
-      if (existingFrame && existingFrame.mvuViewUsed === true) capture.mvuViewUsed = true
+      const samePanel = function (item) { return Number(item && item.partIndex) === index && str(item.panelId) === capture.panelId }
+      const receiptFrames = receipt && Array.isArray(receipt.frames) ? receipt.frames : []
+      const existingFrame = (stored && Array.isArray(stored.frames) ? stored.frames : []).find(samePanel)
+      if (receiptFrames.find(samePanel)?.mvuViewUsed === true || (existingFrame && existingFrame.mvuViewUsed === true)) capture.mvuViewUsed = true
       if (existingFrame && capture.mvuViewUsed === true && capture.dom === '' && capture.console.length === 0 && capture.network.length === 0 && capture.errors.length === 0) {
         capture = Object.assign({}, existingFrame, {
           capturedAt: capture.capturedAt,
@@ -1694,11 +1738,13 @@ export async function apply(ctx) {
           mvuViewUsed: true
         })
       }
-      if (existingFrame && sameDisplayRuntimeCapture(existingFrame, capture)) return { captured: false, turn, partIndex: index, captureKind: capture.captureKind }
-      const frames = currentFrames.filter(function (item) { return Number(item && item.partIndex) !== index || str(item.panelId) !== capture.panelId })
-      frames.push(Object.assign({ partIndex: index }, capture))
-      const changes = [{ op: 'set', path: ['messages', chat.messageIndex, 'displayRuntime'],
-        value: { version: 1, sourceActivityAt, frames: frames.sort(function (a, b) { return a.partIndex - b.partIndex }) } }]
+      const frame = Object.assign({ partIndex: index }, capture)
+      const nextReceipt = displayRuntimeReceipt(receiptFrames.filter(function (item) { return !samePanel(item) }).concat([frame]))
+      const receiptChanged = JSON.stringify(receipt) !== JSON.stringify(nextReceipt)
+      if (existingFrame && sameDisplayRuntimeCapture(existingFrame, capture) && !receiptChanged) return { captured: false, turn, partIndex: index, captureKind: capture.captureKind }
+      await displayRuntimeStore.mergeFrame(chat.id, turn, frame, { reset: !receipt, sourceActivityAt, seed: inline && Array.isArray(inline.frames) ? inline.frames : [] })
+      if (!receiptChanged) return { captured: true, turn, partIndex: index, captureKind: capture.captureKind }
+      const changes = [{ op: 'set', path: ['messages', chat.messageIndex, 'displayRuntime'], value: nextReceipt }]
       // Diagnostic captures preserve a valid undo point, never revive a stale one.
       if (chat.rollbackUndo?.ready && chat.rollbackUndo.storageRevision === chat._storageRevision) {
         changes.push({ op: 'set', path: ['rollbackUndo', 'storageRevision'], value: chat._storageRevision + 1 })
@@ -2380,6 +2426,8 @@ export async function apply(ctx) {
     fork.forkedFrom = { ...fork.forkedFrom, chatId: source.id, sessionId: source.sessionId, storageRevision: source._storageRevision,
       stateChatId: state.id, stateRevision: state._storageRevision, turn, atSeq }
     await conversationRegistry.publish(fork)
+    await saveMaintenance.recordFork(fork).catch(error => console.warn('dsh-tavern: 记录分叉来源失败', str(error?.message || error)))
+    await sceneWorldbooks?.copyRefs(state.id, fork.id, turn).catch(() => {})
     await forkPluginState(source, state, fork, turn)
     return conversationForkReceipt(fork, { lastTurn: turn, messageCount: fork.messages.length })
   }
@@ -2638,6 +2686,12 @@ export async function apply(ctx) {
     ...pluginTurns,
     backgroundModel: async sessionId => backgroundModelSelection(await backgroundConfigForSession(sessionId)),
     readCard: readPluginCard,
+    readCardImage: async sessionId => {
+      const header = await chatHeaderForSession(sessionId, ['cardPath'])
+      const cardPath = str(header?.cardPath)
+      if (!cardPath || !await fileResources.hasCardImage(cardPath).catch(() => false)) return null
+      return { url: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(cardPath), mediaType: 'image/png' }
+    },
     readHistory: readPluginHistory,
     readActivity: async sessionId => {
       const chat = await taskStateReader.forSession(sessionId)
@@ -3487,6 +3541,7 @@ export async function apply(ctx) {
     try {
       const latest = await chatPersistence.readSessionState(chatId)
       if (!signal.aborted && latest) {
+        saveMaintenance.noteWrite(chatId, Number(latest._storageRevision))
         void mvuSettlementReconciler.wake(latest.sessionId)
         void candidateWorldbookPreparation.warm(latest.sessionId)
         void worldbookPrefilter.start(chatId)
@@ -3514,6 +3569,9 @@ export async function apply(ctx) {
     isReady: function (sessionId, chat) {
       if (pendingMvuSettlementState(chat)?.prepared) return true
       const state = tavernScriptDispatch.status(sessionId)
+      // A waiting settlement with no page in front keeps (or starts) the
+      // server runtime until it finishes.
+      if (serverScripts && !pageInFront(sessionId)) serverScripts.demand(sessionId)
       return state.ready === true || Boolean(state.initializationError)
     },
     resume: chatId => queueSettlement(chatId),
@@ -4086,8 +4144,9 @@ export async function apply(ctx) {
         const sessionId = str(args?.sessionId)
         const background = backgroundAgentRunner.requestContext(sessionId)
         const session = sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session
-        const ownerId = background?.parentSessionId || session?.header?.parentSession || sessionId
-        const chat = await sessionStateForSession(ownerId)
+        // A forked game has a parentSession too, but its requests are filed under its own chat.
+        const own = background ? undefined : await sessionStateForSession(sessionId)
+        const chat = own || await sessionStateForSession(background?.parentSessionId || session?.header?.parentSession || sessionId)
         return { record: await modelRequestLog.latestForSession(sessionId, str(args?.knownId), chat?.id) }
       }
       case 'listSkills': return { skills: (await tavernSkills.list()).map(({ content, path, ...summary }) => summary) }
@@ -4323,7 +4382,17 @@ export async function apply(ctx) {
       case 'saveTavernWorldInfo': return await tavernScriptHostAdapter.saveWorldInfo(args && args.sessionId, args && args.name, args && args.worldInfo, args && args.expectedWorldInfo)
       case 'getTavernHelperWorldbook': return await tavernScriptHostAdapter.getWorldbook(args && args.sessionId, args && args.name)
       case 'replaceTavernHelperWorldbook': return await tavernScriptHostAdapter.replaceWorldbook(args && args.sessionId, args && args.name, args && args.entries, args && args.expectedEntries)
-	  case 'claimTavernScriptWork': return tavernScriptHostAdapter.claimWork(args && args.sessionId, args && args.runtimeId, args && args.ready, args && args.initializationError, args && args.contextBaseline)
+	  case 'claimTavernScriptWork': {
+	    // A visible desktop page runs its game's card scripts; a hidden one or a
+	    // phone hands them to the server. Background games run nowhere.
+	    if (serverScripts && args?.foreground === true && !String(args?.runtimeId || '').startsWith('server-')) {
+	      if (args?.pageActive === true) pagesInFront.set(String(args.sessionId || ''), Date.now())
+	      else serverScripts.demand(args?.sessionId)
+	    }
+	    const claimed = await tavernScriptHostAdapter.claimWork(args && args.sessionId, args && args.runtimeId, args && args.ready, args && args.initializationError, args && args.contextBaseline)
+	    if (claimed?.event && String(args?.runtimeId || '').startsWith('server-')) console.log('dsh-tavern: 服务端卡脚本运行时领取事件', claimed.event.name, claimed.event.id)
+	    return claimed
+	  }
 	  case 'startTavernScriptWork': return tavernScriptHostAdapter.startWork(args && args.sessionId, args && args.eventId, args && args.leaseToken, args && args.runtimeId)
 	  case 'getTavernScriptWorkState': return tavernScriptHostAdapter.workState(args && args.sessionId, args && args.eventId, args && args.leaseToken, args && args.runtimeId, args && args.keepAlive)
 	  case 'heartbeatTavernScriptRuntime': return tavernScriptHostAdapter.heartbeatRuntime(args && args.sessionId, args && args.runtimeId, args && args.ready, args && args.initializationError)
@@ -4426,6 +4495,14 @@ export async function apply(ctx) {
         if (chat && ['story', 'script'].includes(chat.mode)) return { result: await autoCompaction.run(id, { manual: true, signal: compactionAbort.signal }) }
         const result = await withCompactionSession(id, async agent => (await agentCompaction(agent)).compactNow(agent, compactionAbort.signal))
         return { result: { status: 'completed', foreground: { status: 'succeeded', message: result ? '压缩完成' : '没有可压缩的历史' }, background: { status: 'skipped' } } }
+      }
+      case 'dismissCompactionWarning': {
+        const chat = await sessionStateForSession(str(args && args.sessionId))
+        if (chat?.contextCompaction?.warning) await updateChat(chat.id, current => {
+          current.contextCompaction = { ...current.contextCompaction, warning: '' }
+          return current
+        }, { source: 'compaction.dismiss' })
+        return { dismissed: true }
       }
       case 'compactionStatus': return { state: (await sessionStateForSession(args && args.sessionId))?.contextCompaction || null }
       case 'syncSession': {
@@ -4584,6 +4661,7 @@ export async function apply(ctx) {
 
   registerTavernHttpRoutes({
     ctx,
+    exposeHandler: handle => { tavernHttpHandle = handle },
     pluginAssets: createPluginAssets({ pluginsDir: userPluginPaths(dataRoot).plugins }),
     dispatch,
     fileResources,
@@ -4599,6 +4677,23 @@ export async function apply(ctx) {
     tavernRemoteAssets,
     tavernStaticResources,
   })
+  // Card scripts run on the server by default; DSH_TAVERN_SERVER_SCRIPTS=0 leaves them to the page.
+  if (process.env.DSH_TAVERN_SERVER_SCRIPTS !== '0') {
+    serverScripts = createServerScriptExecutor({
+      handle: (req, res) => tavernHttpHandle(req, res),
+      // Keep the runtime through a whole settlement, not just one dispatched event.
+      busy: async sessionId => {
+        if (tavernScriptDispatch.status(sessionId)?.busy === true) return true
+        // A reply still being written settles next: keep the runtime for it.
+        if (agentRegistry.get(sessionId)?.phase?.kind === 'running') return true
+        const state = await taskStateReader.forSession(sessionId).catch(() => null)
+        const activity = state ? backgroundTasks.activity(state) : null
+        return Boolean(activity && (activity.busy || activity.phase === 'pending' || activity.phase === 'running'))
+      },
+      subscribeSignals: (sessionId, listener) => sessionSignals.subscribe(sessionId, [], listener)
+    })
+    ctx.effect(() => () => serverScripts?.dispose(), 'dsh-tavern: server script runtime')
+  }
 
   function contentText(message) {
     if (message === null || typeof message !== 'object' || !Array.isArray(message.content)) return ''
@@ -4778,7 +4873,7 @@ export async function apply(ctx) {
   }
 
   const skillGatedTools = createSkillGatedTools()
-  const controlledToolNames = new Set(['tavern_read_variables', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
+  const controlledToolNames = new Set(['tavern_read_variables', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
   const foregroundStrategies = createForegroundOrchestrationStrategies({
     compatibility: {
       beforeTurn: async function (input) {
@@ -4957,6 +5052,7 @@ export async function apply(ctx) {
       str,
       tools,
       worldbookRecallLog,
+      displayRuntimeStore,
     })
 
     registerScriptTool({

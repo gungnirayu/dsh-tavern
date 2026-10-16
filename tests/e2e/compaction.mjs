@@ -99,6 +99,11 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
       assert.deepEqual(history(await savedChat()), history(previous))
       await page.reload()
       await page.getByText(/上下文压缩未全部完成/).filter({ visible: true }).first().waitFor()
+      await page.locator('.dsh-tavern-dock-actions [role="status"]').filter({ hasText: /上下文压缩未全部完成/ }).waitFor()
+      await page.getByRole('button', { name: '关闭压缩提示' }).click()
+      await page.locator('.dsh-tavern-dock-actions [role="status"]').filter({ hasText: /上下文压缩未全部完成/ }).waitFor({ state: 'detached' })
+      assert.equal((await savedChat()).contextCompaction.warning, '', '关闭提示只清提示，不清失败记录')
+      assert.equal((await savedChat()).contextCompaction.operation.status, 'partial')
       const start = (await requests()).length
       await control({})
       const recovered = await compact()
@@ -137,6 +142,22 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
       assert.ok(next?.summaryPresent, '迁移后的真实请求必须携带旧摘要')
       assert.ok(!JSON.stringify(next.messages).includes('OLD_STORY_SHOULD_STAY_ARCHIVED'))
       report.legacyRecovery = { summaryPresent: next.summaryPresent, archivedTextInRequest: false }
+    })
+  } else if (scenario === 'provider-overflow') {
+    await step('在较大窗口真实游玩三轮，渠道实际上限降到 32K', async () => {
+      await play(); await play()
+      await control({ window: 262144, providerLimit: 32768, overflowText: 'zhipu' })
+    })
+    await step('渠道以智谱 1261 报超窗口时，自动压缩后重试并完成本轮', async () => {
+      const start = (await requests()).length
+      await play()
+      const rows = (await requests()).slice(start)
+      assert.ok(rows.some(row => row.outcome === 'overflow' && row.side === 'foreground'), '必须先遇到一次超窗口')
+      assert.ok(rows.some(row => row.purpose === 'compaction' && row.side === 'foreground' && row.outcome === 'success'), '超窗口后必须压缩')
+      const resumed = rows.findLast(row => row.purpose === 'generation' && row.side === 'foreground')
+      assert.equal(resumed.outcome, 'success'); assert.ok(resumed.summaryPresent)
+      await control({ window: 32768 })
+      report.providerOverflow = rows.map(({ messages, ...row }) => row)
     })
   } else if (scenario === 'overflow') {
     await step('在较大窗口真实游玩三轮，再切换到 32K 窗口', async () => {
@@ -204,7 +225,7 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
     const start = (await requests()).length
     await play()
     const resumed = (await requests()).slice(start).filter(row => row.purpose === 'generation')
-    if (['manual', 'overflow', 'legacy'].includes(scenario)) {
+    if (['manual', 'overflow', 'provider-overflow', 'legacy'].includes(scenario)) {
       const foreground = resumed.find(row => row.side === 'foreground')
       assert.ok(foreground?.summaryPresent, '重启后下一轮请求仍须携带摘要')
       assert.ok(!foreground.rawRounds.includes(1), '重启后不能复活已总结的首轮正文')
@@ -214,6 +235,6 @@ export async function compactionChecks({ page, step, savedChat, output, report, 
     report.compaction = { scenario, window: 32768, rounds: round, foregroundSessionId: sessionId, backgroundSessionId: after.timeline.participants.background.sessionId }
   })
   const all = await requests()
-  assert.ok(all.every(row => row.outcome !== 'overflow'), '正常验收不得发送超窗口请求')
+  if (scenario !== 'provider-overflow') assert.ok(all.every(row => row.outcome !== 'overflow'), '正常验收不得发送超窗口请求')
   report.requestSummary = all.map(({ messages, ...row }) => row)
 }

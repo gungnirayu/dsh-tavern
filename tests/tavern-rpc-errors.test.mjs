@@ -8,7 +8,7 @@ import test from 'node:test'
 test('POST API 保留错误码而不泄漏错误对象中的额外数据', async () => {
   const source = await readFile(new URL('../tavern-plugin/lib/http/routes.js', import.meta.url), 'utf8')
   const start = source.indexOf("          const method = pathname.slice('/api/dsh-tavern'.length + 1)")
-  const end = source.indexOf('\n      }\n    }),', start)
+  const end = source.indexOf('\n      }\n  }\n}', start)
   assert.ok(start >= 0 && end > start)
   const failure = Object.assign(new Error('脚本写入不属于当前 MVU 结算事件'), { code: 'MVU_SETTLEMENT_EVENT_MISMATCH', privateState: 'PRIVATE-STORY' })
   const handle = vm.runInNewContext('(async function(req, res) { try {\n' + source.slice(start, end) + '\n})', {

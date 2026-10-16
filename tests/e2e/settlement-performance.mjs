@@ -372,7 +372,7 @@ async function longOperationChecks({ page, step, savedChat, readLog, report }) {
   }))
   await step('长档重新生成正文', () => timed('regenerate', 'regenBody', async () => {
     await page.getByRole('button', { name: '重新生成正文', exact: true }).click()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('长档重写')
+    await page.getByPlaceholder('指导意见（可选）').fill('长档重写')
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).click()
   }, () => gone(edited), async () => {
     const saved = await savedChat()

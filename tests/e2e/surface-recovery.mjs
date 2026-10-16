@@ -110,7 +110,7 @@ export async function surfaceRecoveryChecks({ page, step, savedChat, output, rep
     await control({ mode: 'reasoning-only', label: 'E2E 重生成失败' })
     await closeStatus()
     await page.getByRole('button', { name: '重新生成正文', exact: true }).tap()
-    await page.getByPlaceholder('指导意见（可选）：例如“写得更长，侧重心理描写”').fill('E2E 重生成失败')
+    await page.getByPlaceholder('指导意见（可选）').fill('E2E 重生成失败')
     await page.getByRole('button', { name: '生成并替换正文', exact: true }).tap()
     await poll(async () => {
       const chat = await savedChat()

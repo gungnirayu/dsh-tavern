@@ -1,4 +1,4 @@
-const isOverflow = failure => failure?.code === 'CONTEXT_WINDOW_EXCEEDED' || /maximum context length|context (?:length|window) (?:exceeded|limit exceeded)/i.test(failure?.message || '')
+import { isContextOverflow as isOverflow } from './provider-overflow.js'
 
 // Oversized restored histories cannot be sent to the summarizer in one request.
 // Intermediate summaries are private to this operation: the native engine alone

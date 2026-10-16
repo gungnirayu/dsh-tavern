@@ -150,7 +150,7 @@ export function readPlayChatDebugTurn(editorChat, sourceChat, reference, request
   else if (layer === 'session') text = str(message.text)
   else if (layer === 'display') text = projected && Object.prototype.hasOwnProperty.call(projected, 'displayText') ? str(projected.displayText) : (str(message.displayText) || str(message.text))
   else if (layer === 'saved-display') text = str(message.displayText) || str(message.text)
-  else if (layer === 'iframe') text = '【iframe 实际运行证据 · 第 ' + turn + ' 轮】\n' + json(message.displayRuntime || { status: '该轮尚无采集记录' })
+  else if (layer === 'iframe') text = '【iframe 实际运行证据 · 第 ' + turn + ' 轮】\n' + json((message.displayRuntime?.version === 2 ? evidence.displayRuntime : message.displayRuntime) || { status: '该轮尚无采集记录' })
   else if (layer === 'foreground') text = agentEvidence(evidence.foreground, '前台')
   else if (layer === 'background') text = agentEvidence(evidence.background, '后台')
   else if (layer === 'request') text = '【真实模型请求 · 第 ' + turn + ' 轮】\n' + JSON.stringify(evidence.requests && Array.isArray(evidence.requests.requests) ? evidence.requests.requests : [], null, 2)

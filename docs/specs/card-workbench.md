@@ -55,6 +55,8 @@ Better Sidebar 提供四个职责分离的库：
 - `tavern_read_card_raw`：按 JSON Pointer 读取正则、脚本、MVU 和未知扩展；
 - `tavern_search_card`：一次搜遍字段、开场、内置世界书（标题、关键词、正文）、正则和脚本，返回 JSON Pointer、所属条目和上下文片段，用于改动前定位；
 - `tavern_replace_card_text`：按字面或正则在全卡批量替换（可用 pointers 限定、expectedCount 防误改），按位置拆成标准字段、内置世界书补丁和 raw 操作走正常保存，返回各位置处数、全卡剩余处数和格式校验；
+- `tavern_mvu_overview`：只读，一次列出开场、内置世界书、正则和脚本的概览，并按关键词标出可能的旧状态协议，供转 MVU 前摸底；
+- `tavern_apply_mvu`：Agent 给出变量、各开场差异值、更新规则和面板（自写 HTML 或分组字段生成标准面板），工具负责把 `<initvar>`/`<mvu-status/>` 写进每个开场、维护 `[mvu_update]`/`[initvar]` 条目和两条正则，省略的部分保留原样，结果附格式校验；
 - `tavern_read_play_chat`：按轮次和层次只读查看已挂载的游玩记录，并用当前人物卡重新检查正则命中；
 - `tavern_read_worldbook`：按编号、关键词或分页读取世界书；
 - `tavern_update_worldbook`：通过现有世界书 Library interface 保存已确认的条目级修改；

@@ -262,3 +262,23 @@ test('body edit invalidates stale posture and rewinds background before the edit
   assert.equal(task.value.participant.sessionId, 'bg')
   assert.equal(task.value.participant.rewindTo, 19)
 })
+
+test('变量重试推进版本后，延后的重新结算接续时仍能提交', () => {
+  const { timeline, chat } = harness()
+  let current = beginAndCommitBody(timeline, chat, 1, '推门', '门开了。')
+  const settle = (outcome) => {
+    const begun = timeline.apply({ chat: current, intent: { kind: 'agent.begin', role: 'settlement' } })
+    const result = timeline.complete({ chat: begun.chat, operationId: begun.value.operationId, basedOn: begun.value.basedOn, outcome })
+    current = result.chat
+    return { begun, result }
+  }
+  // A completed variable retry changes state and advances the revision.
+  settle({ status: 'success', stateChanged: true })
+  assert.equal(timeline.inspect({ chat: current }).revision, 2)
+  // The next retry waits for the runtime, then resumes.
+  settle({ status: 'deferred' })
+  const { begun, result } = settle({ status: 'success', stateChanged: true })
+  assert.equal(begun.chat.timeline.operations[begun.value.operationId].roundOperationId, undefined)
+  assert.equal(result.value.status, 'committed')
+  assert.equal(timeline.inspect({ chat: current }).revision, 3)
+})

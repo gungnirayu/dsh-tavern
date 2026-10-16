@@ -96,7 +96,7 @@ async function harness(t, overrides = {}) {
       readTurn: async (sessionId, turn) => sessionId === 'game-1' && turn === latest.turn ? latest : null,
       readLatestSettledTurn: async () => latest,
       readCardContext: async () => ({ description: 'd', personality: '', scenario: '', lore: [] }),
-      backgroundModel: async () => ({ provider: 'p', model: 'm', thinking: 'high' }),
+      backgroundModel: async () => ({ provider: 'p', model: 'm', reasoningEffort: 'low', extra: 'x' }),
       publish: sessionId => published.push(sessionId),
       ...overrides
     })
@@ -165,7 +165,7 @@ test('tavern 服务：读取接口与错误隔离', { skip: !cordis }, async t =
   assert.deepEqual(await h.api.promptSections({ gameId: 'game-1' }), [], '段落出错时跳过，不影响正文')
   assert.equal((await tavern.getTurn({ gameId: 'game-1', turn: 3 })).text, '她推开门。')
   assert.equal(await tavern.getTurn({ gameId: 'game-1', turn: 9 }), null)
-  assert.deepEqual(await tavern.backgroundModel({ gameId: 'game-1' }), { provider: 'p', model: 'm' })
+  assert.deepEqual(await tavern.backgroundModel({ gameId: 'game-1' }), { provider: 'p', model: 'm', reasoningEffort: 'low' })
   assert.equal((await tavern.getCardContext({ gameId: 'game-1', turn: 3 })).description, 'd')
   await assert.rejects(tavern.getCardContext({ gameId: 'game-1', turn: 9 }), /还没写完/)
   await assert.rejects(tavern.attach({ gameId: 'game-1', turn: 3, textVersion: 'never-issued', item: { kind: 'x/y' } }), /不属于这一轮/)
@@ -587,6 +587,7 @@ test('tavern 服务：getCard、getHistory 只读；setVariables、editTurn 只�
   const writes = [], edits = [], ranges = []
   const h = await harness(t, {
     readCard: async sessionId => ({ name: 'A', description: '海边小镇', sessionId }),
+    readCardImage: async sessionId => sessionId === 'game-1' ? { url: '/api/dsh-tavern/card-image?path=cards%2Fa.json', mediaType: 'image/png' } : null,
     readHistory: async (sessionId, first, last) => { ranges.push([first, last]); return [{ turn: first, input: '你好', text: '她推开门。', rawText: '<b>她</b>推开门。' }] },
     writeVariables: async (material, variables) => writes.push([material.turn, variables]),
     editText: async (material, text) => edits.push([material.turn, text]),
@@ -599,6 +600,7 @@ test('tavern 服务：getCard、getHistory 只读；setVariables、editTurn 只�
   const card = await tavern.getCard({ gameId: 'game-1' })
   card.name = '改了'
   assert.equal((await tavern.getCard({ gameId: 'game-1' })).name, 'A', '拿到的是副本')
+  assert.deepEqual(await tavern.getCardImage({ gameId: 'game-1' }), { url: '/api/dsh-tavern/card-image?path=cards%2Fa.json', mediaType: 'image/png' })
   await tavern.getHistory({ gameId: 'game-1', from: 2 })
   await tavern.getHistory({ gameId: 'game-1', from: 1, to: 500 })
   assert.deepEqual(ranges, [[2, 51], [1, 50]], '一次最多 50 轮')

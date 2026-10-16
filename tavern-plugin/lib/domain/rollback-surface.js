@@ -1,3 +1,4 @@
+import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 import { inputAttachments } from './player-input-content.js'
 import { isRescuedHistoryMessage } from './chat-history-rescue.js'
 import { replaceSessionSurface } from './session-surface-mutations.js'
@@ -281,7 +282,7 @@ export function locateRollbackSurface(input) {
   if (anchoredInput?.type === 'user/message' && isTurnInput(anchoredInput.data)) userIndex = nodes.indexOf(anchored.input)
   for (let index = nodes.length - 1; userIndex < 0 && index >= 0; index -= 1) {
     const event = eventAt(events, nodes[index])
-    if (event?.type === 'user/message' && event.data?.source?.kind === 'plugin' && ['compact', 'dsh-compaction-basic'].includes(event.data.source.plugin)) return null
+    if (isCompactionCheckpoint(event)) return null
     // The round starts at its input: messages other plugins or card scripts add
     // around it belong to the round and go with it, never stand in for it.
     if (event && event.type === 'user/message' && (isTurnInput(event.data) || event.data?.source?.kind !== 'plugin') && !isRollbackUserTombstone(event)) {

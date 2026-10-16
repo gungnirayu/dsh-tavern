@@ -13,7 +13,7 @@ for(const fallback of [false,true])test(`record packs preserve hash lookup, stan
  const values=[{type:'scalar',value:'one'},{type:'scalar',value:'two'}]
  const refs=await store.writeRecords('a',values)
  const file=ref=>join(root,'a/blocks',ref.slice(0,2),ref+'.json')
- assert.equal(JSON.parse(await readFile(file(refs[0]),'utf8')).kind,fallback?'record':'record-pack-v1')
+ assert.equal(JSON.parse(await readFile(file(refs[0]),'utf8')).kind,fallback?'record':'block-pack-v1')
  if(!fallback)assert.equal((await stat(file(refs[0]))).ino,(await stat(file(refs[1]))).ino)
  const fresh=createConversationPageStore({root})
  for(let i=0;i<refs.length;i++)assert.deepEqual(await fresh.readRecord('a',refs[i]),values[i])

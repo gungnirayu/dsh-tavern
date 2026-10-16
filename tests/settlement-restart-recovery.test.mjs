@@ -47,7 +47,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
   }).chat
   const running = beginRunning ? await tasks.begin(current, 'settlement') : null
   const sandbox = vm.createContext({
-    createSettlementProgressGuard, readSettlementInput, chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null,
+    createSettlementProgressGuard, readSettlementInput, chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
     collectMvuHelperContext, normalizeBackgroundTasks, pendingMvuSettlementState, structuredClone, Date, AbortController, console: { log() {}, error() {} },
     str: value => value == null ? '' : String(value),

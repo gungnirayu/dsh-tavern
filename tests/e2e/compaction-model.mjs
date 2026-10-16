@@ -16,7 +16,8 @@ export async function* compactionStream(input) {
   }
   const directory = process.env.TAVERN_E2E_COMPACTION_DIR
   const control = JSON.parse(await readFile(join(directory, 'model-control.json'), 'utf8'))
-  const capacity = control.window || 32768
+  // providerLimit models a provider whose real limit is below the configured window.
+  const capacity = control.providerLimit || control.window || 32768
   const text = JSON.stringify(input.messages)
   const tools = new Set((input.tools || []).map(tool => tool.name))
   const background = tools.has('mvu_submit_update') || tools.has('posture_submit')
@@ -37,7 +38,7 @@ export async function* compactionStream(input) {
   await appendFile(join(directory, 'requests.jsonl'), JSON.stringify({ ...event, messages: input.messages }) + '\n')
   if (event.outcome !== 'success') {
     const error = new Error(event.outcome === 'overflow'
-      ? `This model's maximum context length is ${capacity} tokens; requested ${inputTokens + outputReserve}`
+      ? (control.overflowText === 'zhipu' ? '400 {"error":{"code":"1261","message":"Prompt exceeds max length"}}' : `This model's maximum context length is ${capacity} tokens; requested ${inputTokens + outputReserve}`)
       : `E2E summarizer unavailable: ${side}`)
     throw error
   }

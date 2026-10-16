@@ -1132,7 +1132,9 @@
 				isPlayMode(sessionMode) && latestMessageId ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
 				isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null,
 				isPlayMode(sessionMode) ? React.createElement(TavernMoreActions, props) : React.createElement(TavernCompactionAction, props),
-                live.view && live.view.contextCompaction && (live.view.contextCompaction.warning || live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running") ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, live.view.contextCompaction.warning || "正在压缩前后台上下文…") : null
+                live.view && live.view.contextCompaction && live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running" ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, "正在压缩前后台上下文…")
+                    : live.view && live.view.contextCompaction && live.view.contextCompaction.warning ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, live.view.contextCompaction.warning,
+                        h("button", { type: "button", className: "dsh-tavern-notice-dismiss", "aria-label": "关闭压缩提示", title: "关闭", onClick: function () { rpc("dismissCompactionWarning", {}, ownerSessionId).catch(function (err) { tavernErrorHub.report("关闭压缩提示", err); }); } }, "×")) : null
 			);
 		}
 
@@ -1419,24 +1421,58 @@
 				setCandidateGuidePanel(null);
 				if (panel.previous) setCandidatePanel(panel.previous);
 			}
-			const body = panel.phase === "loading"
-				? h("div", { className: "dsh-tavern-question-sub" }, "正在重新生成候选项…")
+			return h(RegenGuideForm, {
+				title: "重新生成候选项",
+				hint: isScript ? "跟随剧本，只重新生成一个推荐候选" : "行动候选与场景候选通用",
+				loading: panel.phase === "loading" ? "正在重新生成候选项…" : "",
+				error: panel.error,
+				value: guidance,
+				onChange: setGuidance,
+				placeholder: "对候选的要求（可选）",
+				examples: isScript ? ["侧重角色行动", "直接开新场景"] : ["多点暧昧动作", "场景换到白天户外", "新场景换一批人物"],
+				submitLabel: "重新生成",
+				onSubmit: generateGuided,
+				onCancel: cancel
+			});
+		}
+
+		// Shared guidance form of the candidate and body regeneration panels.
+		function RegenGuideForm(props) {
+			const h = React.createElement;
+			function addExample(text) {
+				const current = props.value.trim();
+				props.onChange(current ? current + "；" + text : text);
+			}
+			function onKeyDown(e) {
+				if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); props.onSubmit(); }
+				else if (e.key === "Escape") { e.preventDefault(); props.onCancel(); }
+			}
+			const body = props.loading
+				? h("div", { className: "dsh-tavern-regen-loading" }, props.loading)
 				: h(React.Fragment, null,
-					panel.error ? h("div", { className: "dsh-tavern-choice-error" }, panel.error) : null,
+					props.error ? h("div", { className: "dsh-tavern-choice-error" }, props.error) : null,
 					h("textarea", {
 						className: "dsh-tavern-regen-input",
 						rows: 2,
-						value: guidance,
-						placeholder: isScript ? "对候选的要求（可选）：例如“侧重角色行动”“直接开新场景”" : "对候选的要求（可选）：例如“多点暧昧动作”“场景换到白天户外”“新场景换一批人物”",
-						onChange: function (e) { setGuidance(e.target.value); }
+						autoFocus: true,
+						value: props.value,
+						placeholder: props.placeholder,
+						onChange: function (e) { props.onChange(e.target.value); },
+						onKeyDown: onKeyDown
 					}),
-					h("div", { className: "dsh-tavern-question-foot" },
-						h("button", { className: "dsh-tavern-question-primary", disabled: panel.phase === "loading", onClick: generateGuided }, "按此意见重新生成"),
-						h("button", { className: "dsh-tavern-question-free", onClick: cancel }, "取消")
+					h("div", { className: "dsh-tavern-regen-foot" },
+						h("div", { className: "dsh-tavern-regen-examples" }, props.examples.map(function (text) {
+							return h("button", { key: text, type: "button", className: "dsh-tavern-regen-example", onClick: function () { addExample(text); } }, text);
+						})),
+						h("button", { type: "button", className: "dsh-tavern-regen-cancel", onClick: props.onCancel }, "取消"),
+						h("button", { type: "button", className: "dsh-tavern-question-primary dsh-tavern-regen-submit", onClick: props.onSubmit }, props.submitLabel)
 					)
 				);
-			return h("div", { className: "dsh-tavern-question" },
-				h("div", { className: "dsh-tavern-question-head" }, h("span", null, "重新生成候选项"), h("span", { className: "dsh-tavern-question-sub" }, isScript ? "可填写意见；由于跟随剧本，只会重新生成一个推荐候选项" : "可填写意见，行动候选与场景候选通用")),
+			return h("div", { className: "dsh-tavern-question dsh-tavern-regen" },
+				h("div", { className: "dsh-tavern-regen-head" },
+					h("span", { className: "dsh-tavern-regen-title" }, props.title),
+					h("span", { className: "dsh-tavern-question-sub" }, props.hint)
+				),
 				body
 			);
 		}
@@ -1464,26 +1500,19 @@
 					setRegenPanel(Object.assign({}, panel, { phase: "error", error: String(err && err.message || err) }));
 				}
 			}
-			const body = panel.phase === "loading"
-				? h("div", { className: "dsh-tavern-question-sub" }, "正在重新生成正文…")
-				: h(React.Fragment, null,
-						panel.error ? h("div", { className: "dsh-tavern-choice-error" }, panel.error) : null,
-						h("textarea", {
-							className: "dsh-tavern-regen-input",
-							rows: 2,
-							value: guidance,
-							placeholder: "指导意见（可选）：例如“写得更长，侧重心理描写”",
-							onChange: function (e) { setGuidance(e.target.value); }
-						}),
-						h("div", { className: "dsh-tavern-question-foot" },
-							h("button", { className: "dsh-tavern-question-primary", disabled: panel.phase === "loading", onClick: generate }, "生成并替换正文"),
-							h("button", { className: "dsh-tavern-btn quiet", onClick: function () { setRegenPanel(null); } }, "取消")
-						)
-					);
-			return h("div", { className: "dsh-tavern-question" },
-				h("div", { className: "dsh-tavern-question-head" }, h("span", null, "重新生成正文"), h("span", { className: "dsh-tavern-question-sub" }, "生成后直接替换当前正文")),
-				body
-			);
+			return h(RegenGuideForm, {
+				title: "重新生成正文",
+				hint: "生成后直接替换当前正文",
+				loading: panel.phase === "loading" ? "正在重新生成正文…" : "",
+				error: panel.error,
+				value: guidance,
+				onChange: setGuidance,
+				placeholder: "指导意见（可选）",
+				examples: ["写得更长", "侧重心理描写", "加快节奏"],
+				submitLabel: "生成并替换正文",
+				onSubmit: generate,
+				onCancel: function () { setRegenPanel(null); }
+			});
 		}
 		function register(input) {
 			const ctx = input.ctx;

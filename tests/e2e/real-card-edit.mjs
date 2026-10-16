@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { parse, stringify } from 'yaml'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 import { parseSessionLog } from '../../tavern-plugin/lib/domain/legacy-session-migration.js'
+import { checkMvuCard, looksLikeMvuCard } from '../../tavern-plugin/lib/domain/mvu-card-check.js'
 
 // Measures what one real card-workbench edit costs: steps and provider usage.
 // TAVERN_E2E_CARD_EDIT_SOURCE names a local card file to copy (never committed).
@@ -49,10 +50,15 @@ export async function realCardEditChecks({ page, step, root, data, output, repor
     await composer.waitFor()
     // Same draft the "修改卡" task builds (src/client/main.js), so the edit-card skill loads.
     const editPrompt = (await readFile(new URL('../../tavern-plugin/prompts/card-task-edit.md', import.meta.url), 'utf8')).trim()
+    // TAVERN_E2E_CARD_EDIT_MODE=mvu sends the same draft as the card library's "转成 MVU 版" (src/client/main.js).
+    const mvuMode = process.env.TAVERN_E2E_CARD_EDIT_MODE === 'mvu'
+    const mvuSource = await readFile(new URL('../../tavern-plugin/src/client/main.js', import.meta.url), 'utf8')
+    const mvuTail = mvuMode ? JSON.parse(mvuSource.match(/"(先用 tavern_copy_card 建一份副本[^"]*)"/)[0]) : ''
+    const first = mvuMode ? '/card-to-mvu\n\n【目标人物卡】\n@"cards/edit-target.json"\n\n' + mvuTail : null
     const started = Date.now()
     let list = []
     for (const [index, item] of tasks.entries()) {
-      await composer.fill(index === 0 ? editPrompt.replace('/edit-card', '/edit-card\n\n目标卡：@"cards/edit-target.json"') + '\n\n' + item : item)
+      await composer.fill(index === 0 ? (first ?? editPrompt.replace('/edit-card', '/edit-card\n\n目标卡：@"cards/edit-target.json"') + '\n\n' + item) : item)
       await composer.press('Enter')
       let tick = Date.now()
       const ended = () => list.filter(event => event.type === 'turn/end').length > index
@@ -75,10 +81,25 @@ export async function realCardEditChecks({ page, step, root, data, output, repor
       return { turn, steps: rows.length, firstStepPromptTokens: (rows[0].inputTokens || 0) + (rows[0].cacheReadTokens || 0), inputTokens: sum('inputTokens', rows), cacheReadTokens: sum('cacheReadTokens', rows), outputTokens: sum('outputTokens', rows), totalTokens: sum('totalTokens', rows) }
     })
     report.cardEdit = {
-      tasks, seconds: Math.round((Date.now() - started) / 1000), steps: steps.length,
+      tasks: mvuMode ? ['card-to-mvu'] : tasks, seconds: Math.round((Date.now() - started) / 1000), steps: steps.length,
       firstStepPromptTokens: steps[0] ? (steps[0].inputTokens || 0) + (steps[0].cacheReadTokens || 0) : 0,
       inputTokens: sum('inputTokens'), cacheReadTokens: sum('cacheReadTokens'), outputTokens: sum('outputTokens'), reasoningTokens: sum('reasoningTokens'), totalTokens: sum('totalTokens'),
       turns, tools, finalText, perStep: steps, calls
+    }
+    if (mvuMode) {
+      // The converted copy: any new card besides the source.
+      const cards = (await readdir(join(data, 'resources/cards'))).filter(name => name.endsWith('.json') && name !== 'edit-target.json')
+      report.cardEdit.mvuResult = await Promise.all(cards.map(async name => {
+        const text = await readFile(join(data, 'resources/cards', name), 'utf8')
+        await writeFile(join(output, 'result-' + name), text)
+        const file = JSON.parse(text)
+        const card = (file.raw || file).data || file.raw || file
+        const checked = checkMvuCard(card)
+        const regex = card.extensions?.regex_scripts || []
+        return { name, mvu: looksLikeMvuCard(card), errors: checked.errors.length, warnings: checked.warnings.length, errorList: checked.errors.slice(0, 5),
+          statusView: regex.some(rule => /mvu-status/.test(String(rule.findRegex))), greetings: 1 + (card.alternate_greetings || []).length,
+          greetingsWithInit: [card.first_mes, ...(card.alternate_greetings || [])].filter(text => /<initvar>/.test(String(text))).length }
+      }))
     }
     await writeFile(join(output, 'card-edit-usage.json'), JSON.stringify(report.cardEdit, null, 2))
     console.log(JSON.stringify({ ...report.cardEdit, perStep: undefined, calls: undefined, finalText: String(finalText).slice(0, 300) }, null, 2))

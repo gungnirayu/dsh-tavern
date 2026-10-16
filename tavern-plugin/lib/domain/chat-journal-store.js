@@ -56,6 +56,17 @@ async function exists(target) {
   try { await stat(target); return true } catch (error) { if (error?.code === 'ENOENT') return false; throw error }
 }
 
+async function directoryBytes(target) {
+  let total = 0
+  let entries = []
+  try { entries = await readdir(target, { withFileTypes: true }) } catch (error) { if (error?.code === 'ENOENT') return 0; throw error }
+  for (const entry of entries) {
+    const file = path.join(target, entry.name)
+    total += entry.isDirectory() ? await directoryBytes(file) : (await stat(file)).size
+  }
+  return total
+}
+
 async function readJson(target) {
   try { return JSON.parse(await readFile(target, 'utf8')) } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error }
 }
@@ -1048,5 +1059,28 @@ export function createChatJournalStore(options = {}) {
 
   // update() owns both boundaries: updater drafts and returned values are
   // detached from cached state and from each other, including aborted writes.
-  return Object.freeze({ detachedUpdate: true, migrateNative, migrateCompatibility, restoreLegacy, read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
+  // Only native saves have unreachable revisions to drop; queued behind writes.
+  async function compact(chatId, options) {
+    return await serialize(chatId, () => native.compact(chatId, options))
+  }
+  async function readRetentionHeader(chatId, revision) {
+    try { return await native.readRetentionHeader(chatId, revision) }
+    catch (error) { if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') return null; throw error }
+  }
+  // Pre-migration journal files of a native save. Callers decide whether any
+  // retained revision still predates the migration before removing them.
+  async function removeLegacyFiles(chatId) {
+    return await serialize(chatId, async () => {
+      const paths = layout(chatId)
+      let bytes = 0
+      for (const name of ['journals', 'snapshots']) {
+        const target = path.join(paths.root, name)
+        bytes += await directoryBytes(target)
+        await rm(target, { recursive: true, force: true })
+      }
+      return { bytes }
+    })
+  }
+
+  return Object.freeze({ compact, readRetentionHeader, removeLegacyFiles, detachedUpdate: true, migrateNative, migrateCompatibility, restoreLegacy, read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
 }

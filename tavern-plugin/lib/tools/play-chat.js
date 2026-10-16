@@ -12,6 +12,7 @@ export function registerPlayChatTool({
   str,
   tools,
   worldbookRecallLog,
+  displayRuntimeStore,
 }) {
   tools.register(defineTool({
     name: 'tavern_read_play_chat',
@@ -83,6 +84,7 @@ export function registerPlayChatTool({
         foreground: sessionDebugEvidence(foregroundId),
         background: sessionDebugEvidence(backgroundId),
         worldbook: args.layer === 'worldbook' ? await worldbookRecallLog.read(sourceChat, args.turn || reference.turn) : undefined,
+        displayRuntime: args.layer === 'iframe' && displayRuntimeStore ? await displayRuntimeStore.read(sourceChat.id, Number(args.turn || reference.turn)) : undefined,
         requests: await modelRequestLog.evidence(sourceChat.id, args.turn || reference.turn)
       })
     }

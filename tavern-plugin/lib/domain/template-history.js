@@ -3,8 +3,10 @@ import { replaceSessionSurface } from './session-surface-mutations.js'
 import { randomUUID } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
 import { createRoundAnchorResolver, validAnchor } from './round-anchor.js'
+import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 
 const body = message => String(message?.text ?? '')
+const EDIT_PREFIX = 'tavern-template-edit:'
 const textOf = message => (message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n')
 
 // A player row is followed by its round's reply row, which records where the
@@ -18,7 +20,8 @@ function anchoredInputs(events, nodes) {
     resolve ??= createRoundAnchorResolver({ events, nodes: nodes.map(event => event.seq) })
     const resolved = resolve(anchor)
     const at = resolved && resolved.input !== null ? nodes.findIndex(event => event.seq === resolved.input) : -1
-    return at >= 0 && nodes[at].type === 'user/message' ? at : -1
+    // A round inside compacted history resolves to the checkpoint: it has no own input left.
+    return at >= 0 && nodes[at].type === 'user/message' && !isCompactionCheckpoint(nodes[at]) ? at : -1
   }
 }
 
@@ -32,7 +35,7 @@ export function prepareTemplateHistory(session, before, after) {
   const positions = new Map()
   const messageTypes = new Set(before.messages.map(message => message.role + '/message'))
   nodes.forEach((event, offset) => {
-    if (!messageTypes.has(event.type)) return
+    if (!messageTypes.has(event.type) || isCompactionCheckpoint(event)) return
     const key = event.type + '\0' + textOf(event.type === 'assistant/message' ? event.data.message : event.data)
     if (!positions.has(key)) positions.set(key, [])
     positions.get(key).push(offset)
@@ -62,7 +65,7 @@ export function prepareTemplateHistory(session, before, after) {
     // Archived messages outside the active surface have no native message to replace.
     if (at < 0) continue
     const target = nodes[at]
-    next.templateHistoryEdit = { id: 'tavern-template-edit:' + randomUUID(), seq: target.seq, role: old.role,
+    next.templateHistoryEdit = { id: EDIT_PREFIX + randomUUID(), seq: target.seq, role: old.role,
       turn: target.data.turn || next.turn || 1 }
   }
   return after
@@ -80,27 +83,44 @@ function markRecentInputRewrites(session, messages) {
     let at = anchoredInput(messages, index)
     if (at < 0) for (let offset = cursor; offset >= 0; offset--) {
       const event = nodes[offset]
-      if (event.type !== message.role + '/message') continue
+      if (event.type !== message.role + '/message' || isCompactionCheckpoint(event)) continue
       if (texts.has(textOf(event.type === 'assistant/message' ? event.data.message : event.data))) { at = offset; break }
     }
     if (at < 0) continue
     cursor = at - 1
     if (!message.templateInputSource || textOf(nodes[at].data) === body(message)) continue
-    message.templateHistoryEdit = { id: 'tavern-template-edit:' + randomUUID(), seq: nodes[at].seq, role: message.role,
+    message.templateHistoryEdit = { id: EDIT_PREFIX + randomUUID(), seq: nodes[at].seq, role: message.role,
       turn: nodes[at].data.turn || message.turn || 1 }
   }
 }
 
+/** Undo template edits that overwrote a compaction checkpoint (#202): restore the summary it was written with. */
+function restoreCompactionCheckpoints(session, events) {
+  const bySeq = new Map(events.map(event => [event.seq, event]))
+  let changed = false
+  for (const seq of [...(session.surface?.nodes || [])]) {
+    let event = bySeq.get(seq)
+    if (!isCompactionCheckpoint(event) || !String(event.data?.id || '').startsWith(EDIT_PREFIX)) continue
+    while (isCompactionCheckpoint(event) && String(event.data?.id || '').startsWith(EDIT_PREFIX)) event = bySeq.get(event.sourceEventSeqs?.[0])
+    if (!isCompactionCheckpoint(event)) continue
+    replaceSessionSurface(session, 'user/message', event.data, { start: seq, end: seq, sourceEventSeqs: [seq] })
+    changed = true
+  }
+  return changed
+}
+
 export async function synchronizeTemplateHistory(session, chat, flush) {
+  const restored = restoreCompactionCheckpoints(session, sessionEvents(session))
   if (isScopedMessages(chat.messages)) markRecentInputRewrites(session, chat.messages)
   else prepareTemplateHistory(session, chat, chat)
   const events = sessionEvents(session)
   const ids = new Set(events.map(event => event.type === 'assistant/message' ? event.data.message?.id : event.data?.id))
-  let changed = false
+  let changed = restored
   for (const message of chat.messages || []) {
     const edit = message?.templateHistoryEdit
     if (!edit || ids.has(edit.id) || !session.surface?.nodes.includes(edit.seq)) continue
     const target = events.find(event => event.seq === edit.seq)
+    if (isCompactionCheckpoint(target)) continue
     const original = target.type === 'assistant/message' ? target.data.message : target.data
     let replaced = false
     const content = original.content.flatMap(block => {

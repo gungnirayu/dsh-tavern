@@ -184,7 +184,11 @@ export function createStoryTimeline(options = {}) {
     }).sort(function (left, right) {
       return (Number(right.committedRevision) || 0) - (Number(left.committedRevision) || 0)
     })[0]
-    return latest !== undefined && ['pending', 'running', 'failed'].includes(str(object(latest.background).phase)) ? latest : undefined
+    // A round is settled against the state it committed. Once a later variable
+    // retry has advanced the revision, new settlement work no longer belongs to
+    // that round; linking it would make every commit stale.
+    return latest !== undefined && ['pending', 'running', 'failed'].includes(str(object(latest.background).phase))
+      && Number(latest.committedRevision) === Number(chat.timeline.revision) ? latest : undefined
   }
 
   function commitBody(chat, operation) {

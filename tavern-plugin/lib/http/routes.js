@@ -25,6 +25,7 @@ export function registerTavernHttpRoutes({
   str,
   tavernRemoteAssets,
   tavernStaticResources,
+  exposeHandler,
 }) {
   const webServer = ctx.get('webServer')
   if (webServer !== undefined) {
@@ -46,7 +47,14 @@ export function registerTavernHttpRoutes({
     ctx.effect(() => webServer.register({
       kind: 'prefix',
       path: '/api/dsh-tavern',
-      handler: async (req, res) => {
+      handler: handleTavernRequest
+    }), 'dsh-tavern: web route')
+  }
+  // In-process callers (the server script runtime) share these exact routes.
+  exposeHandler?.(handleTavernRequest)
+
+  async function handleTavernRequest(req, res) {
+      {
         const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
         const cachedAssetMatch = /^\/api\/dsh-tavern\/remote-assets\/([0-9a-f]{64})(?:\/[^/]*)?$/i.exec(pathname)
         const readsStaticAsset = req.method === 'GET' && pathname === '/api/dsh-tavern/static-assets'
@@ -354,6 +362,5 @@ export function registerTavernHttpRoutes({
             errorCode: typeof err?.code === 'string' ? err.code : undefined }))
         }
       }
-    }), 'dsh-tavern: web route')
   }
 }

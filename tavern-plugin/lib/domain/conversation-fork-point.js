@@ -24,7 +24,10 @@ export async function conversationStateAtTurn(source, requestedTurn, readRevisio
     const chatId = next ? state.id : parent?.stateChatId || parent?.chatId
     const revision = next ? next.beforeRevision : parent?.stateRevision ?? parent?.storageRevision
     if (!chatId || !Number.isSafeInteger(revision)) throw new Error('该回合缺少完整历史状态快照，无法安全分叉')
-    state = await readRevision(chatId, revision)
+    try { state = await readRevision(chatId, revision) } catch (error) {
+      if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') throw new Error('该回合太早，历史状态已清理（只保留最近 50 轮），无法从这一轮分叉')
+      throw error
+    }
     if (!state || state._storageRevision !== revision) throw new Error('该回合历史状态快照不可用，无法安全分叉')
   }
   const prefix = source.messages.slice(0, targetIndex + 1)
