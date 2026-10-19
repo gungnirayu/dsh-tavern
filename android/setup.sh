@@ -5,6 +5,8 @@ DSH_ROOT="${DSH_HOME:-${HOME}/.dsh}"
 APP_DIR="${DSH_TAVERN_SOURCE_ROOT:-${DSH_TAVERN_ANDROID_APP_DIR:-${DSH_ROOT}/apps/dsh-tavern}}"
 DEFAULT_REPOSITORY="https://github.com/flizzywine/dsh-tavern.git"
 REPOSITORY="${DSH_TAVERN_REPOSITORY:-${DEFAULT_REPOSITORY}}"
+# Follows the main branch, same as install.sh.
+BRANCH="${DSH_TAVERN_BRANCH:-main}"
 DEFAULT_TARBALL_URL="https://codeload.github.com/flizzywine/dsh-tavern/tar.gz/refs/heads/main"
 TARBALL_URL="${DSH_TAVERN_TARBALL_URL:-${DEFAULT_TARBALL_URL}}"
 SOURCE_MARKER=".dsh-tavern-tarball-source"
@@ -127,9 +129,9 @@ install_source() {
     local attempt
     for attempt in 1 2 3; do
       printf '正在通过 Git 下载 DSH Tavern（第 %s/3 次）……\n' "${attempt}"
-      if git clone --filter=blob:none --no-checkout --branch main --single-branch "${REPOSITORY}" "${candidate}" \
+      if git clone --filter=blob:none --no-checkout --branch "${BRANCH}" --single-branch "${REPOSITORY}" "${candidate}" \
         && git -C "${candidate}" sparse-checkout set --no-cone '/*' '!**/docs/' \
-        && git -C "${candidate}" checkout main; then
+        && git -C "${candidate}" checkout "${BRANCH}"; then
         replace_source "${candidate}"
         return
       fi
@@ -159,8 +161,8 @@ update_source() {
     git -C "${APP_DIR}" config remote.origin.promisor true
     git -C "${APP_DIR}" config remote.origin.partialclonefilter blob:none
     git -C "${APP_DIR}" sparse-checkout set --no-cone '/*' '!**/docs/'
-    if git -C "${APP_DIR}" fetch origin main; then
-      if ! git -C "${APP_DIR}" merge-base --is-ancestor HEAD origin/main; then
+    if git -C "${APP_DIR}" fetch origin "${BRANCH}"; then
+      if ! git -C "${APP_DIR}" merge-base --is-ancestor HEAD "origin/${BRANCH}"; then
         local generated_only=1
         local commit subject files
         while IFS= read -r commit; do
@@ -171,7 +173,7 @@ update_source() {
             generated_only=0
             break
           fi
-        done < <(git -C "${APP_DIR}" rev-list origin/main..HEAD)
+        done < <(git -C "${APP_DIR}" rev-list "origin/${BRANCH}..HEAD")
         if [ "${generated_only}" -eq 1 ]; then
           printf '仅检测到自动生成的运行清单分叉，正在安全重新下载源码……\n'
           install_source
@@ -179,7 +181,7 @@ update_source() {
         fi
         fail "项目目录包含本地提交或已经分叉，无法自动安全更新。"
       fi
-      git -C "${APP_DIR}" merge --ff-only origin/main
+      git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
       return
     fi
     install_from_tarball

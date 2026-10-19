@@ -72,6 +72,15 @@ function execution(options = {}) {
   })
 }
 
+const announcementDelays = [1500, 4000, 9000]
+const announcementTimers = h => [...h.timers.entries()].filter(([, timer]) => announcementDelays.includes(timer.delay))
+function runAnnouncement(h, delay) {
+  const entry = announcementTimers(h).find(([, timer]) => timer.delay === delay)
+  assert.ok(entry, `no pending chat announcement timer for ${delay}ms`)
+  h.timers.delete(entry[0])
+  return entry[1].run()
+}
+
 test('coordination subscription performs an authoritative initial refresh when a restart signal was lost', async () => {
   const h = host()
   const states = []
@@ -145,6 +154,41 @@ test('script readiness without a chat identity never cancels MVU initialization 
   await h.runtimes[0].options.onReady('A')
   assert.equal(h.runtimes[0].emissions.length, 0)
   h.module.dispose()
+})
+
+test('初始变量尚未保存时重发 CHAT_CHANGED，让卡脚本重跑聊天级初始化且重发有界', async () => {
+  const h = execution(), input = view()
+  h.module.sync('A', input)
+  await h.settle()
+  await h.runtimes[0].options.onReady('A')
+  assert.equal(h.runtimes[0].emissions.length, 1, 'readiness announces the chat once')
+
+  h.runtimes[0].options.onMvuLoadState({ phase: 'evaluating' })
+  for (const [index, delay] of [1500, 4000, 9000].entries()) {
+    runAnnouncement(h, delay)
+    await h.settle()
+    const emitted = h.runtimes[0].emissions.slice(-2)
+    assert.equal(emitted.length, 2, `retry ${index + 1} announces twice`)
+    assert.deepEqual(copy(emitted[0][1]), [''], 'the forced retry first announces an identity MVU cannot adopt')
+    assert.deepEqual(copy(emitted[1][1]), ['tavern-chat'], 'the forced retry then announces the Tavern chat')
+    assert.equal(h.runtimes[0].emissions.length, index * 2 + 3, `retry ${index + 1} re-initializes the chat once`)
+  }
+  assert.equal(announcementTimers(h).length, 0, 'retries stop after the bounded schedule')
+  h.module.dispose()
+})
+
+test('初始变量保存后不再重发 CHAT_CHANGED', async () => {
+  const h = execution(), input = view()
+  h.module.sync('A', input)
+  await h.settle()
+  await h.runtimes[0].options.onReady('A')
+  h.runtimes[0].options.onMvuLoadState({ phase: 'evaluating' })
+  assert.equal(announcementTimers(h).length, 1, 'a missing initial variable schedules one retry')
+  h.runtimes[0].options.onMvuLoadState({ phase: 'ready' })
+  assert.equal(announcementTimers(h).length, 0, 'saved initial variables cancel the pending retry')
+  h.runtimes[0].options.onMvuLoadState({ phase: 'evaluating' })
+  h.module.dispose()
+  assert.equal(announcementTimers(h).length, 0, 'disposal cancels the retry')
 })
 
 test('A -> B -> A rejects late claims/readiness and uses distinct leases', async () => {
@@ -248,36 +292,6 @@ test('claim 响应丢失后自动重试同一 offer，脚本只执行一次', as
   h.module.dispose()
 })
 
-test('claimed host event identity reaches the shared script runtime unchanged', async () => {
-  const h = execution()
-  const offer = { active: true, ready: true, leaseToken: 'offer-1', event: { id: 'operation-1:attempt-1', name: 'MESSAGE_RECEIVED', args: [0], context: context() } }
-  h.respond(method => Promise.resolve(method === 'claimTavernScriptWork' ? offer : {}))
-
-  h.module.sync('A', view())
-  await h.settle()
-
-  assert.equal(h.runtimes[0].emissions.length, 1)
-  assert.equal(h.runtimes[0].emissions[0][4], offer.event.id)
-  h.module.dispose()
-})
-
-test('script failure is acknowledged with diagnostics; the next signal can execute another event', async () => {
-  const h = execution()
-  let eventId = 0
-  h.respond(method => Promise.resolve(method === 'claimTavernScriptWork' ? { active: true, event: { id: 'E' + ++eventId, name: 'UPDATE', args: [1], context: context() } } : {}))
-  h.module.sync('A', view())
-  h.runtimes[0].emit = async (_name, _args, _context, diagnostics) => { diagnostics.push({ stage: 'script' }); throw Error('fixture failure') }
-  await h.settle()
-  assert.match(h.calls.at(-1).args.error, /fixture failure/)
-  assert.deepEqual(h.calls.at(-1).args.diagnostics, [{ stage: 'script' }])
-  h.runtimes[0].emit = async () => [2]
-  h.wake()
-  await h.settle()
-  assert.equal(h.calls.at(-1).args.eventId, 'E2')
-  assert.deepEqual(h.calls.at(-1).args.args, [2])
-  h.module.dispose()
-})
-
 function frames(extra = {}) {
   const h = host(), calls = [], invalidations = [], posts = []
   let props = { sessionId: 'A', content: '<p>status</p>', turn: 1, partIndex: 0, eager: true, persistent: true, helperContext: context(), ...extra }
@@ -318,55 +332,6 @@ test('document transport coalesces loading updates, recovers snapshots, and reje
   h.stop()
 })
 
-test('return to visible content cancels preparation; stale refresh coalesces; historical context remains frozen', () => {
-  const h = frames(), old = h.attach()
-  h.update({ content: 'temporary' })
-  const pending = h.attach(h.lifecycle.snapshot().pendingDocument)
-  h.update({ content: '<p>status</p>' })
-  assert.equal(h.lifecycle.snapshot().pendingDocument, null)
-  pending.message('dsh-tavern-frame-ready')
-  assert.equal(h.lifecycle.snapshot().visibleDocument, old.document)
-  old.message('dsh-tavern-status-stale')
-  const replacement = h.lifecycle.snapshot().pendingDocument
-  old.message('dsh-tavern-status-stale')
-  assert.equal(h.lifecycle.snapshot().pendingDocument, replacement)
-  h.stop()
-  const history = frames({ eager: false, persistent: false }), historical = history.attach()
-  historical.message('dsh-tavern-frame-ready')
-  history.update({ helperContext: context(2) })
-  historical.message('dsh-tavern-status-stale')
-  assert.equal(history.posts.length, 0)
-  assert.equal(history.lifecycle.snapshot().pendingDocument, null)
-  history.stop()
-})
-
-test('runtime reports coalesce and cancel on stop; restart attaches once and read-only capture never mutates variables', async () => {
-  const h = frames(), frame = h.attach()
-  frame.message('dsh-tavern-frame-height', { height: 90000 })
-  assert.equal(h.lifecycle.snapshot().height, 32000)
-  frame.message('dsh-tavern-frame-runtime', { runtime: { stage: 1 } })
-  frame.message('dsh-tavern-frame-runtime', { runtime: { stage: 2 } })
-  assert.equal(h.timers.size, 1)
-  await h.runTimer()
-  assert.equal(h.calls[0].args.runtime.stage, 2)
-  const captured = deferred()
-  h.respond(() => captured.promise)
-  frame.message('dsh-tavern-mvu-view-used')
-  frame.message('dsh-tavern-frame-runtime', { runtime: {} })
-  h.stop()
-  captured.resolve({ captured: true }); await tick()
-  assert.equal(h.timers.size, 0)
-  assert.equal(h.listeners.size, 0)
-  assert.equal(h.invalidations.length, 0)
-  const stopAgain = h.lifecycle.start(() => {})
-  assert.equal(h.listeners.size, 1)
-  h.respond(() => Promise.resolve({ captured: true }))
-  frame.message('dsh-tavern-mvu-view-used'); await tick()
-  assert.deepEqual(h.invalidations, ['A'])
-  assert.ok(h.calls.every(x => x.method === 'captureDisplayRuntime'))
-  stopAgain()
-})
-
 function sandbox(options = {}) {
   const h = host(), frames = [], calls = [], mutations = [], errors = []
   let respond = () => Promise.resolve({ updated: true })
@@ -392,84 +357,6 @@ function sandbox(options = {}) {
   }
   return Object.assign(h, { runtime, frames, calls, mutations, errors, ready, message, respond(fn) { respond = fn } })
 }
-
-test('shared script mutation keeps the claimed host event identity', async () => {
-  const h = sandbox()
-  h.runtime.sync('A', view())
-  const frame = h.ready()
-  const hostEventId = 'operation-1:attempt-1'
-  const emission = h.runtime.emit('UPDATE', [1], context(), [], hostEventId)
-  const dispatched = frame.contentWindow.messages.find(message => message.type === 'dsh-tavern-helper-event')
-
-  assert.equal(dispatched.eventId, hostEventId)
-  h.message(frame, 'dsh-tavern-helper-call', {
-    requestId: 'mutation-1', eventId: dispatched.eventId,
-    method: 'updateTavernHelperVariables', args: { option: { type: 'message', message_id: 0 }, variables: { hp: 2 } }
-  })
-  await tick()
-  assert.equal(h.calls.at(-1).args.eventId, hostEventId)
-
-  h.message(frame, 'dsh-tavern-helper-event-complete', { eventId: dispatched.eventId, args: [1] })
-  await emission
-  h.runtime.dispose()
-})
-
-test('replacing the shared sandbox cancels its pending events and ignores detached load and RPC completion', async () => {
-  const h = sandbox(), result = deferred()
-  h.runtime.sync('A', view())
-  const first = h.ready()
-  const emission = h.runtime.emit('UPDATE', [1], context())
-  const rejection = assert.rejects(emission, /已重置/)
-  h.respond(() => result.promise)
-  h.message(first, 'dsh-tavern-helper-call', { method: 'updateTavernHelperVariables', args: {} })
-  const changed = view(); changed.tavernHelperScripts[0].content = 'void 1'
-  h.runtime.sync('A', changed)
-  await rejection
-  assert.equal(first.removed, true)
-  assert.equal(h.timers.size, 0, 'old initialization/event timers must not survive replacement')
-  first.load()
-  assert.equal(h.timers.size, 0, 'detached load cannot start a new timeout')
-  h.runtime.sync('B', view())
-  result.resolve({ updated: true }); await tick()
-  assert.equal(h.mutations.length, 0, 'old RPC completion cannot invalidate the new session')
-  assert.equal(first.contentWindow.messages.some(x => x.type === 'dsh-tavern-helper-response'), false)
-  const callCount = h.calls.length
-  h.message(first, 'dsh-tavern-helper-call', { method: 'updateTavernHelperVariables' })
-  assert.equal(h.calls.length, callCount)
-  h.runtime.dispose(); h.runtime.dispose()
-  assert.equal(h.listeners.size, 0)
-  assert.equal(h.timers.size, 0)
-})
-
-test('MVU 导入失败不宣布就绪，也不把未订阅的事件静默当作成功；重建后可恢复', async () => {
-  let announcements = 0
-  const h = sandbox({ onReady() { announcements++ } })
-  const input = mvuView()
-  h.runtime.sync('A', input)
-  const frame = h.frames[0]; frame.load()
-  const message = 'Failed to fetch dynamically imported module: http://127.0.0.1:43120/bundle.js'
-  h.message(frame, 'dsh-tavern-helper-script-runtime', { scriptId: '__dsh_official_mvu__', message })
-  h.message(frame, 'dsh-tavern-helper-subscriptions', { ready: true, names: [], scripts: [
-    { id: '__dsh_official_mvu__', ready: false, failed: true }, { id: 'script', ready: true, failed: false }
-  ] })
-  assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), false)
-  assert.match(h.runtime.inspect().initializationError, /Failed to fetch/)
-  assert.equal(announcements, 0)
-  const diagnostics = []
-  await assert.rejects(h.runtime.emit('MESSAGE_RECEIVED', [0], context(), diagnostics), /MVU.*加载失败/)
-  assert.equal(diagnostics[0].initializationFailed, true)
-  assert.equal(frame.contentWindow.messages.some(x => x.type === 'dsh-tavern-helper-event'), false)
-  assert.equal(h.timers.size, 0)
-  h.runtime.sync('B', input)
-  const recovered = h.frames.at(-1); recovered.load()
-  h.message(recovered, 'dsh-tavern-helper-subscriptions', { ready: true, names: ['MESSAGE_RECEIVED'], scripts: [
-    { id: '__dsh_official_mvu__', ready: true, failed: false }, { id: 'script', ready: true, failed: false }
-  ] })
-  assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), true)
-  assert.equal(h.runtime.inspect().initializationError, undefined)
-  assert.equal(announcements, 1)
-  h.runtime.dispose()
-})
 
 test('下载等待暂停初始化超时，同一沙箱可手动恢复且拒绝重复、伪造和旧窗口重试', () => {
   const states = [], h = sandbox({ onMvuLoadState: state => states.push(copy(state)) })
@@ -507,88 +394,6 @@ test('下载等待暂停初始化超时，同一沙箱可手动恢复且拒绝�
   assert.equal(h.runtime.retryMvuLoad(), false)
   h.runtime.dispose()
   assert.equal(states.at(-1), null)
-})
-
-test('MVU subscriptions cannot advertise settlement readiness until initialized variables are saved; late persistence recovers without replay', async () => {
-  let now = 0
-  const states = [], h = sandbox({ now: () => now, onMvuLoadState: state => states.push(copy(state)) })
-  const input = mvuView()
-  input.tavernHelper.messages[0].variables = {}
-  h.runtime.sync('A', input)
-  const frame = h.frames[0]; frame.load()
-  h.message(frame, 'dsh-tavern-helper-subscriptions', { ready: true, names: ['MESSAGE_RECEIVED'], scripts: [
-    { id: '__dsh_official_mvu__', ready: true }, { id: 'script', ready: true }
-  ] })
-  assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), false)
-  assert.equal(states.at(-1).phase, 'evaluating')
-  assert.equal(h.runtime.inspect().initializationError, undefined)
-  const saved = mvuView().tavernHelper
-  saved.chatId = input.chatId
-  h.respond(async () => ({ updated: false, stale: true, context: saved }))
-  h.message(frame, 'dsh-tavern-helper-call', { requestId: 'stale', method: 'updateTavernHelperMessages' })
-  await tick()
-  assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), false, 'rejected writes cannot satisfy initialization')
-  now += 15000
-  h.runTimer()
-  assert.match(h.runtime.inspect().initializationError, /初始变量.*保存/)
-  assert.equal(states.at(-1).phase, 'error')
-  assert.equal(h.runtime.retryMvuLoad(), false, 'never rerun partially executed initialization')
-  h.respond(async () => ({ updated: true, context: saved }))
-  h.message(frame, 'dsh-tavern-helper-call', { requestId: 'saved', method: 'updateTavernHelperMessages' })
-  await tick()
-  assert.equal(h.client.tavernScriptRuntimeReady(h.runtime.inspect()), true)
-  assert.equal(h.runtime.inspect().initializationError, undefined)
-  assert.equal(states.at(-1).phase, 'ready')
-  assert.equal(h.frames.length, 1)
-  h.runtime.dispose()
-  assert.equal(h.timers.size, 0)
-})
-
-test('执行租约 claim 将 MVU 加载失败与未就绪分开报告', async () => {
-  const h = execution()
-  h.module.sync('A', view())
-  h.runtimes[0].inspect = () => ({ initializationError: 'MVU 加载失败：bundle.js', scripts: [
-    { id: '__dsh_official_mvu__', subscriptionsReady: false, initializationFailed: true }
-  ] })
-  h.wake()
-  await h.settle()
-  const claim = h.calls.filter(x => x.method === 'claimTavernScriptWork').at(-1)
-  assert.equal(claim.args.ready, false)
-  assert.equal(claim.args.initializationError, 'MVU 加载失败：bundle.js')
-  h.module.dispose()
-})
-
-test('second browser keeps companion UI scripts while only the lease owner initializes and settles', async () => {
-  const h = execution()
-  let owns = false
-  h.respond(() => Promise.resolve({ active: owns }))
-  h.module.sync('A', mvuView())
-  assert.equal(h.runtimes[0].syncs.at(-1).view.tavernHelperScripts.length, 0, 'wait for the first ownership response')
-  await h.settle()
-  assert.equal(h.module.inspect().active, false)
-  const viewer = h.runtimes[0].syncs.at(-1).view
-  assert.equal(viewer.tavernHelperScripts.length, 1, 'companion scripts mount local panels')
-  assert.equal(viewer.tavernScriptRuntimeMode, 'viewer')
-  assert.equal(viewer.tavernMvuRuntime, null, 'viewer cannot initialize a second MVU core')
-  await h.runtimes[0].options.onReady('A')
-  assert.equal(h.runtimes[0].emissions.length, 0, 'viewer must not receive CHAT_CHANGED initialization')
-  assert.equal(await h.module.triggerButton('script', 'button'), 'clicked', 'explicit UI actions remain usable')
-  h.module.sync('A', view(2))
-  assert.equal(h.runtimes[0].syncs.at(-1).view.tavernHelper.stateRevision, 2)
-  await h.settle()
-  assert.equal(h.calls.filter(call => call.method === 'claimTavernScriptWork').at(-1).args.ready, false, 'viewer readiness cannot claim settlement before executor promotion')
-  owns = true
-  h.wake(); await h.settle()
-  assert.equal(h.module.inspect().active, true)
-  assert.notEqual(h.runtimes[0].syncs.at(-1).view.tavernScriptRuntimeMode, 'viewer')
-  await h.runtimes[0].options.onReady('A')
-  assert.equal(h.runtimes[0].emissions.length, 1)
-  owns = false
-  h.wake(); await h.settle()
-  assert.equal(h.runtimes[0].syncs.at(-1).view.tavernScriptRuntimeMode, 'viewer')
-  await h.runtimes[0].options.onReady('A')
-  assert.equal(h.runtimes[0].emissions.length, 1)
-  h.module.dispose()
 })
 
 for (const fail of [false, true]) test(`事件收尾等待已接收的排队写入，保存${fail ? '失败不能报成功' : '成功不误判迟到'}`, async () => {

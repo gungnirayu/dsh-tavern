@@ -1,6 +1,7 @@
+import { storyEventTurn } from './session-upgrade-references.js'
 import { sessionEvents } from './session-events.js'
 import { assistantResultForTurn } from './session-turn-result.js'
-import { inputEventForTurn } from './session-turn-input.js'
+import { inputEventForTurn, isFailedTurnEnd } from './session-turn-input.js'
 import { roundAnchor } from './round-anchor.js'
 
 function contentText(message) {
@@ -25,8 +26,8 @@ export function uncommittedRounds(session, header = {}) {
   const rounds = []
   for (const event of sessionEvents(session)) {
     if (event?.type !== 'turn/end') continue
-    const turn = Number(event.data?.turn)
-    if (!(turn > latest) || skipped.has(turn) || ['error', 'aborted'].includes(event.data?.reason?.kind)) continue
+    const turn = storyEventTurn(event)
+    if (!(turn > latest) || skipped.has(turn) || isFailedTurnEnd(event.data?.reason?.kind)) continue
     const inputEvent = inputEventForTurn(session, turn), input = inputEvent?.data
     if (!input || input.source?.kind !== 'user') continue
     const reply = assistantResultForTurn(session, turn)

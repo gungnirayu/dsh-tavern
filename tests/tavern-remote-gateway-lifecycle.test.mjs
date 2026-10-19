@@ -12,7 +12,8 @@ const remoteRequire = createRequire(new URL('../tavern-plugin/packages/dsh-taver
 async function gatewayVariant(require, label) {
   let gatewayFile, cordisFile
   try {
-    gatewayFile = require.resolve('@deepseek-ai/dsh-api-gateway/client')
+    // Gateway 0.2 resolves ./client to an ESM file under Node; the page runs the browser bundle.
+    gatewayFile = require.resolve('@deepseek-ai/dsh-api-gateway/client').replace(/client\.node\.js$/, 'client.browser.js')
     cordisFile = require.resolve('@deepseek-ai/cordis')
   } catch (error) {
     if (error.code !== 'MODULE_NOT_FOUND') throw error

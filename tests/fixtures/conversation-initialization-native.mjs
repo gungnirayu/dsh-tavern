@@ -83,7 +83,7 @@ export async function createInitializationNative(bootPath, { preset, contextWind
     persistence = createChatPersistence({ store: createChatJournalStore({ dataRoot: root, legacyData: data }) })
     const registry = createTavernConversationRegistry({ store: {
       readLinks: () => data.readJson('sessions.json'), updateLinks: fn => data.updateJson('sessions.json', fn),
-      readIndex: async () => await data.readJson('index.json') || { chats: [] }, writeIndex: value => data.writeJson('index.json', value),
+      readIndex: async () => await data.readJson('index.json') || { chats: [] }, updateIndex: updater => data.updateJson('index.json', updater),
       readChat: persistence.read, writeChat: persistence.write, removeChat: persistence.remove
     } })
     const write = async (chat, metadata) => {
@@ -159,6 +159,13 @@ export async function createInitializationNative(bootPath, { preset, contextWind
       await createAgent(seed)
       // Promote any legacy prefix before first request, as the host opening boundary does.
       await ensureSessionStablePrefix(target.session, '', storage)
+      target.agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: '继续。' }], source: { kind: 'human' } })
+      await target.agent.whenIdle()
+    },
+    // Continue on the SAME live Agent, as an open workbench does: rebuilding the
+    // Agent from disk would re-read the turn boundary and hide a turn number the
+    // live Agent never learned.
+    async continueInPlace() {
       target.agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: '继续。' }], source: { kind: 'human' } })
       await target.agent.whenIdle()
     },

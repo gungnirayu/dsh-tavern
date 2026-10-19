@@ -20,6 +20,7 @@ export function initializationFixture(options = {}) {
     readLinks: async () => structuredClone(state.links),
     updateLinks: async fn => { const next = await fn(structuredClone(state.links)); if (next !== undefined) state.links = next },
     readIndex: async () => structuredClone(state.index),
+    async updateIndex(updater) { const next = await updater(await this.readIndex()); if (next !== undefined) await this.writeIndex(next); return next },
     writeIndex: async value => { await fail('index', value); state.index = structuredClone(value) },
     readChat: async id => saved.has(id) ? structuredClone(saved.get(id)) : undefined,
     writeChat: write, removeChat: async id => saved.delete(id)
@@ -46,11 +47,11 @@ export function initializationFixture(options = {}) {
       planner: createContextPlanner({ prompt: () => '' }), readCard: async () => structuredClone(card), writeChat: write
     })
     return createConversationInitialization({
-      cards: { read: async path => { state.reads++; await fail('card'); return path === card.path ? structuredClone(card) : undefined }, readChat: async () => structuredClone(card), script: async () => structuredClone(state.script), extensions: async () => structuredClone(state.extensions) },
+      cards: { read: async path => { state.reads++; await fail('card'); return path === card.path ? structuredClone(card) : undefined }, readChat: async () => structuredClone(card), script: async () => structuredClone(state.script), extensions: async () => structuredClone(state.extensions), startDefaults: async () => structuredClone(state.startDefaults || null) },
       chats: { resolve: registry.resolve, publish: registry.publish, write }, snapshots,
       timeline,
       userPreferenceProfile: options.userPreferenceProfile,
-      presets: { fullSnapshot: async () => { state.presetReads++; await fail('preset'); return structuredClone(state.preset) } },
+      presets: { fullSnapshot: async path => { state.presetReads++; state.presetPaths = [...(state.presetPaths || []), path]; await fail('preset'); return structuredClone(path ? { ...state.preset, presetPath: path } : state.preset) } },
       settings: async () => state.settings, emptyCardWorkspace: () => ({ mountedResources: [], draft: {} }),
       id: prefix => prefix + '-' + ++sequence, now: () => 123,
       native: {

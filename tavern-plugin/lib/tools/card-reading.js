@@ -1,6 +1,8 @@
 import { READABLE_CARD_FIELDS, readCardField, searchCardRaw } from '../domain/card-reading.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { VALIDATION_SCHEMA } from './card-validation-check.js'
+import { normalizeResourcePath, resourceKind } from '../domain/file-resources.js'
+import { validatePresetText, validateWorldBookText } from '../domain/resource-validation.js'
 
 export function registerCardReadingTools({
   cardMemory,
@@ -55,8 +57,8 @@ export function registerCardReadingTools({
 
   tools.register(defineTool({
     name: 'tavern_validate_card',
-    description: '检查人物卡文件格式，报告错误位置和修法：JSON 语法、字段类型、世界书条目；MVU 卡还检查各开场 <initvar> 能否解析、开场间字段是否一致、[mvu_update] 规则、<mvu-status/> 入口与面板正则、面板脚本语法与引用的变量路径、正则能否编译。只读，不执行脚本，不改文件。Tavern 保存工具的结果已附带校验，无需再调用；用文件编辑器或脚本直接改卡片文件后再调用，按 errors 修正；warnings 视情况处理。',
-    parameters: { path: { type: 'string', description: '可选的 cards/... 相对路径；省略时检查当前已保存人物卡' } },
+    description: '检查人物卡、预设或世界书文件格式，报告错误位置和修法。人物卡：JSON 语法、字段类型、世界书条目；MVU 卡还检查各开场 <initvar> 能否解析、开场间字段是否一致、[mvu_update] 规则、<mvu-status/> 入口与面板正则、面板脚本语法与引用的变量路径、正则能否编译。预设：JSON 语法、prompts 与 prompt_order 结构、正则能否编译。世界书：JSON 语法、能否识别为世界书、条目字段类型、正则触发词。只读，不执行脚本，不改文件。Tavern 保存工具的结果已附带校验，无需再调用；用文件编辑器或脚本直接改这些文件后必须调用，按 errors 修正；warnings 视情况处理。',
+    parameters: { path: { type: 'string', description: '可选的 cards/...、presets/... 或 worldbooks/... 相对路径；省略时检查当前已保存人物卡' } },
     output: {
       schema: VALIDATION_SCHEMA,
       render: function (_args, value) { return [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
@@ -64,8 +66,15 @@ export function registerCardReadingTools({
     isConcurrencySafe: function () { return true },
     async execute(args, exec) {
       const chat = await chatForSession(exec.agent.session.id)
-      if (!chat || chat.mode !== 'card') throw new Error('人物卡校验只能在卡片工作台使用')
-      return await checkCard(chat, str(args.path).trim() || str(chat.cardPath))
+      if (!chat || chat.mode !== 'card') throw new Error('格式校验只能在卡片工作台使用')
+      const requested = str(args.path).trim()
+      const kind = requested ? resourceKind(requested) : 'card'
+      if (kind === 'card') return await checkCard(chat, requested || str(chat.cardPath))
+      if (kind !== 'preset' && kind !== 'worldbook') throw new Error('只能校验 cards/、presets/ 或 worldbooks/ 下的文件')
+      const path = normalizeResourcePath(requested, kind)
+      const text = await fileResources.readText(path)
+      if (text === undefined) return { valid: false, errors: [{ path, message: '文件不存在' }], warnings: [] }
+      return kind === 'preset' ? validatePresetText(text) : validateWorldBookText(text)
     }
   }))
 

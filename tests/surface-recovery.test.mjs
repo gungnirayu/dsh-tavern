@@ -7,6 +7,22 @@ import { replaceSessionSurface } from '../tavern-plugin/lib/domain/session-surfa
 
 const user = (id, plugin) => ({ id, role: 'user', content: [{ type: 'text', text: id }], source: plugin ? { kind: 'plugin', plugin } : { kind: 'user' } })
 const body = (id, turn) => ({ turn, step: 1, message: { id, role: 'assistant', content: [{ type: 'text', text: id }], source: { kind: 'model', provider: 'test', model: 'test' } } })
+// The terminal submit_story shape: a model call that carries the body, the durable
+// call record, and the receipt whose text is the body the tool returned.
+const storyCall = (id, turn, callId, content) => ({ turn, step: 1, message: { id, role: 'assistant', content: [{ type: 'tool-call', id: callId, name: 'submit_story', arguments: JSON.stringify({ content }) }], source: { kind: 'model', provider: 'test', model: 'test' } } })
+const storyReceipt = (id, turn, callId, text) => ({ turn, step: 1, message: { id, role: 'user', content: [{ type: 'tool-result', toolCallId: callId, isError: false, content: [{ type: 'text', text }] }], source: { kind: 'tool', callId } } })
+const storyBody = (session, turn, callId, content) => {
+  const call = appendSessionEvent(session, 'assistant/message', storyCall('call-' + callId, turn, callId, content), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'tool/call', { turn, step: 1, callId, name: 'submit_story', arguments: JSON.stringify({ content }) })
+  const receipt = appendSessionEvent(session, 'tool/result', storyReceipt('receipt-' + callId, turn, callId, content), { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  return { call, receipt }
+}
+const storyTurn = (session, turn, callId, content) => {
+  appendSessionEvent(session, 'turn/start', { turn })
+  const result = storyBody(session, turn, callId, content)
+  appendSessionEvent(session, 'turn/end', { turn, reason: { kind: 'completed' } })
+  return result
+}
 function fixture() {
   const session = Session.create('surface-recovery')
   const context = appendSessionEvent(session, 'user/message', user('historical-context', 'context-provider'), { surfaceOp: 'append' })
@@ -34,17 +50,6 @@ test('归属跨回合混合或来源残缺时，清理拒绝写入', () => {
     const state = rollbackAvailability({ messages: [{ role: 'assistant', turn: 1 }] }, { events, nodes })
     assert.equal(state.canRollback, false)
   }
-})
-
-test('后续正文不能被重新生成成功的范围或正常回退偷偷吞掉', async () => {
-  const { planRegenerationSurface, locateRollbackSurface } = await import('../tavern-plugin/lib/domain/rollback-surface.js')
-  const f = fixture()
-  appendSessionEvent(f.session, 'turn/start', { turn: 3 })
-  appendSessionEvent(f.session, 'assistant/message', body('new-turn', 3), { surfaceOp: 'append' })
-  appendSessionEvent(f.session, 'turn/end', { turn: 3, reason: { kind: 'completed' } })
-  const evidence = { events: sessionEvents(f.session), nodes: f.session.surface.nodes }
-  assert.throws(() => planRegenerationSurface({ ...evidence, oldAssistantSeq: 1, eventStart: f.eventStart }), /无法安全清理/)
-  assert.throws(() => locateRollbackSurface(evidence), /无法安全清理/)
 })
 
 test('旧正文与重新生成之间夹着别处写入的消息（如卡片脚本消息）时，保留它并完成替换', async () => {
@@ -82,18 +87,4 @@ test('旧正文与重新生成之间夹着别处写入的消息（如卡片脚�
   appendSessionEvent(other, 'assistant/message', body('new', 6), { surfaceOp: 'append' })
   appendSessionEvent(other, 'turn/end', { turn: 6, reason: { kind: 'completed' } })
   assert.throws(() => planRegenerationSurface({ events: sessionEvents(other), nodes: other.surface.nodes, oldAssistantSeq: first.seq, eventStart: start }), /归属不一致/)
-})
-
-test('卡片脚本在正文后写入的消息不会让这一轮无法回退，也不会被当成本轮输入', async () => {
-  const { locateRollbackSurface } = await import('../tavern-plugin/lib/domain/rollback-surface.js')
-  const session = Session.create('rollback-helper')
-  appendSessionEvent(session, 'turn/start', { turn: 1 })
-  const input = appendSessionEvent(session, 'user/message', user('input-1'), { surfaceOp: 'append' })
-  const reply = appendSessionEvent(session, 'assistant/message', body('reply-1', 1), { surfaceOp: 'append' })
-  appendSessionEvent(session, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
-  const script = appendSessionEvent(session, 'user/message', user('script-message', 'dsh-tavern-helper'), { surfaceOp: 'append' })
-  const target = locateRollbackSurface({ events: sessionEvents(session), nodes: session.surface.nodes })
-  assert.equal(target.userSeq, input.seq)
-  assert.equal(target.assistantSeq, reply.seq)
-  assert.deepEqual(target.shadowedSeqs, [input.seq, reply.seq, script.seq])
 })

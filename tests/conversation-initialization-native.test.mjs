@@ -1,9 +1,32 @@
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 import { createInitializationNative } from './fixtures/conversation-initialization-native.mjs'
+import { KNOWN_SESSION_EVENT_TYPES } from './fixtures/dsh-session-host.mjs'
 
 const native = { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }
+
+// Released V4 rejects a surface event written before a turn opened. Every
+// Tavern-written archive must satisfy that contract, or the play history stops
+// loading with "system/message does not match an open turn and step".
+for (const scenario of ['opening', 'import']) test(`native ${scenario} archive satisfies the released V4 relationship contract`, native, async t => {
+  const h = await createInitializationNative(process.env.DSH_BOOT_MODULE)
+  t.after(() => h.dispose())
+  if (scenario === 'import') {
+    const text = [{ chat_metadata: {} }, { is_user: false, mes: '导入开场' }, { is_user: true, mes: '走到花店' },
+      { is_user: false, mes: '抵达花店' }].map(JSON.stringify).join('\n')
+    await h.importHistory({ ...h.input, text, operationId: `v4-contract-${scenario}` })
+  } else {
+    await h.open().start(h.input)
+  }
+  await h.continueWithAgent()
+  const { assertReleasedV4Relationships } = await import(
+    new URL('../../dsh-session-format-v3-to-v4/lib/index.js', pathToFileURL(process.env.DSH_BOOT_MODULE)))
+  const session = h.target.session
+  assertReleasedV4Relationships(
+    { header: session.header, events: sessionEvents(session), inheritedEventCount: 0 }, KNOWN_SESSION_EVENT_TYPES)
+})
 
 for (const phase of ['front', 'back']) test(`native Agent preserves fixed system background with ${phase} preset`, native, async t => {
   const h = await createInitializationNative(process.env.DSH_BOOT_MODULE, { preset: { [phase]: { entries: [{ role: 'system', content: '预设验证要求' }] } } })
@@ -18,7 +41,10 @@ for (const phase of ['front', 'back']) test(`native Agent preserves fixed system
   assert.equal(systems.split('不可丢失的固定背景').length - 1, 1)
   assert.ok(request.messages.some(m => JSON.stringify(m.content).includes('预设验证要求')))
 })
-const openingEvents = session => sessionEvents(session).filter(e => e.type === 'assistant/message' && e.data.turn === 1)
+// The seed exchange shares the reserved opening turn, so the greeting is the
+// turn-one assistant message that is not part of the seed trajectory.
+const openingEvents = session => sessionEvents(session).filter(e => e.type === 'assistant/message' && e.data.turn === 1
+  && !String(e.data.message?.id || '').startsWith('tavern-seed-trajectory:'))
 
 test('native card workbench starts with no scripted exchange or greeting, and restores idempotently', native, async t => {
   for (const cardPath of ['', 'cards/test.json']) {
@@ -41,6 +67,21 @@ test('native card workbench starts with no scripted exchange or greeting, and re
     assert.equal(h.requests.length, 0)
     assert.deepEqual(h.target.session.deriveMessages(), initialMessages)
   }
+})
+
+// The card workbench reserves an opening turn and fills it with no greeting, so
+// Tavern closes it before the Agent ever runs. The live Agent must learn that turn
+// one is spent: otherwise its own first turn reuses turn one and the stored log can
+// never be reopened ("turn/start does not open the expected turn", exactly the
+// card-history load failure this guards).
+test('native card workbench releases the reserved opening turn to the live Agent', native, async t => {
+  const h = await createInitializationNative(process.env.DSH_BOOT_MODULE)
+  t.after(() => h.dispose())
+  await h.open().start({ ...h.input, mode: 'card' })
+  assert.equal(openingEvents(h.target.session).length, 0)
+  await h.continueInPlace()
+  assert.deepEqual(sessionEvents(h.target.session).filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2])
+  assert.equal(sessionEvents(h.target.session).at(-1).type, 'turn/end')
 })
 
 test('native Session and disk Chat journal recover a failed marker once, then actual Agent starts at turn two', native, async t => {

@@ -49,7 +49,7 @@ Better Sidebar 提供四个职责分离的库：
 
 ## 4. Agent 能力边界
 
-卡片 Agent 复用 DSH 极简模式，获得当前平台的 Shell、`str_replace_editor` 和 Tavern 专属工具：
+卡片 Agent 复用 DSH 极简模式，获得当前平台的 Shell、文件工具（`read`/`edit`/`write`）和 Tavern 专属工具：
 
 - `tavern_read_card`：按字段渐进读取稳定人物卡投影；
 - `tavern_read_card_raw`：按 JSON Pointer 读取正则、脚本、MVU 和未知扩展；

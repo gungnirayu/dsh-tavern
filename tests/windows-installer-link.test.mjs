@@ -10,5 +10,5 @@ test('README 与使用文档指向同一个 Windows 安装器', async () => {
     const text = await readFile(new URL('../' + file, import.meta.url), 'utf8')
     for (const match of text.matchAll(/DSH-Tavern-Desktop-[\w.-]+-Setup[\w.-]*\.exe/g)) names.add(match[0])
   }
-  assert.deepEqual([...names], ['DSH-Tavern-Desktop-2.0.13-x64-Setup8.exe'])
+  assert.deepEqual([...names], [], '官方宿主分支不得继续推广旧社区宿主安装包')
 })

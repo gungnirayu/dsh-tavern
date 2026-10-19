@@ -1,3 +1,4 @@
+import { CHARACTER_DESIGN_ITEM } from './background-pipeline.js'
 import { CHARACTER_DESIGN_SAVE_TOOL_NAME, createCharacterDesignDocumentSession } from './character-design-document.js'
 import { applyCharacterDesignWorldbook, characterDesignWorldbookSnapshot, characterWorldbookEntries, removeCharacterDesignWorldbook } from './character-design-worldbook.js'
 
@@ -57,9 +58,10 @@ export function createManualCharacterDesign({ store, runAgent, selection, beginT
         task: 'character-design', persistent: true,
         persistentSessionId: taskRun.participantRequest.sessionId,
         rewindTo: taskRun.participantRequest.rewindTo,
+        rewindFormatVersion: taskRun.participantRequest.formatVersion,
         onPersistentSessionReady: id => taskRun.bindSession(id), sessionId, chatId: chat.id, selection: model,
         backgroundTasks: { variables: false, posture: false, characterDesign: true },
-        system: '本次执行用户手动发起的人物设计。设计意见留空时，根据当前剧情和已有档案，自行选择需要建立或补充设计的重要人物；有意见时优先遵循意见。先调用 skill 加载 character-design，再用 character_design_read 按姓名或别名检查本局世界书与已有档案。世界书已有该人物设定时调用 character_design_reuse 复用即可完成，不另建档案；只有缺少设定的新人物或已有设计档案的修订才调用 character_design_save。不得执行变量或姿势结算，不得改写正文。',
+        system: CHARACTER_DESIGN_ITEM.system(),
         messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({ guidance, card: { name: card.name, description: card.description, personality: card.personality, scenario: card.scenario }, recent }) }] }],
         tools: draft.tools, onToolCall: async call => {
           const output = await draft.execute(call)

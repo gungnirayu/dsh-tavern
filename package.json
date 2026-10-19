@@ -1,6 +1,6 @@
 {
   "name": "dsh-profile-tavern",
-  "version": "2.7.0",
+  "version": "3.0.0",
   "scripts": {
     "build:client": "node bin/build-tavern-client.mjs",
     "check:client": "node bin/build-tavern-client.mjs --check",
@@ -31,15 +31,18 @@
     "acorn": "8.15.0",
     "chevrotain": "^11.2.0",
     "jsdom": "26.1.0",
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@jsquash/webp": "1.5.0",
     "mathjs": "12.4.3",
     "yaml": "2.9.0",
     "marked": "16.3.0",
     "zod": "^4.4.3",
     "ws": "8.21.3",
     "schemastery": "3.18.0",
-    "dsh-mnemon": "0.5.15",
-    "dsh-mnemon-source-runtime": "0.5.9",
-    "dsh-mnemon-source-documents": "0.5.6"
+    "dsh-mnemon": "0.5.31",
+    "dsh-mnemon-source-runtime": "0.5.14",
+    "dsh-mnemon-source-documents": "0.5.10"
   },
   "dsh": {
     "profile": {
@@ -64,9 +67,9 @@
     "scheduler": "0.27.0",
     "dsh-tavern-plugin": "link:./tavern-plugin",
     "dsh-tavern-remote": "link:./tavern-plugin/packages/dsh-tavern-remote",
-    "dsh-pocket": "2.10.6",
-    "dsh-web-mobile": "2.4.1",
-    "dsh-better-sidebar": "0.19.1",
+    "dsh-pocket": "2.12.0",
+    "dsh-web-mobile": "3.1.0",
+    "dsh-better-sidebar": "0.28.0",
     "dsh-dream-skin": "link:./tavern-plugin/packages/dsh-dream-skin"
   },
   "description": "DSH Tavern: standalone tavern Profile bundle",

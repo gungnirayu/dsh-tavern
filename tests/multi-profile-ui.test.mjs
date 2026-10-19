@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-const component = source.slice(source.indexOf('function UserPreferenceProfileTab('), source.indexOf('function createUserPreferenceProfileFeatureModule('))
+const component = source.slice(source.indexOf('function UserPreferenceProfileTab('), source.indexOf('function GuideLibraryTab('))
 function render(hasConfirmed, consent = true, activeId = 'a', conversationOnly = true) {
   const calls = [], warnings = []
   const record = { profileId: 'b', name: '冒险', hasConfirmed, confirmed: hasConfirmed ? { injectionText: '快节奏' } : null,

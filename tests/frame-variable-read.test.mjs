@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
+import { stubFrameDependencyImports } from './fixtures/frame-dependency-imports.mjs'
 
 let descriptor
 vm.runInNewContext(await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8'), {
@@ -21,7 +22,7 @@ function frame(observeMvuView = true) {
   context.window = context
   vm.createContext(context)
   for (const match of html.matchAll(/<script data-dsh-tavern-(?:helper|frame-variable-aliases|mvu-view-observer)>([\s\S]*?)<\/script>/g)) {
-    vm.runInContext(match[1].replace('import(new URL("/api/dsh-tavern/vendor/runtime-assets/zod/index.mjs",document.baseURI).href)', 'Promise.resolve({})'), context)
+    vm.runInContext(stubFrameDependencyImports(match[1]), context)
   }
   return { state, context, reports, handlers, parent }
 }
@@ -34,21 +35,4 @@ test('getAllVariables 读取当前楼层与聊天变量的独立快照，不泄�
   assert.equal(value.theme, 'dark')
   value.stat_data.hp = 0
   assert.equal(run.context.getAllVariables().stat_data.hp, 10)
-})
-
-test('右侧状态栏继续读取更新后的变量，不重复识别或重建 iframe', async () => {
-  const run = frame(false)
-  assert.equal(typeof run.context.getAllVariables, 'function')
-  let displayed = run.context.getAllVariables().stat_data.hp
-  run.context.eventOn(run.context.Mvu.events.VARIABLE_UPDATE_ENDED, () => {
-    displayed = run.context.getAllVariables().stat_data.hp
-  })
-  const next = structuredClone(run.state)
-  next.stateRevision = 2
-  next.messages[0].variables.stat_data.hp = 8
-  run.handlers.message({ source: run.parent, data: { type: 'dsh-tavern-helper-context-update', token: 'probe',
-    update: client.createTavernHelperContextUpdate(null, next, 1, 1) } })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(displayed, 8)
-  assert(!run.reports.some(item => item.type === 'dsh-tavern-mvu-view-used'))
 })

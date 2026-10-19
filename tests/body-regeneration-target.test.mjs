@@ -78,3 +78,19 @@ test('不完整的轮次不能退回到任意旧正文，事件序号可以不�
   }
   assert.equal(select([assistant(42, 6), cleanup(50, 7)], [42, 50]).oldSeq, 42)
 })
+
+test('投影出来的正文借了编辑回合的编号时，用存档正文找回这一轮', () => {
+  // A regeneration replaces the round's node with one written into an edit turn
+  // (6), and older releases did not record the story turn: the save says 4, the
+  // only node that still holds the body says 6.
+  const events = [assistant(0, 1), assistant(9, 6, model, [{ type: 'text', text: '重写后的正文' }])]
+  assert.equal(surface.locateRegenerationSurface({ events, nodes: [0, 9], turn: 4 }), null)
+  const found = surface.locateRegenerationSurface({ events, nodes: [0, 9], turn: 4, texts: ['重写后的正文'] })
+  assert.equal(found.assistantSeq, 9)
+  assert.equal(found.turn, 4)
+  // 正文对不上就不能认：宁可报错，也不要替换到别的楼层。
+  assert.equal(surface.locateRegenerationSurface({ events, nodes: [0, 9], turn: 4, texts: ['另一段正文'] }), null)
+  // 空白差异不算不同版本。
+  const spaced = [assistant(0, 1), assistant(9, 6, model, [{ type: 'text', text: '第一段\n第二段' }])]
+  assert.equal(surface.locateRegenerationSurface({ events: spaced, nodes: [0, 9], turn: 4, texts: ['第一段 第二段'] })?.assistantSeq, 9)
+})

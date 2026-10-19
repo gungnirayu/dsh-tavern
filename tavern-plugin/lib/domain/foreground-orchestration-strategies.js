@@ -3,8 +3,11 @@ import { inputAttachments, projectPlayerContent } from './player-input-content.j
 import { resolveRuntimePresetMacros } from './runtime-presets.js'
 import { createEphemeralCompatibilityRequest, isCompatibilityConversationRequest } from './compatibility-request.js'
 import { projectRuntimePresetRequest } from './runtime-preset-lifecycle.js'
+import { STORY_SUBMIT_PROMPT, STORY_SUBMIT_TOOL_NAME } from './story-tool-submission.js'
+import { projectHistoryAsToolCalls } from './history-tool-call.js'
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
 import { inputKind } from './session-turn-input.js'
+import { isProducerSource, isSystemPromptSource } from './message-source.js'
 
 const CARD_REFERENCE_SECTIONS = new Set(['tavern:character-card', 'tavern:card-system-prompt', 'tavern:constant-worldbook'])
 // The card Agent resends its system prompt on every tool step and reads live
@@ -83,13 +86,14 @@ export function projectRegenerationRequestMessages(messages) {
     if (isRegenerationInput(source[index])) { regenerationIndex = index; break }
   }
   if (regenerationIndex < 0) return source
-  let assistantIndex = -1
-  for (let index = regenerationIndex - 1; index >= 0; index--) {
-    if (source[index] && source[index].role === 'assistant') { assistantIndex = index; break }
-  }
-  if (assistantIndex < 0) return source
+  // The attempt replaces the input of the turn it re-samples. Anchor on that
+  // input — the last player message before the attempt — not on the newest
+  // assistant: a turn whose reply never landed (error, stop, rolled back) has no
+  // assistant of its own, and walking back from the previous turn's reply would
+  // then take the previous input and drop everything after it, erasing the whole
+  // transcript between the two turns.
   let playerIndex = -1
-  for (let index = assistantIndex - 1; index >= 0; index--) {
+  for (let index = regenerationIndex - 1; index >= 0; index--) {
     if (isOriginalPlayerInput(source[index])) { playerIndex = index; break }
   }
   if (playerIndex < 0) return source
@@ -105,7 +109,7 @@ function snapshotMessage(text) {
     role: 'user',
     content: [{ type: 'text', text: str(text) }],
     source: {
-      kind: 'plugin', plugin: 'dsh-tavern', form: 'snapshot',
+      kind: 'plugin:dsh-tavern', form: 'snapshot',
       sections: [{ name: 'tavern:turn', text: str(text) }]
     }
   }
@@ -119,7 +123,7 @@ function hasProviderContent(message) {
 function isNativeStablePrefix(message) {
   const source = message && message.source
   return str(message && message.id).startsWith('tavern-session-prefix:') && message.role === 'user'
-    && source && source.kind === 'plugin' && source.plugin === 'dsh-tavern'
+    && isProducerSource(source, 'dsh-tavern')
     && (source.form === 'snapshot' || source.form === 'session-prefix')
 }
 
@@ -264,7 +268,7 @@ export function createCompatibilityOrchestrationStrategy(options) {
 // the provider, and the trajectory keeps its own unannotated message.
 function labelPresetFront(messages, texts) {
   if (!Array.isArray(messages) || !texts?.length) return messages
-  const index = messages.findIndex(message => message?.role === 'system' && message.source?.plugin === '@deepseek-ai/dsh-system-prompt')
+  const index = messages.findIndex(message => message?.role === 'system' && isSystemPromptSource(message.source))
   const message = messages[index]
   const body = (message?.content || []).map(block => block?.type === 'text' ? block.text : '').join('')
   if (index < 0 || !texts.every(text => body.includes(text))) return messages
@@ -275,8 +279,12 @@ function labelPresetFront(messages, texts) {
 
 function presetFrontSections(snapshot) {
   const entries = Array.isArray(snapshot?.front?.entries) ? snapshot.front.entries : []
+  // The front phase is resolved by Tavern's own macro engine; unknown extension macros (for example
+  // "{{压缩相邻消息::...}}" from ecosystem preset tools) intentionally stay literal. DSH's strict
+  // system-prompt variable scanner would reject any residual {{...}} as a malformed variable, so the
+  // section must be non-interpolating to keep those macros verbatim instead of failing the turn.
   return entries.filter(entry => str(entry?.content).trim() !== '')
-    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content) }))
+    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content), interpolate: false }))
 }
 
 export function createNativePlayOrchestrationStrategy(options) {
@@ -319,7 +327,9 @@ export function createNativePlayOrchestrationStrategy(options) {
         turn: Math.max(0, Number(payload.turn) || 0),
         step: Math.max(1, Number(payload.step) || 1),
         scope: 'foreground',
-        snapshot: snapshot || null
+        snapshot: snapshot || null,
+        // Resolved here because the request projection below is synchronous.
+        historyToolCall: typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false
       })
     }
     if (Number(payload.step) === 1) {
@@ -378,6 +388,22 @@ export function createNativePlayOrchestrationStrategy(options) {
     if (replayMessages !== request.messages) request = Object.assign({}, request, { messages: replayMessages })
     const passbackMessages = projectDeepSeekThinkingPassback(request.messages, request)
     if (passbackMessages !== request.messages) request = Object.assign({}, request, { messages: passbackMessages })
+    // Past bodies replayed as the submission tool's arguments instead of prose the
+    // model wrote. Runs last so the earlier passes see the shape the host built;
+    // the save, the view and every floor control keep the plain text. Only this
+    // turn's own input stays a message — it is the prompt being answered.
+    if (staged.historyToolCall === true) {
+      const source = request.messages
+      let inputIndex = -1
+      for (let index = source.length - 1; index >= 0; index--) {
+        if (isTurnInput(source[index])) { inputIndex = index; break }
+      }
+      const historyMessages = projectHistoryAsToolCalls(source, {
+        toolName: STORY_SUBMIT_TOOL_NAME,
+        preserve: (_message, index) => index === inputIndex
+      })
+      if (historyMessages !== request.messages) request = Object.assign({}, request, { messages: historyMessages })
+    }
     // DSH's renderer returns '' for no sections; adapters otherwise serialize
     // it as an empty system message. Preserve any explicit non-empty prompt.
     if (request.system === '') {
@@ -428,15 +454,19 @@ export function createNativePlayOrchestrationStrategy(options) {
       sections.unshift(...front)
       frontTexts.set(input.sessionId, front.map(section => section.text))
       renderedFronts.set(input.sessionId, createHash('sha256').update(JSON.stringify(front.map(section => section.text))).digest('hex'))
+      // The submission contract travels with the tool, not with the preset: it is
+      // appended after the front so turning the switch off restores the saved prompt.
+      if (visible.has(STORY_SUBMIT_TOOL_NAME)) sections.push({ name: 'tavern:story-tool-submission', text: STORY_SUBMIT_PROMPT })
     }
     assembly.sections = sections
     if (Array.isArray(assembly.contexts)) assembly.contexts = assembly.contexts.filter(section => section.name !== 'approval:policy')
+    // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
+    const group = mode === 'card' ? 'card' : 'play'
     assembly.tools = assembly.tools.filter(function (schema) {
-      return !options.controlledToolNames.has(schema.name) || visible.has(schema.name)
+      if (options.controlledToolNames.has(schema.name)) return visible.has(schema.name)
+      const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
+      return !modes || modes.includes(group)
     })
-    // DSH may expose both editor generations; the legacy schema alone costs
-    // ~800 tokens on every card-Agent step and duplicates read/edit/write.
-    if (assembly.tools.some(schema => schema.name === 'edit')) assembly.tools = assembly.tools.filter(schema => schema.name !== 'str_replace_editor')
     return assembly
   }
 

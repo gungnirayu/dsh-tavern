@@ -146,6 +146,31 @@ test('rollback refuses a checkpoint whose round has left the native Surface inst
   assert.equal(h.calls.length,0)
 })
 
+test('有修复能力时，原生上下文丢了这一轮也照样回退：存档回退，随后按存档修复原生', async () => {
+  const h=harness({checkpoint:true})
+  h.session.events[1].data.turn=1 // The native surface shows another round.
+  const repairs=[]
+  h.options.repairNative=async (sessionId, session)=>{ repairs.push({ sessionId, messages: h.chat.messages.length, session }) }
+  const result=await h.create().rollback('session','chat')
+  assert.equal(h.chat.messages.length,1,'the save rolled back')
+  assert.equal(result.rolledBack.removedAssistantText,'旧正文')
+  // Once before the rollback (it may restore the round), once after the save moved.
+  assert.ok(repairs.length>=2)
+  assert.equal(repairs.at(-1).messages,1)
+  assert.equal(repairs.at(-1).session,h.session)
+})
+
+test('有修复能力时，重新生成找不到原生正文：先按存档修复再定位', async () => {
+  const h=harness()
+  const original=h.session.events[1]
+  h.session.surface.nodes=[0]
+  let repaired=0
+  h.options.repairNative=async ()=>{ repaired++; h.session.surface.nodes=[0,original.seq] }
+  await h.create().regenerate('chat','','session')
+  assert.equal(repaired,1)
+  assert.match(h.chat.messages.at(-1).text,/^新正文/)
+})
+
 test('配对失败的证据写入现有诊断包，原错误与聊天、原生历史保持不变', async () => {
   const h = harness()
   h.chat.messages.splice(1, 1)
@@ -284,7 +309,8 @@ test('完整重生成先独立替换唯一正文，再执行后台结算', async
   assert.deepEqual(result.regeneratedDshTurns, { '2': 3 })
   assert.equal(result.regenInProgress, undefined)
   assert.equal(result.settleStatus, 'done')
-  assert.match(h.agent.input.content[0].text, /^推门\n\n【本轮补充要求】/)
+  // 有意见时带上当前正文作为改写底稿。
+  assert.match(h.agent.input.content[0].text, /^推门\n\n【当前正文】\n[\s\S]+\n\n【改写要求】/)
   assert.match(h.agent.input.content[0].text, /写得短一些/)
   assert.doesNotMatch(h.agent.input.content[0].text, /重新生成|原玩家输入/)
   assert.ok(h.calls.indexOf('readRevision') < h.calls.indexOf('rollback.regen'))
@@ -358,7 +384,11 @@ test('重新创建流程模块后连续重生成仍替换原轮次；回退恢�
   assert.deepEqual(rolled.suppressedDshTurns, [2, 3, 4])
   assert.deepEqual(rolled.regeneratedDshTurns, {})
   assert.ok(h.calls.lastIndexOf('rollback') < h.calls.lastIndexOf('MESSAGE_DELETED'))
-  assert.equal(h.session.events.at(-1).surfaceOp.op, 'replace')
+  // The rollback's empty replacement is the last surface edit, and the turn it
+  // opened for itself is closed again so the log stays loadable.
+  const lastEdit = h.session.events.filter(event => event.surfaceOp?.op === 'replace').at(-1)
+  assert.deepEqual(lastEdit.data.message.content, [])
+  assert.deepEqual(h.session.events.slice(-2).map(event => event.type), ['step/end', 'turn/end'])
 })
 
 test('旧剧本回退保留迁移恢复路径；非游玩模式拒绝回退', async () => {
@@ -376,7 +406,11 @@ test('回退提交后立即保存模型消息面，早于后台回拨和脚本�
   h.options.sessions.flush = async session => h.calls.push(session === h.session ? 'foreground.flush' : 'other.flush')
   await h.create().rollback('session')
   const surface = h.calls.indexOf('surface:assistant/message'), flush = h.calls.indexOf('foreground.flush')
-  assert.ok(surface >= 0 && flush === surface + 1, h.calls.join(','))
+  // A rollback runs between turns, so the replacement opens a turn for itself:
+  // the flush still follows the edit immediately, only the closing events sit in
+  // between. Nothing else may be persisted before it.
+  assert.ok(surface >= 0 && surface < flush, h.calls.join(','))
+  assert.ok(h.calls.slice(surface + 1, flush).every(call => call === 'surface:step/end' || call === 'surface:turn/end'), h.calls.join(','))
   assert.ok(flush < h.calls.indexOf('MESSAGE_DELETED'))
 })
 
@@ -389,9 +423,15 @@ test('rollback immediately rewinds and flushes background surface, failure only 
     const source = { kind: 'model', provider: 'fixture', model: 'fixture' }
     const bg = { events: [{ seq: 0, type: 'turn/end' }, { seq: 1, type: 'assistant/message', data: { turn: 2, message: { source, content: [] } } }], surface: { nodes: [1] }, append(type, data, options) {
       if (fail) throw new Error('background unavailable')
+      const seq = this.events.length
+      this.events.push({ seq, type, data, ...(options || {}) })
+      // The rewind opens a turn for its replacement; only the replacement itself
+      // is the background history edit this test cares about.
+      if (options?.surfaceOp?.op !== 'replace') return seq
       h.calls.push('background.rewind')
       assert.equal(options.surfaceOp.start, 1)
       this.surface.nodes = []
+      return seq
     } }
     const worker = { session: bg, cancel() {}, async whenIdle() {} }
     h.options.sessions = { get: id => id === 'bg' ? (unloaded ? undefined : worker) : h.agent,
@@ -760,4 +800,38 @@ test('rescued history blocks regeneration and rollback without modifying old tex
  await assert.rejects(h.create().regenerate('chat','','session'),/救援/)
  await assert.rejects(h.create().rollback('session','chat'),/救援/)
  assert.deepEqual(h.chat,before)
+})
+
+
+test('读卡期间重放已独占失败回合，读卡失败释放锁后可重试', async () => {
+  const h = harness()
+  h.session.append('turn/start', { turn: 3 })
+  h.session.append('user/message', { role: 'user', content: [{ type: 'text', text: '重放这句' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  h.session.append('turn/end', { turn: 3, reason: { kind: 'error', message: 'HTTP 500' } })
+  let entered, rejectRead
+  const started = new Promise(resolve => { entered = resolve })
+  let cardReads = 0, failRead = true
+  h.options.chats.readCard = async () => {
+    cardReads++
+    if (!failRead) return { name: '角色' }
+    entered()
+    return await new Promise((_resolve, reject) => { rejectRead = reject })
+  }
+  const live = h.create()
+  const first = live.replayFailed('chat', 'session')
+  const failed = assert.rejects(first, /card unavailable/)
+  await started
+  await assert.rejects(live.replayFailed('chat', 'session'), /正在重放失败回合/)
+  await assert.rejects(live.regenerate('chat', '', 'session'), /正在重放失败回合/)
+  await assert.rejects(live.rollback('session', 'chat'), /正在重放失败回合/)
+  assert.equal(cardReads, 1)
+  assert.equal(h.calls.filter(call => call === 'followup').length, 0)
+  rejectRead(new Error('card unavailable'))
+  await failed
+  // The module captured the callback, so change its outcome without rebuilding it.
+  failRead = false
+  await live.replayFailed('chat', 'session')
+  assert.equal(cardReads, 2)
+  assert.equal(h.calls.filter(call => call === 'followup').length, 1)
+  assert.equal(h.agent.input.content[0].text, '重放这句')
 })

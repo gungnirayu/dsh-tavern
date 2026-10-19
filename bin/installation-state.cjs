@@ -194,7 +194,10 @@ function lastActivity(lockDir, owner) {
 function staleReason(lockDir, owner, now = Date.now()) {
   const idle = now - lastActivity(lockDir, owner)
   if (idle > STALE_IDLE_MS) return 'idle'
-  if (owner?.state === 'reserved' || owner?.state === 'uncertain') return ''
+  if (owner?.state === 'uncertain') return ''
+  // The launched updater adopts its reservation before writing anything. If that
+  // process is gone and the reservation is still unadopted, nobody can be writing.
+  if (owner?.state === 'reserved') return Number.isSafeInteger(owner.launcherPid) && owner.launcherPid > 1 && !alive(owner.launcherPid) ? 'launcher-exited' : ''
   // A finished owner spawns nothing more; its stage processes register before running.
   if (!owner?.ownerDone && idle < DEAD_OWNER_GRACE_MS) return ''
   const pids = recordedPids(lockDir, owner)
@@ -219,7 +222,7 @@ function reclaimStale(dshHome, owner) {
     return false
   }
   try { fs.rmSync(removed, { recursive: true, force: true }) } catch {}
-  process.stderr.write(`已清理残留的安装锁（${reason === 'idle' ? '超过 1 小时无进展' : '原安装进程均已退出'}）：${lockDir}\n`)
+  process.stderr.write(`已清理残留的安装锁（${{ idle: '超过 1 小时无进展', 'launcher-exited': '更新进程未开始安装就已退出' }[reason] || '原安装进程均已退出'}）：${lockDir}\n`)
   return true
 }
 

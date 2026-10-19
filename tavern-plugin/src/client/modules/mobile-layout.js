@@ -2,6 +2,7 @@
 // 宿主的插槽使用 display:contents 包装；它不占空间，但仍参与 CSS / DOM 选择器匹配。
 const TAVERN_HEADER_SELECTOR = '[data-slot="conversation.session.header"] > header, [data-phase] > header';
 const TAVERN_MOBILE_QUERY = "(max-width: 1023px)";
+function narrowLayout() { return typeof window.matchMedia === "function" && window.matchMedia(TAVERN_MOBILE_QUERY).matches; }
 
 function installVisualViewportPin(doc) {
     const view = doc && doc.defaultView;

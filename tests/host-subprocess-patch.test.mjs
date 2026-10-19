@@ -85,3 +85,30 @@ test('other platforms do not resolve or change host packages', async () => {
   const restore = await installHostSubprocessPatch({ platform: 'linux', hostRequire: { resolve() { throw new Error('must not resolve') } } })
   restore()
 })
+
+// 0.2.0-rc.2 适配：宿主入口顶层就 `createLazyRequire("node-pty", import.meta.url)`。补丁把改写后的
+// 源码当 data: 模块加载，data: 里的 import.meta.url 是 data URL，createRequire 直接抛
+// ERR_INVALID_ARG_VALUE（真机取证 ERR_INVALID_ARG_VALUE @ data:…:1262:24）。这里镜像那段改写，
+// 不启真实宿主即可验证 import.meta.url 被换成入口文件 URL。
+test('补丁镜像改写：data: 模块前把 import.meta.url 换成入口文件 URL', () => {
+  const sample = [
+    'import { createLazyRequire } from "@deepseek-ai/dsh-lazy-require";',
+    'import { spawn } from "node:child_process";',
+    'import { logSpillFailure } from "./output.js";',
+    'const requireNodePty = createLazyRequire("node-pty", import.meta.url);',
+    'export { createLazyRequire, requireNodePty };',
+    '',
+  ].join('\n')
+  const resolve = specifier => specifier.startsWith('./')
+    ? 'file:///host/pkg/lib/' + specifier.slice(2)
+    : 'file:///host/node_modules/' + specifier + '/index.js'
+  const modified = sample
+    .replace(/\bfrom "([^"]+)"/g, (_, specifier) => 'from ' + JSON.stringify(
+      specifier.startsWith('node:') ? specifier : resolve(specifier)))
+    .replaceAll('import.meta.url', JSON.stringify('file:///host/pkg/lib/index.js'))
+  assert.doesNotMatch(modified, /import\.meta\.url/)
+  assert.match(modified, /createLazyRequire\("node-pty", "file:\/\/\/host\/pkg\/lib\/index\.js"\)/)
+  assert.match(modified, /from "file:\/\/\/host\/node_modules\/@deepseek-ai\/dsh-lazy-require\/index\.js"/)
+  assert.match(modified, /from "node:child_process"/)
+  assert.match(modified, /from "file:\/\/\/host\/pkg\/lib\/output\.js"/)
+})

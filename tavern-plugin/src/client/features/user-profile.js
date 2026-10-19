@@ -50,6 +50,11 @@
 					notifyTavernDataChanged(["user-profile"], "user-profile");
 				} catch (err) { setError(String(err && err.message || err)); } finally { setBusy(false); }
 			}
+			async function exportProfile() {
+				setBusy(true); setError(""); setSaveNotice("");
+				try { saveTavernExport(await rpc("exportSettingsBundle", { include: { userProfile: true }, userProfileId: record.profileId }, sessionId)); }
+				catch (err) { setError(String(err && err.message || err)); } finally { setBusy(false); }
+			}
 			function openAgentTask() {
 				window.dispatchEvent(new CustomEvent("dsh-tavern-open-user-profile-task"));
 			}
@@ -101,7 +106,7 @@
 			if (props.conversationOnly) return h("section", { className: "dsh-local-profile dsh-local-field", "aria-label": "本局长期偏好" }, h("div", { className: "dsh-local-label" }, "长期偏好"), record ? gameControls : h("p", null, "正在读取长期偏好…"), error ? h("p", { role: "alert" }, error) : h("span", { role: "status", className: "dsh-local-feedback" }, busy ? "保存中…" : saveNotice));
 			const controls = record ? h("div", { className: "dsh-tavern-profile-controls" },
 				h("section", { className: "dsh-tavern-profile-default" }, h("label", { htmlFor: "tavern-profile-default" }, "默认长期偏好"), h("select", { id: "tavern-profile-default", value: record.defaultProfileId || "", disabled: busy || editing, onChange: function (event) { manageProfile("default", event.target.value); } }, h("option", { value: "" }, "不启用"), profiles.filter(function (item) { return item.hasConfirmed; }).map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); })), h("small", null, "用于新开的游戏和卡片会话，已有会话保留原偏好。")),
-				h("section", { className: "dsh-tavern-profile-library" }, h("div", { className: "dsh-tavern-profile-section-title" }, "长期偏好库"), h("div", { className: "dsh-tavern-profile-library-bar" }, h("select", { "aria-label": "查看长期偏好", value: record.profileId, disabled: busy || editing, onChange: function (event) { manageProfile("select", event.target.value); } }, profiles.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); })), h("button", { className: "dsh-tavern-btn", disabled: busy || editing, onClick: function () { manageProfile("create"); } }, "新建"), h("button", { className: "dsh-tavern-btn", disabled: busy || editing, onClick: function () { manageProfile("rename", record.profileId); } }, "重命名")), h("small", null, "在这里查看和编辑，不会改变游戏使用的长期偏好。"))
+				h("section", { className: "dsh-tavern-profile-library" }, h("div", { className: "dsh-tavern-profile-section-title" }, "长期偏好库"), h("div", { className: "dsh-tavern-profile-library-bar" }, h("select", { "aria-label": "查看长期偏好", value: record.profileId, disabled: busy || editing, onChange: function (event) { manageProfile("select", event.target.value); } }, profiles.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); })), h("button", { className: "dsh-tavern-btn", disabled: busy || editing, onClick: function () { manageProfile("create"); } }, "新建"), h("button", { className: "dsh-tavern-btn", disabled: busy || editing, onClick: function () { manageProfile("rename", record.profileId); } }, "重命名"), h("button", { className: "dsh-tavern-btn", disabled: busy || editing || !record.hasConfirmed, title: record.hasConfirmed ? "把这份长期偏好单独导出成一个文件" : "确认后才能导出", onClick: function () { void exportProfile(); } }, "导出")), h("small", null, "在这里查看和编辑，不会改变游戏使用的长期偏好。"))
 			) : null;
 			if (record === null) return h("div", { className: "dsh-tavern-user-profile" }, header, h("div", { className: "dsh-tavern-user-profile-body" }, error ? h("div", { className: "dsh-card-error" }, error) : h("div", { className: "dsh-tavern-status-empty" }, "正在读取长期偏好…")));
 			if (!record.hasConfirmed) return h("div", { className: "dsh-tavern-user-profile" }, header, controls,
@@ -133,18 +138,3 @@
 					)
 			));
 		}
-
-		function createUserPreferenceProfileFeatureModule() {
-			function register(input) {
-				const ctx = input.ctx;
-				return ctx.effect(() => ctx.betterSidebar.registerTab({
-					id: "dsh-tavern:user-profile",
-					title: "长期偏好",
-					order: 3,
-					single: true,
-					component: UserPreferenceProfileTab
-				}), "dsh-tavern: Better Sidebar user profile tab");
-			}
-			return Object.freeze({ register: register });
-		}
-		const userPreferenceProfileFeature = createUserPreferenceProfileFeatureModule();

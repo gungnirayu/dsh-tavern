@@ -1,6 +1,6 @@
 import { applyOpeningCommand } from './opening-command.js'
-import { sessionEvents, appendSessionEvent } from './session-events.js'
-import { createHash } from 'node:crypto'
+import { ensureOpeningTurn, releaseOpeningTurn, sessionEvents, appendSessionEvent } from './session-events.js'
+import { nativeOpeningMessageId } from './native-opening.js'
 import { cardOpeningChoices, resolveCardOpening } from './card-openings.js'
 import { projectAgentContent, projectOpeningCommit } from './runtime-content-projection.js'
 import { OFFICIAL_MVU_VERSION } from './official-mvu-assets.js'
@@ -86,11 +86,14 @@ export function createConversationInitialization(options) {
   async function initialize({ cardPath, sessionId, mode, openingId, userName, requestMode, preparation, cardTask, importDraft = false }) {
     if (requestMode === 'sillytavern') throw new Error('silly 模式已停用')
     const currentSettings = await settings()
-    const defaults = normalizePlayDefaults(currentSettings.defaultPlaySettings)
+    let defaults = normalizePlayDefaults(currentSettings.defaultPlaySettings)
     const effectiveRequestMode = requestMode === 'sillytavern' ? 'sillytavern' : 'dsh'
     const requestedMode = mode === 'card' || mode === 'revision' || mode === 'extract' ? 'card' : (mode === 'script' ? 'script' : (mode === 'story' ? 'story' : null))
     const card = str(cardPath) === '' && requestedMode === 'card' ? null : await cards.read(cardPath)
     if (card === undefined) throw new Error('人物卡不存在: ' + cardPath)
+    // A DSH card may suggest a preset and a few settings for its new games; the player's global defaults fill the rest.
+    const cardDefaults = card !== null && typeof cards.startDefaults === 'function' ? await cards.startDefaults(cardPath).catch(() => null) : null
+    if (cardDefaults?.settings) defaults = normalizePlayDefaults({ ...defaults, ...cardDefaults.settings, backgroundTasks: { ...defaults.backgroundTasks, ...(cardDefaults.settings.backgroundTasks || {}) } })
     // 游玩模式内部仍是 story/script 两类：人物卡已绑定剧本时必须走剧本（script）。
     const script = card === null ? undefined : await cards.script(cardPath)
     const hasScript = script !== undefined && Array.isArray(script.chunks) && script.chunks.length > 0
@@ -109,7 +112,8 @@ export function createConversationInitialization(options) {
       }
     }
     const macroState = { userName: str(userName).trim().slice(0, 80) || defaults.playerName, local: {}, global: {} }
-    const runtimePresetSnapshot = groupOfMode(chatMode) === 'play' ? await playPresetSnapshot() : null
+    const runtimePresetSnapshot = groupOfMode(chatMode) !== 'play' ? null
+      : cardDefaults?.presetPath ? await presets.fullSnapshot(cardDefaults.presetPath).catch(() => playPresetSnapshot()) : await playPresetSnapshot()
     // The card workbench opens empty: no greeting is shown or sent to the model.
     let openingSourceText = chatMode === 'card' ? '' : resolveCardOpening(card, openingId)
     const openingExtensions = chatMode === 'card' ? null : await cards.extensions(cardPath)
@@ -257,20 +261,17 @@ export function createConversationInitialization(options) {
     return projection.renderedText
   }
 
-  function openingId(chat) {
-    // Stable identity in the existing message.id field: a retry after flush/crash
-    // can recognize its own greeting without another save-format field or event.
-    return 'tavern-opening:' + createHash('sha256').update(str(chat.id)).digest('hex')
-  }
+  function openingId(chat) { return nativeOpeningMessageId(chat.id) }
 
   function appendOpeningEvents(session, chat, text, recovering) {
     // DSH adds a seed boundary on restore; it is not part of the opening turn.
     const openingEvents = () => sessionEvents(session).filter(event => event.type !== 'session/end-seed')
+    // The reserved opening turn/step was opened with the system head on V3+;
+    // a legacy archive without that head opens it here, before the greeting.
+    ensureOpeningTurn(session)
     const events = openingEvents()
     const messageId = openingId(chat)
     const stages = [
-      ['turn/start', { turn: 1 }],
-      ['step/start', { turn: 1, step: 1 }],
       ['assistant/message', { turn: 1, step: 1, message: {
         id: messageId,
         role: 'assistant',
@@ -289,17 +290,11 @@ export function createConversationInitialization(options) {
         return event.type === 'assistant/message' && event.data.turn === 1 && event.data.step === 1
           && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(str(message?.id)) && message.role === 'assistant'
           && message.source?.kind === 'model' && message.content?.length === 1 && message.content[0].type === 'text' && message.content[0].text === text
-          && events[index - 2]?.type === 'turn/start' && events[index - 2]?.data.turn === 1
-          && events[index - 1]?.type === 'step/start' && events[index - 1]?.data.step === 1
           && events[index + 1]?.type === 'step/end' && events[index + 1]?.data.turn === 1
           && events[index + 2]?.type === 'turn/end' && events[index + 2]?.data.turn === 1
       })
     }
-    let start = messageIndex >= 0 ? messageIndex - 2 : events.length
-    // An append can fail synchronously before the message. Only reuse the
-    // unfinished trailing opening prefix, never delete or rewrite DSH history.
-    if (messageIndex < 0 && events.at(-1)?.type === 'step/start' && events.at(-1)?.data.turn === 1 && events.at(-1)?.data.step === 1 && events.at(-2)?.type === 'turn/start' && events.at(-2)?.data.turn === 1) start -= 2
-    else if (messageIndex < 0 && events.at(-1)?.type === 'turn/start' && events.at(-1)?.data.turn === 1) start -= 1
+    const start = messageIndex >= 0 ? messageIndex : events.length
     for (let index = 0; index < stages.length; index++) {
       const [type, data, intent] = stages[index]
       const existing = openingEvents()[start + index]
@@ -333,6 +328,12 @@ export function createConversationInitialization(options) {
       if (target.agent === undefined) logger.warn('dsh-tavern: Agent 尚未注册，直接使用已绑定 Session 写入开场白', { sessionId })
       appendOpeningEvents(target.session, chat, text, recovering)
       if (target.agent?.phase?.kind === 'idle') target.agent.phase.lastTurn = Math.max(Number(target.agent.phase.lastTurn) || 0, 1)
+      await native.flush(target.session)
+    } else {
+      // No greeting fills the reserved opening turn, so close it here and publish it as
+      // used: the Agent numbers its next turn from the turn it can read, so it continues
+      // after the reserved one instead of colliding with a turn left open.
+      releaseOpeningTurn(target.session, target.agent)
       await native.flush(target.session)
     }
     // Publish the marker in memory only after durable save succeeds.

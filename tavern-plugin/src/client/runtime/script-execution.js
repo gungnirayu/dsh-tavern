@@ -54,7 +54,58 @@
 				releaseBarrier = Promise.all([releaseBarrier, request]).then(function () {});
 				return request;
 			}
+			// Card scripts read the card's worldbook and MVU applies its [InitVar]
+			// entry inside the chat-level initialization that CHAT_CHANGED triggers.
+			// MVU runs that initialization once and skips it when the chat identity
+			// or its own enablement is not ready yet, so an opening could be read
+			// with no initial variables until the player sent a first message. While
+			// MVU reports that its initial variables are still missing, announce the
+			// chat again a bounded number of times so the scripts re-run it.
+			let chatAnnouncements = 0;
+			let chatAnnounceTimer = null;
+			let chatAnnounceWaiting = false;
+			const chatAnnounceDelays = [1500, 4000, 9000];
+			function cancelChatAnnouncements() {
+				chatAnnounceWaiting = false;
+				chatAnnouncements = 0;
+				if (chatAnnounceTimer !== null) hostWindow.clearTimeout(chatAnnounceTimer);
+				chatAnnounceTimer = null;
+			}
+			function announceChat(force) {
+				if (!active || !runtime || !input) return Promise.resolve();
+				const chatId = String(input.view && input.view.chatId || "");
+				if (!chatId) return Promise.resolve();
+				const context = input.view && input.view.tavernHelper;
+				if (force !== true) return Promise.resolve(runtime.emit("CHAT_CHANGED", [chatId], context));
+				// MVU remembers the chat it last initialized and ignores a repeated
+				// CHAT_CHANGED for that same chat, so announcing the current chat again
+				// cannot re-run its chat-level initialization. Announce an identity it
+				// cannot adopt first — that only resets the chat it tracks, because its
+				// own current-chat guard rejects the transition — and then the real chat,
+				// which performs a genuine re-initialization and applies [InitVar].
+				return Promise.resolve()
+					.then(function () { return runtime.emit("CHAT_CHANGED", [""], context); })
+					.then(function () { return runtime.emit("CHAT_CHANGED", [chatId], context); });
+			}
+			function scheduleChatAnnouncement() {
+				if (chatAnnounceTimer !== null || !chatAnnounceWaiting) return;
+				if (!active || !runtime || !input) return;
+				if (chatAnnouncements >= chatAnnounceDelays.length) return;
+				const delay = chatAnnounceDelays[chatAnnouncements];
+				chatAnnouncements += 1;
+				chatAnnounceTimer = hostWindow.setTimeout(function () {
+					chatAnnounceTimer = null;
+					Promise.resolve()
+						.then(function () { return announceChat(true); })
+						.catch(function () {})
+						.then(function () {
+							void claimWork();
+							scheduleChatAnnouncement();
+						});
+				}, delay);
+			}
 			function dispose() {
+				cancelChatAnnouncements();
 				const previousLease = lease;
 				lease = null;
                 delivery = null;
@@ -86,14 +137,20 @@
 						if (lease !== currentLease) return;
 						if (options && options.onMvuLoadState) options.onMvuLoadState(state);
 						void claimWork();
+						// "evaluating" means MVU is loaded and subscribed but its initial
+						// variables are still unsaved; "error" here is that same wait having
+						// timed out. Both mean the chat-level initialization needs another run.
+						const phase = String(state && state.phase || "");
+						if (phase === "ready") cancelChatAnnouncements();
+						else if (phase === "evaluating" || phase === "error") {
+							chatAnnounceWaiting = true;
+							scheduleChatAnnouncement();
+						}
 					},
 					onReady: function (readySessionId) {
 						if (lease !== currentLease || !active || !readySessionId || !input || input.sessionId !== readySessionId) return;
-						const chatId = String(input.view && input.view.chatId || "");
-						// MVU uses this identity to invalidate older asynchronous initialization.
-						// An absent ID cancels the real chat's startup without initializing a replacement.
-						if (!chatId) { void claimWork(); return; }
-						return Promise.resolve(runtime.emit("CHAT_CHANGED", [chatId], input.view && input.view.tavernHelper)).finally(function () { void claimWork(); });
+						if (!String(input.view && input.view.chatId || "")) { void claimWork(); return; }
+						return announceChat().finally(function () { void claimWork(); });
 					}
 				});
 				if (signals && typeof signals.subscribe === "function") {
@@ -281,7 +338,7 @@
 				listeners.forEach(function (listener) { listener(); });
 			}
 			function selectedOwner() {
-				let id = String(sessions.list.getSnapshot().current || "");
+				let id = String(tavernMainSessionId(sessions) || "");
 				const seen = new Set();
 				while (id) {
 					if (seen.has(id) || seen.size >= 32) return "";
@@ -330,7 +387,7 @@
 			}
 			function createRecord(sessionId) {
 				const record = { sessionId: sessionId, viewState: null, loadState: null, fresh: false, foregroundRunning: sessions.list.getSnapshot().byId?.[sessionId]?.running === true, stopView: null };
-				record.templatePanel = createServerTemplatePanel({ window: hostWindow, rpc: options.rpc || rpc, isActive: () => current === record && String(sessions.list.getSnapshot().current || "") === record.sessionId });
+				record.templatePanel = createServerTemplatePanel({ window: hostWindow, rpc: options.rpc || rpc, isActive: () => current === record && tavernMainSessionId(sessions) === record.sessionId });
 				record.execution = (options.createExecution || createTavernScriptExecutionModule)({
 					window: hostWindow, rpc: options.rpc || rpc, executeSlash: options.executeSlash,
 					signals: options.signals || tavernSessionSignals,
@@ -362,7 +419,7 @@
 				if ((current ? current.sessionId : "") === sessionId) {
                     // Child agents keep the root executor alive, but its card UI
                     // belongs only to the actual root conversation surface.
-                    const visible = String(sessions.list.getSnapshot().current || "") === sessionId;
+                    const visible = tavernMainSessionId(sessions) === sessionId;
                     if (current?.execution.setForeground) current.execution.setForeground(visible);
                     if (current && !visible) current.templatePanel.close();
                     return;
@@ -373,7 +430,7 @@
 				retention.select(sessionId);
 				hostWindow.__dshTavernSelectedSessionId = sessionId;
 				current = sessionId ? records.get(sessionId) || createRecord(sessionId) : null;
-                if (current && current.execution.setForeground) current.execution.setForeground(String(sessions.list.getSnapshot().current || "") === sessionId);
+                if (current && current.execution.setForeground) current.execution.setForeground(tavernMainSessionId(sessions) === sessionId);
 				if (previous) {
 					// Do not retire from a cached idle view: the settlement-start
 					// notification may still be in flight when navigation happens.

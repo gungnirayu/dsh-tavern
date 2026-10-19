@@ -155,7 +155,11 @@ export function createStoryTimeline(options = {}) {
 
   function trimOperations(timeline) {
     const entries = Object.values(timeline.operations).sort(function (left, right) { return (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0) })
-    for (const operation of entries.slice(80)) delete timeline.operations[operation.id]
+    // Only finished history is trimmed: an old running or deferred operation (and the
+    // round it belongs to) must still be found when it completes or resumes.
+    const retained = new Set(entries.filter(operation => ['running', 'deferred'].includes(operation.status))
+      .flatMap(operation => [operation.id, operation.roundOperationId].filter(Boolean)))
+    for (const operation of entries.slice(80)) if (!retained.has(operation.id)) delete timeline.operations[operation.id]
   }
 
   function operationValue(operation, participant) {
@@ -265,6 +269,7 @@ export function createStoryTimeline(options = {}) {
       role: participantKey,
       sessionId: str(current.sessionId),
       rewindTo,
+      ...(current.formatVersion ? { formatVersion: current.formatVersion } : {}),
       lifetime: participantKey === 'background' ? participantLifetime(current.lifetime) : (current.lifetime || 'one-shot'),
       syncedRevision: current.syncedRevision === undefined ? null : current.syncedRevision
     }
@@ -292,11 +297,14 @@ export function createStoryTimeline(options = {}) {
       branchId: chat.timeline.branchId,
       syncedRevision: participant.identityOnly ? null : chat.timeline.revision,
       boundary: Number.isSafeInteger(participant.boundary) ? participant.boundary : null,
+      ...(participant.formatVersion ? { formatVersion: participant.formatVersion } : {}),
       status: 'current',
       rewindTo: null,
       updatedAt: now()
     }
-    if (str(previousParticipant.sessionId) === str(participant.sessionId) && previousParticipant.requiresNewSessionOnRewind === true) {
+    // A full in-place reset (rewindTo -1) removed the compacted history with the rest.
+    const cleared = previousParticipant.status === 'needs-rewind' && previousParticipant.rewindTo === -1
+    if (str(previousParticipant.sessionId) === str(participant.sessionId) && previousParticipant.requiresNewSessionOnRewind === true && !cleared) {
       nextParticipant.requiresNewSessionOnRewind = true
       nextParticipant.compactedAt = Number(previousParticipant.compactedAt) || now()
     }
@@ -306,6 +314,7 @@ export function createStoryTimeline(options = {}) {
         sessionId: str(participant.sessionId), mode: lifetime === 'chat' ? 'continuable' : 'one-shot',
         branchId: chat.timeline.branchId, syncedRevision: chat.timeline.revision,
         boundary: Number.isSafeInteger(participant.boundary) ? participant.boundary : null,
+        ...(participant.formatVersion ? { formatVersion: participant.formatVersion } : {}),
         updatedAt: now()
       }
     }
@@ -314,18 +323,20 @@ export function createStoryTimeline(options = {}) {
   function participantCheckpointSource(value) {
     const participant = object(value)
     if (str(participant.sessionId) !== '' && Number.isSafeInteger(participant.boundary)) {
-      return { sessionId: participant.sessionId, boundary: participant.boundary }
+      return { sessionId: participant.sessionId, boundary: participant.boundary, ...(participant.formatVersion ? { formatVersion: participant.formatVersion } : {}) }
     }
     const pending = object(participant.forkFrom)
     if (str(pending.sessionId) !== '' && Number.isSafeInteger(pending.boundary)) {
-      return { sessionId: pending.sessionId, boundary: pending.boundary }
+      return { sessionId: pending.sessionId, boundary: pending.boundary, ...(pending.formatVersion ? { formatVersion: pending.formatVersion } : {}) }
     }
     return null
   }
 
+  // A compacted worker cannot rewind to a boundary inside its summary. Keep the
+  // same session and clear its task history instead (boundary -1, in place).
   function sourceSurvivesCompaction(participant, source) {
     if (source === null || participant.requiresNewSessionOnRewind !== true) return source
-    return str(participant.sessionId) === source.sessionId ? null : source
+    return str(participant.sessionId) === source.sessionId ? { sessionId: source.sessionId, boundary: -1 } : source
   }
 
   function earlierParticipantSource(checkpoints, role) {
@@ -459,7 +470,7 @@ export function createStoryTimeline(options = {}) {
       source = sourceSurvivesCompaction(object(currentParticipants[role]), source)
       // A checkpoint owns story state, not the identity of the resident worker.
       // Imported history may precede its first task: reset task context in place.
-      if (source === null && str(currentParticipant.sessionId) !== '' && currentParticipant.requiresNewSessionOnRewind !== true) {
+      if (source === null && str(currentParticipant.sessionId) !== '') {
         source = { sessionId: currentParticipant.sessionId, boundary: -1 }
       }
       nextParticipants[role] = {
@@ -469,6 +480,7 @@ export function createStoryTimeline(options = {}) {
         branchId,
         syncedRevision: null,
         boundary: source === null ? null : source.boundary,
+        ...(source?.formatVersion ? { formatVersion: source.formatVersion } : {}),
         status: source === null ? 'needs-session' : 'needs-rewind',
         rewindTo: source === null ? null : source.boundary,
         updatedAt: now()
@@ -525,11 +537,12 @@ export function createStoryTimeline(options = {}) {
         if (!persistentParticipant(participant.lifetime)) continue
         const previous = object(checkpoint?.participants?.[role])
         const source = participantCheckpointSource(previous)
-        const needsSession = participant.requiresNewSessionOnRewind === true || !str(participant.sessionId)
-        const boundary = source?.sessionId === participant.sessionId ? source.boundary : -1
+        const needsSession = !str(participant.sessionId)
+        const boundary = participant.requiresNewSessionOnRewind !== true && source?.sessionId === participant.sessionId ? source.boundary : -1
         chat.timeline.participants[role] = {
           ...participant, status: needsSession ? 'needs-session' : 'needs-rewind',
           sessionId: needsSession ? '' : participant.sessionId,
+          formatVersion: source?.formatVersion || 3,
           boundary: needsSession ? null : boundary, rewindTo: needsSession ? null : boundary,
           syncedRevision: null, updatedAt: now()
         }
@@ -566,7 +579,7 @@ export function createStoryTimeline(options = {}) {
       // Roll back story-owned fields, not settings saved while the model ran.
       restore(chat, snapshot(original))
       chat.timeline = clone(original.timeline)
-      for (const key of ['nativeCommits', 'suppressedDshTurns', 'regeneratedDshTurns']) {
+      for (const key of ['nativeCommits', 'suppressedDshTurns', 'regeneratedDshTurns', 'replacingDshTurns']) {
         if (Object.hasOwn(original, key)) chat[key] = clone(original[key])
         else delete chat[key]
       }
@@ -575,10 +588,15 @@ export function createStoryTimeline(options = {}) {
       for (const role of Object.keys(chat.timeline.participants)) {
         const participant = object(chat.timeline.participants[role])
         if (!persistentParticipant(participant.lifetime)) continue
-        const source = sourceSurvivesCompaction(participant, participantCheckpointSource(participant))
+        let source = sourceSurvivesCompaction(participant, participantCheckpointSource(participant))
+        // No surviving boundary: reset the same worker's task history in place, as a rollback does.
+        if (source === null && str(participant.sessionId) !== '') {
+          source = { sessionId: participant.sessionId, boundary: -1 }
+        }
         participants[role] = {
           role, lifetime: 'chat', sessionId: source === null ? '' : source.sessionId, branchId, syncedRevision: null,
           boundary: source === null ? null : source.boundary,
+          ...(source?.formatVersion ? { formatVersion: source.formatVersion } : {}),
           status: source === null ? 'needs-session' : 'needs-rewind', rewindTo: source === null ? null : source.boundary,
           updatedAt: now()
         }

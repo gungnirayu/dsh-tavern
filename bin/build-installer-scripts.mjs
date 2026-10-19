@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url'
 
 const root = new URL('../', import.meta.url)
 const modules = [
+  { file: 'bin/official-desktop-runtime.cjs', targets: [
+    { file: 'install.ps1', pattern: /(\$OfficialDesktopModuleSource = @'\n)[\s\S]*?(\n'@\n)/ },
+    { file: 'install.sh', pattern: /(<<'DSH_OFFICIAL_DESKTOP_MODULE'\n)[\s\S]*?(\nDSH_OFFICIAL_DESKTOP_MODULE\n)/ },
+  ] },
   { file: 'bin/download.cjs', targets: [
     { file: 'install.ps1', pattern: /(\$DownloadModuleSource = @'\n)[\s\S]*?(\n'@\n)/ },
     { file: 'install.sh', pattern: /(<<'DSH_DOWNLOAD_MODULE'\n)[\s\S]*?(\nDSH_DOWNLOAD_MODULE\n)/ },
@@ -19,6 +23,13 @@ const modules = [
   ] },
 ]
 const readModule = file => readFileSync(new URL(file, root), 'utf8').replaceAll('\r\n', '\n').replace(/\n+$/, '')
+// Each installer carries its own release version, so it never installs code older than itself
+// (a stale CDN manifest); bump package.json and rerun this script.
+const versions = [
+  { file: 'install.sh', pattern: /^(INSTALLER_VERSION=')[^']*(')$/m },
+  { file: 'install.ps1', pattern: /^(\$InstallerVersion = ')[^']*(')$/m },
+]
+const releaseVersion = () => JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).version
 
 export function embedModule(source, pattern, moduleSource) {
   const text = source.replaceAll('\r\n', '\n')
@@ -39,6 +50,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (check) stale.push(`${file} (${moduleFile})`)
       else { writeFileSync(url, next); console.log(`updated ${file}: ${moduleFile}`) }
     }
+  }
+  const version = releaseVersion()
+  for (const { file, pattern } of versions) {
+    const url = new URL(file, root)
+    const current = readFileSync(url, 'utf8')
+    const next = embedModule(current, pattern, version)
+    if (next === current.replaceAll('\r\n', '\n')) continue
+    if (check) stale.push(`${file} (version ${version})`)
+    else { writeFileSync(url, next); console.log(`updated ${file}: version ${version}`) }
   }
   if (stale.length) {
     console.error(`embedded modules are stale in: ${stale.join(', ')}. Run node bin/build-installer-scripts.mjs`)

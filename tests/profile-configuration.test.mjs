@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { parseDocument } from 'yaml'
 
-import { beginProfileConfigurationUpdate, loadProfileManifest, mergeProfileManifest, migrateLegacyProfilePatch, prepareProfilePatch } from '../bin/profile-configuration.mjs'
+import { beginProfileConfigurationUpdate, mergeDesktopLegacyProfile, mergeProfilePatchTexts, loadProfileManifest, mergeProfileManifest, migrateLegacyProfilePatch, prepareProfilePatch } from '../bin/profile-configuration.mjs'
 
 const legacyPatch = await readFile(new URL('../config/legacy-profile-patch-v0.6.yml', import.meta.url), 'utf8')
 
@@ -191,4 +191,32 @@ test('配置事务先备份并原子写入，验证失败时可以恢复原文�
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+
+test('官方 Desktop 合并旧用户插件和补丁，当前设置优先且可重复执行', () => {
+  const current = { name: 'dsh-profile-desktop', dependencies: {custom: '2'}, dsh: {profile: {bundles: ['custom', 'new']}} }
+  const legacy = { dependencies: {custom: '1', old: '1'}, dsh: {profile: {bundles: ['old', 'custom']}}, dshTavern: {dataRoot: '/original/data'} }
+  const merged = mergeDesktopLegacyProfile(current, legacy)
+  assert.equal(merged.dependencies.custom, '2')
+  assert.equal(merged.dependencies.old, '1')
+  assert.deepEqual(merged.dsh.profile.bundles, ['old', 'custom', 'new'])
+  assert.equal(merged.dshTavern.dataRoot, '/original/data')
+  assert.deepEqual(mergeDesktopLegacyProfile(merged, legacy), merged)
+  assert.deepEqual(current.dsh.profile.bundles, ['custom', 'new'])
+  const oldPatch = '- id: custom\n  config: {value: old}\n'
+  const newPatch = '- id: custom\n  config: {value: new}\n'
+  const patch = mergeProfilePatchTexts(oldPatch, newPatch)
+  assert.deepEqual(parseDocument(patch).toJS().map(row => row.config.value), ['old', 'new'])
+  assert.equal(mergeProfilePatchTexts(oldPatch, patch), patch)
+})
+
+
+test('官方 Desktop 移除旧二次启动器，保留其他用户插件', () => {
+  const current = { dependencies: {'dsh-tavern-launcher': 'link:/old', 'user-extra': '1'}, dsh: {profile: {bundles: ['dsh-tavern-launcher', 'user-extra']}} }
+  const next = mergeProfileManifest({source: sourceManifest(), current, pluginPath: '/app/tavern-plugin', dataRoot: '/data', host: 'desktop'})
+  assert.equal(next.dependencies['dsh-tavern-launcher'], undefined)
+  assert.equal(next.dsh.profile.bundles.includes('dsh-tavern-launcher'), false)
+  assert.ok(next.dsh.profile.bundles.includes('user-extra'))
+  assert.equal(current.dependencies['dsh-tavern-launcher'], 'link:/old')
 })

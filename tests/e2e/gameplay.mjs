@@ -1,3 +1,4 @@
+import { installV3SaveFixture } from './session-upgrade-fixture.mjs'
 import { helperApiChecks, helperApiScript } from './helper-api.mjs'
 import { backgroundFailureChecks } from './background-failure.mjs'
 import { createConversationPageStore } from '../../tavern-plugin/lib/domain/conversation-page-store.js'
@@ -8,19 +9,29 @@ import { setupRealCharacterDesign, realCharacterDesignChecks } from './real-char
 import { setupRealCardEdit, realCardEditChecks } from './real-card-edit.mjs'
 import { startSceneImageServer, sceneAddChecks } from './scene-add.mjs'
 import { regenAnomalyChecks, regenTemplateChecks } from './regen-anomalies.mjs'
+import { failedTurnCleanupChecks } from './failed-turn-cleanup.mjs'
+import { toolStepsChecks } from './tool-steps.mjs'
 import { storageAuditChecks } from './storage-audit.mjs'
 import { brokenSaveChecks } from './broken-save.mjs'
+import { nativeRepairChecks } from './native-repair.mjs'
+import { failureResilienceChecks } from './failure-resilience.mjs'
 import { incrementalMvuChecks } from './mvu-incremental.mjs'
 import {openingUpdateChecks} from './opening-update.mjs'
 import { backgroundLifecycleChecks } from './background-lifecycle.mjs'
 import { cardMemoryChecks } from './card-memory.mjs'
 import {displayRegressionRules, displayRegressionChecks} from './display-regression.mjs'
 import { surfaceRecoveryChecks } from './surface-recovery.mjs'
+import { stringify as stringifyYaml } from 'yaml'
+import { applySidebarDefaults } from '../../bin/launcher-settings.mjs'
+import { castCardFileChecks, castSpeechChecks, castStageChecks, castStageInputChecks, dshCardPlayChecks } from './cast-stage.mjs'
 import { cardVariableUpdateChecks } from './card-variable-update.mjs'
 import { cardUpdateChecks } from './card-update.mjs'
 import { sidebarUpgrade } from './sidebar-upgrade.mjs'
+import { pinPanelChecks } from './pin-panel.mjs'
+import { mobileSidebarChecks } from './mobile-sidebar.mjs'
+import { presetHubChecks } from './preset-hub.mjs'
 import { compactedEditedLegacySession } from '../fixtures/compacted-legacy-session.mjs'
-import { encodeMigratedSessionLog, parseSessionLog } from '../../tavern-plugin/lib/domain/legacy-session-migration.js'
+import { encodeMigratedSessionLog, parseSessionLog } from '../../tavern-plugin/lib/domain/session-log-codec.js'
 import { compactionChecks } from './compaction.mjs'
 import assert from 'node:assert/strict'
 import { presetSwitch } from './preset-switch.mjs'
@@ -33,9 +44,14 @@ import { spawn } from 'node:child_process'
 import { chromium } from 'playwright'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 
-const displayScenario = process.argv.includes('--display-regression')
+const pinScenario = process.argv.includes('--pin-panel')
+const displayScenario = pinScenario || process.argv.includes('--display-regression')
 const recoveryScenario = process.argv.includes('--surface-recovery')
 const helperApiScenario = process.argv.includes('--helper-api')
+// Story body submitted through the submit_story tool (per-conversation toggle, off by default).
+const storyToolScenario = process.argv.includes('--story-tool')
+// Dialogue avatars: settlement annotates speakers, quoted lines show as speaker rows.
+const castScenario = process.argv.includes('--cast')
 const compactionScenario = process.argv.find(arg => arg.startsWith('--compaction='))?.split('=')[1]
 const source = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const runtime = resolve(process.env.TAVERN_E2E_RUNTIME || join(homedir(), '.dsh-tavern/runtime'))
@@ -88,7 +104,7 @@ async function assertNativeStorage() {
   if(latest)assert.deepEqual(view.state.world.variables,latest.variables[latest.swipeId||0])
   const files=await readdir(join(data,'chats',chat.id))
   assert.ok(files.includes('head.json')&&files.includes('blocks'))
-  if(!process.argv.includes('--migrate-native'))assert.ok(!files.includes('snapshots')&&!files.includes('journals')&&!files.includes('storage-format.json'))
+  if(!process.argv.includes('--upgrade-save'))assert.ok(!files.includes('snapshots')&&!files.includes('journals')&&!files.includes('storage-format.json'))
   report.nativeFormat={format:view.metadata.format,chatId:chat.id,messageCount:view.messageCount,revision:view.state.chatRevision,gold:view.state.world.variables.stat_data?.gold,files}
 }
 function inspectSaved(chat) {
@@ -124,7 +140,6 @@ async function inspectScreen() {
   await openStatus()
   await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])')
     .locator('#e2e-gold').filter({ hasText: /^金币：10$/ }).waitFor()
-  await page.getByText('站在柜台前，收下奖励。', { exact: true }).filter({ visible: true }).waitFor()
 }
 try {
   await step('准备独立运行环境', async () => {
@@ -161,6 +176,8 @@ try {
     }
     await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'tavern-e2e', private: true,
       dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-web-mobile', 'dsh-better-sidebar', 'dsh-tavern-plugin', 'dsh-tavern-remote'] } } }))
+    // The stage scenario runs with the sidebar a real install gets (no Tasks tab), as players see it.
+    if (castScenario) await writeFile(join(root, 'settings.yaml'), stringifyYaml(applySidebarDefaults({})))
     await writeFile(join(profile, 'cordis.patch.yml'), `- id: agent-default-model\n  config:\n    provider: tavern-e2e\n    model: fixed\n- insert:\n    - id: tavern-e2e-model\n      name: ${JSON.stringify(join(source, 'tests/e2e/model.mjs'))}\n`)
     await mkdir(join(data, 'resources/presets'), { recursive: true })
     for (const key of ['A', 'B']) await writeFile(join(data, `resources/presets/E2E-${key}.json`), JSON.stringify({
@@ -168,6 +185,8 @@ try {
       prompt_order: [{ order: [{ identifier: 'main', enabled: true }] }]
     }))
     await mkdir(join(data, 'resources/cards'), { recursive: true })
+    // The stage plugin example: a director settlement task and a plugin stage view.
+    if (castScenario) await cp(join(source, 'examples/tavern-plugin-director'), join(data, 'plugins/tavern-plugin-director'), { recursive: true })
     // Deliberate continuous DOM updates: a real status card must receive new
     // variables even when it never reaches the frame's DOM-idle threshold.
     const status = '<div id="e2e-gold">金币：加载中</div><script>function refresh(){const v=getAllVariables();document.getElementById("e2e-gold").textContent="金币："+(v.stat_data?.gold??"未初始化")}refresh();setInterval(refresh,200)</script>'
@@ -205,8 +224,12 @@ try {
           TAVERN_PERF_BODY_REPEATS: process.env.TAVERN_PERF_BODY_REPEATS || '',
           TAVERN_E2E_BACKGROUND_DIR: (process.argv.includes('--background-lifecycle') || process.argv.includes('--background-failure')) ? output : '',
           TAVERN_E2E_REQUEST_AUDIT: join(output, 'preset-requests.jsonl'),
+          TAVERN_E2E_STORY_TOOL_LOG: storyToolScenario ? join(output, 'story-tool.jsonl') : '',
+          TAVERN_E2E_SETTLEMENT_DUMP: process.env.TAVERN_E2E_SETTLEMENT_DUMP || '',
+          TAVERN_E2E_CAST: castScenario ? '1' : '',
           TAVERN_E2E_MEMORY_AUDIT: process.argv.includes('--card-memory') ? join(output, 'memory-requests.jsonl') : '',
           TAVERN_E2E_SCENE_AUDIT: process.argv.includes('--scene-add') ? join(output, 'scene-requests.jsonl') : '',
+          TAVERN_E2E_CONTEXT_AUDIT: process.argv.includes('--native-repair') || process.argv.includes('--failure-resilience') ? join(output, 'context-requests.jsonl') : '',
           TAVERN_E2E_LLM_MODULE: join(modules, '@deepseek-ai/dsh-llm/lib/index.js'),
           // Server card scripts are the default; ordinary scenarios keep exercising the page path.
           DSH_TAVERN_SERVER_SCRIPTS: process.argv.includes('--server-scripts') ? '1' : '0',
@@ -296,7 +319,8 @@ try {
   if(process.argv.includes('--native-format'))await step('确认新局直接写入原生分页存档',assertNativeStorage)
   if (process.argv.includes('--text-colors')) {
     await step('实际正文挂载主题对白高亮', async () => {
-      await page.locator('.dsh-tavern-colored-markdown').waitFor()
+      // A trusted card's script layer keeps a hidden copy of the body beside the shown one.
+      await page.locator('.dsh-tavern-colored-markdown').filter({ visible: true }).first().waitFor()
       const state=await page.evaluate(()=>({api:typeof Highlight,css:typeof CSS.highlights,styles:document.querySelectorAll('style[data-dsh-tavern-text-colors]').length,ranges:[...CSS.highlights.values()].reduce((n,h)=>n+h.size,0)}))
       report.textColors=state
       assert.ok(state.styles>0,'正文必须挂载高亮样式')
@@ -446,10 +470,18 @@ try {
     })
   } else if (helperApiScenario) {
     await helperApiChecks({ page, step, savedChat, output, report })
+  } else if (process.argv.includes('--failure-resilience')) {
+    await failureResilienceChecks({ page, step, savedChat, output, report, root, restartServer })
+  } else if (process.argv.includes('--native-repair')) {
+    await nativeRepairChecks({ page, step, savedChat, output, report, data, restartServer })
   } else if (process.argv.includes('--broken-save')) {
     await brokenSaveChecks({ page, step, savedChat, output, report, root, data, profile, source, restartServer })
   } else if (process.argv.includes('--regen-template')) {
     await regenTemplateChecks({ page, step, savedChat, output, report, root })
+  } else if (process.argv.includes('--tool-steps')) {
+    await toolStepsChecks({ page, step, savedChat, output, report })
+  } else if (process.argv.includes('--failed-turn-cleanup')) {
+    await failedTurnCleanupChecks({ page, step, savedChat, output, report })
   } else if (process.argv.includes('--regen-anomalies')) {
     await regenAnomalyChecks({ page, step, savedChat, output, report, serverLog: () => log })
   } else if (process.argv.includes('--scene-add')) {
@@ -470,6 +502,32 @@ try {
   } else if (recoveryScenario) {
     await surfaceRecoveryChecks({ page, step, savedChat, output, report, root, restartServer })
   } else {
+  if (storyToolScenario) await step('开启正文走工具调用', async () => {
+    // A global switch: DSH settings → DSH Tavern → 高级.
+    const chatUrl = page.url()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByText('DSH Tavern', { exact: true }).first().click()
+    const toggle = page.getByRole('switch', { name: '正文走工具调用', exact: true })
+    await toggle.click()
+    await page.getByText('已保存，所有游戏下一轮生效').waitFor()
+    assert.equal(await toggle.isChecked(), true)
+    // The stage is per card and off for ordinary cards; this card turns it on.
+    const stage = await page.evaluate(async () => (await fetch('/api/dsh-tavern/setCardStage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: 'cards/e2e.json', enabled: true }) })).json())
+    assert.equal(stage.enabled, true)
+    await page.goto(chatUrl)
+    await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
+  })
+  if (castScenario) await step('开启对话头像', async () => {
+    const chatUrl = page.url()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByText('DSH Tavern', { exact: true }).first().click()
+    const toggle = page.getByRole('switch', { name: '对话头像', exact: true })
+    await toggle.click()
+    await page.getByText('已保存，所有游戏下一轮生效').first().waitFor()
+    assert.equal(await toggle.isChecked(), true)
+    await page.goto(chatUrl)
+    await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
+  })
   await step('玩一轮，确认正文、金币与人物姿势', async () => {
     const composer = page.getByRole('textbox', { name: /发消息|Message/ })
     await composer.fill('领取任务奖励')
@@ -478,6 +536,24 @@ try {
     report.beforeReload = inspectSaved(await savedChat())
     await page.screenshot({ path: join(output, 'before-reload.png'), fullPage: true })
   })
+  if (castScenario) await step('台词显示成带头像的说话人行，刷新后仍在', async () => {
+    const rows = page.locator('.dsh-tavern-cast-line').filter({ visible: true })
+    for (const reload of [false, true]) {
+      if (reload) await page.reload({ waitUntil: 'domcontentloaded' })
+      await rows.first().waitFor({ timeout: 30000 })
+      const shown = await rows.evaluateAll(items => items.map(item => ({
+        name: item.querySelector('.dsh-tavern-cast-name')?.textContent, emotion: item.querySelector('.dsh-tavern-cast-emotion')?.textContent || '',
+        avatar: item.querySelector('.dsh-tavern-cast-avatar')?.textContent || 'img', text: item.querySelector('.dsh-tavern-cast-body')?.textContent || '' })))
+      assert.deepEqual(shown.map(row => [row.name, row.emotion, row.avatar]), [['店主', '开心', '店'], ['你', '感激', '你']])
+      assert.ok(shown[0].text.includes('欢迎回来，这是你的奖励。'))
+      await page.getByText('你获得了十枚金币。', { exact: false }).filter({ visible: true }).first().waitFor()
+    }
+    await page.screenshot({ path: join(output, 'cast-lines.png') })
+    report.castLines = true
+  })
+  if (castScenario) await castStageChecks({ page, step, output, report })
+  if (castScenario) await castSpeechChecks({ page, step, output, report })
+  if (castScenario) await castCardFileChecks({ page, step, report, savedChat })
   await step('刷新后确认同一局、正文和状态均保留', async () => {
     await page.reload({ waitUntil: 'domcontentloaded' })
     await inspectScreen()
@@ -493,7 +569,7 @@ try {
     await page.route('**/api/dsh-tavern/getSession',route)
     try{
       await page.reload({waitUntil:'domcontentloaded'})
-      const button=page.getByRole('button',{name:'导出 ▾',exact:true})
+      const button=page.getByRole('button',{name:'导出',exact:true})
       await button.waitFor({timeout:5000})
       await button.click()
       await page.getByRole('menuitem',{name:'故事正文',exact:true}).waitFor({timeout:1000})
@@ -502,14 +578,15 @@ try {
     }finally{release();await page.unrouteAll({behavior:'wait'})}
     await inspectScreen()
   })
-  if(process.argv.includes('--migrate-native'))await step('通过酒馆状态按钮迁移旧 journal 存档',async()=>{
-    let history, original
+  if(process.argv.includes('--upgrade-save'))await step('统一升级旧会话日志与 journal 存档',async()=>{
+    let history, original, legacySession
     await restartServer(async()=>{
       original=await savedChat();history=[]
       const old=createChatJournalStore({dataRoot:data})
       for(let revision=1;revision<=original._storageRevision;revision++)history.push(await old.readRevision(original.id,revision))
       assert.ok(history.every(Boolean),'夹具必须保留全部迁移前版本')
-      // Isolated generated fixture only; never alter the host Session log.
+      legacySession = await installV3SaveFixture({ sessionsRoot: join(root, 'profile-data/tavern/sessions'), sessionId: original.sessionId, runtime })
+      // Both sources belong only to this generated test profile.
       await rm(join(data,'chats',original.id),{recursive:true,force:true})
       const legacy=createChatJournalStore({dataRoot:data})
       for(const snapshot of history)await legacy.update(original.id,()=>snapshot)
@@ -517,8 +594,10 @@ try {
       assert.deepEqual(await legacy.read(original.id),original)
     })
     await inspectScreen()
-    const migration=page.getByRole('region',{name:'存档格式',exact:true})
-    const button=migration.getByRole('button',{name:'迁移旧存档',exact:true})
+    assert.deepEqual(await readFile(legacySession.oldFile), legacySession.bytes)
+    assert.equal(parseSessionLog(await readFile(legacySession.newFile)).header.version, 4)
+    const migration=page.getByRole('region',{name:'存档迁移',exact:true})
+    const button=migration.getByRole('button',{name:'迁移存档',exact:true})
     await button.waitFor()
     await page.screenshot({path:join(output,'migration-before.png'),fullPage:true})
     await page.setViewportSize({width:390,height:844})
@@ -528,19 +607,19 @@ try {
     await page.screenshot({path:join(output,'migration-mobile.png'),fullPage:true})
     const started=Date.now()
     await button.click()
-    await migration.getByText('已迁移为新版存档，旧文件和历史版本已保留。',{exact:true}).waitFor()
+    await migration.waitFor({state:'hidden'})
     const migrated=createChatJournalStore({dataRoot:data})
     for(let i=0;i<history.length;i++)assert.deepEqual(await migrated.readRevision(original.id,i+1),history[i])
     // Live iframe diagnostics can change when the viewport changes; migration
     // history above remains byte-for-byte equivalent at each original revision.
     const story=messages=>messages.map(({displayRuntime,...message})=>message)
     assert.deepEqual(story((await migrated.read(original.id)).messages),story(original.messages))
-    report.migration={status:'native',via:'status-button',elapsedMs:Date.now()-started,retainedRevisions:history.length}
+    report.migration={status:'native',sessionVersion:4,oldSessionPreserved:true,via:'status-button',elapsedMs:Date.now()-started,retainedRevisions:history.length}
     await page.setViewportSize({width:1440,height:1000})
     await page.screenshot({path:join(output,'migration-complete.png'),fullPage:true})
     await page.reload({waitUntil:'domcontentloaded'})
     await inspectScreen()
-    assert.equal(await page.getByRole('button',{name:'迁移旧存档',exact:true}).count(),0)
+    assert.equal(await page.getByRole('button',{name:'迁移存档',exact:true}).count(),0)
     await assertNativeStorage()
   })
   if (process.argv.includes('--settlement-performance')) {
@@ -555,6 +634,12 @@ try {
     await incrementalMvuChecks({page,step,savedChat,output,report,restartServer})
   } else if (process.argv.includes('--background-lifecycle')) {
     await backgroundLifecycleChecks({page,step,savedChat,data,output,report,restartServer})
+  } else if (process.argv.includes('--mobile-sidebar')) {
+    await mobileSidebarChecks({page,step,output,report})
+  } else if (process.argv.includes('--preset-hub')) {
+    await presetHubChecks({page,step,output,report})
+  } else if (pinScenario) {
+    await pinPanelChecks({page,step,output,report})
   } else if (displayScenario) {
     await displayRegressionChecks({page,step,savedChat,data,output,report,restartServer})
   } else if (compactionScenario) {
@@ -779,7 +864,7 @@ try {
     report.serverScripts.coldSettleMs = Date.now() - coldStarted
     await page.goto(origin + '/', { waitUntil: 'domcontentloaded' })
   })
-  if((process.argv.includes('--native-format')||process.argv.includes('--migrate-native')) && !process.argv.includes('--opening-only'))await step('服务重启后打开同一原生存档并核对当前变量',async()=>{
+  if((process.argv.includes('--native-format')||process.argv.includes('--upgrade-save')) && !process.argv.includes('--opening-only'))await step('服务重启后打开同一原生存档并核对当前变量',async()=>{
     const before=await savedChat()
     await restartServer()
     const expected=[...before.messages].reverse().find(row=>row.variables?.[row.swipeId||0]).variables[0].stat_data.gold
@@ -799,11 +884,24 @@ try {
     await assertNativeStorage()
     report.nativeFormat.restart=true
   })
+  if (castScenario) await castStageInputChecks({ page, step, report })
+  if (castScenario) await dshCardPlayChecks({ page, step, output, report })
   // Every scenario ends with the story save agreeing with what the model sees (#196).
+  if (storyToolScenario) await step('正文均经 submit_story 提交', async () => {
+    const submitted = (await readFile(join(output, 'story-tool.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).content)
+    report.storyToolSubmissions = submitted.length
+    for (const text of ['你获得了十枚金币。', '你再次领取了奖励，金币累计二十枚。', '雨夜里，你重新领取了奖励。']) assert.ok(submitted.some(content => content.startsWith(text)), text)
+  })
   if (process.env.TAVERN_E2E_BROKEN_STOP !== '1' && !['--settlement-performance', '--display-regression', '--text-colors', '--opening-only'].some(flag => process.argv.includes(flag))) await step('存档与模型上下文一致', async () => {
     const chat = await savedChat().catch(() => null)
     if (!chat?.sessionId) return
-    const result = await page.evaluate(async sessionId => (await fetch('/api/dsh-tavern/storyAlignment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) })).json(), chat.sessionId)
+    // The last round's native commit may still be landing; a real mismatch stays after the wait.
+    let result
+    for (let attempt = 0; attempt < 20; attempt++) {
+      result = await page.evaluate(async sessionId => (await fetch('/api/dsh-tavern/storyAlignment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) })).json(), chat.sessionId)
+      if (result.ok === false || !result.alignment || result.alignment.aligned) break
+      await page.waitForTimeout(500)
+    }
     report.storyAlignment = result.alignment ?? result
     assert.ok(result.ok !== false, '核对接口失败：' + JSON.stringify(result))
     assert.ok(!result.alignment || result.alignment.aligned, '存档与模型上下文不一致：' + JSON.stringify(result.alignment))

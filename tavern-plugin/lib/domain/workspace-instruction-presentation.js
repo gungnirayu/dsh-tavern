@@ -1,4 +1,5 @@
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
+import { isPluginSource, sourceProducerName, isSystemPromptSource } from './message-source.js'
 
 // Request-only filtering: preserve files and durable Session reconciliation state.
 const blockedSections = new Set(['approval:policy', 'deployment:persona-prefix'])
@@ -10,11 +11,11 @@ export function presentWorkspaceInstructions(request) {
   const messages = request.messages.flatMap(message => {
     const source = message?.source
     if (message?.role === 'user' && (source?.kind === 'agent-instructions' ||
-      (source?.kind === 'plugin' && instructionPlugins.has(source.plugin)))) {
+      (isPluginSource(source) && instructionPlugins.has(sourceProducerName(source))))) {
       changed = true
       return []
     }
-    if (source?.kind !== 'plugin' || source.plugin !== '@deepseek-ai/dsh-system-prompt' ||
+    if (!isSystemPromptSource(source) ||
       !['system', 'user'].includes(message.role) || !Array.isArray(source.sections)) return [message]
     const sections = source.sections.filter(section => !blockedSections.has(section.name))
     if (sections.length === source.sections.length) return [message]

@@ -1,11 +1,13 @@
+import { upgradeReferences, storyEventTurn } from './session-upgrade-references.js'
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { restoredSurfaceSeqs } from './surface-restoration.js'
-import { sessionEvents, surfaceReplacementRange } from './session-events.js'
+import { sessionEvents, surfaceReplacementRange, withSurfaceEditTurn } from './session-events.js'
 import { randomUUID } from 'node:crypto'
 
-export function rewindBackgroundSurface(session, boundary) {
+export function rewindBackgroundSurface(session, boundary, agent, formatVersion = 4) {
   if (!Number.isSafeInteger(boundary)) return 0
   const events = sessionEvents(session)
+  boundary = upgradeReferences(events).sequence(boundary, formatVersion)
   const nodes = session && session.surface && Array.isArray(session.surface.nodes) ? session.surface.nodes : []
   const bySeq = new Map(events.map(event => [event.seq, event]))
   // A replaced system message gets a new seq but stays at surface position zero.
@@ -22,15 +24,11 @@ export function rewindBackgroundSurface(session, boundary) {
   }
   if (groups.length === 0) return 0
   let source = null
-  let turn = 0
-  let step = 1
   for (let index = nodes.length - 1; index >= 0; index--) {
     const event = bySeq.get(nodes[index])
     const candidate = event && event.data && event.data.message && event.data.message.source
     if (event && event.type === 'assistant/message' && candidate && candidate.kind === 'model') {
       source = candidate
-      turn = Math.max(0, Number(event.data.turn) || 0)
-      step = Math.max(1, Number(event.data.step) || 1)
       break
     }
   }
@@ -39,16 +37,18 @@ export function rewindBackgroundSurface(session, boundary) {
     // This empty replacement is a Tavern surface edit, not provider output;
     // use the same owned source as reply projections (including token metering).
     source = { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' }
-    turn = 1
-    for (const group of groups) for (const seq of group) {
-      turn = Math.max(turn, Number(bySeq.get(seq)?.data?.turn) || 0)
-    }
   }
-  for (const shadowed of groups) replaceSessionSurface(session, 'assistant/message', {
-    turn,
-    step,
-    message: { id: randomUUID(), role: 'assistant', content: [], source }
-  }, { start: shadowed[0], end: shadowed[shadowed.length - 1], sourceEventSeqs: shadowed })
+  // A replacement is appended at the tail of an append-only log, so released V4
+  // reads it against the turn and step that are open *there*, not against the
+  // shadowed range. A rewind that runs after the previous task closed its turn
+  // therefore opens one for the edit and closes it again.
+  withSurfaceEditTurn(session, agent, (turn, step) => {
+    for (const shadowed of groups) replaceSessionSurface(session, 'assistant/message', {
+      turn,
+      step,
+      message: { id: randomUUID(), role: 'assistant', content: [], source }
+    }, { start: shadowed[0], end: shadowed[shadowed.length - 1], sourceEventSeqs: shadowed })
+  })
   return groups.reduce((count, group) => count + group.length, 0)
 }
 
@@ -74,7 +74,7 @@ export function backgroundSuppressedTurns(events) {
   const turns = new Set()
   if (!merged.length) return []
   for (const event of events) {
-    const seq = event.seq, turn = event.data?.turn
+    const seq = event.seq, turn = storyEventTurn(event)
     if (!Number.isSafeInteger(seq) || !Number.isSafeInteger(turn) || turn <= 0) continue
     // Binary search also supports imported histories whose seqs are not sorted.
     let low=0, high=merged.length-1

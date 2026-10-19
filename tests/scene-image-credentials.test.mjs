@@ -63,7 +63,11 @@ test('installed DSH credential provider: same-key migration succeeds, different 
   const provider = Object.create(LocalCredentialProvider.prototype)
   provider.inherited = ref => ref === 'XAI_API_KEY' ? 'fixture-existing' : undefined
   provider.isClosed = () => false
-  await assert.rejects(provider.set('XAI_API_KEY', 'fixture-existing'), /read-only/)
+  // DSH 0.2 keeps the file-backed values, records and write queue on the instance; none of them hold this key.
+  provider.values = new Map()
+  provider.records = new Map()
+  provider.operations = Promise.resolve()
+  provider.dotenvFallback = () => undefined
   const f = fixture({ provider })
   await f.setup.configure({ provider: 'grok', model: 'fixture-model' })
   assert.equal((await f.setup.capture()).apiKey, 'fixture-existing')

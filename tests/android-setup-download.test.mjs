@@ -51,7 +51,7 @@ cp -R "$TEST_ROOT/source/." "$destination/"
     const result = spawnSync(bash, ['-c', 'export PATH="$TEST_ROOT/mock:$PATH"; exec bash "$TEST_SETUP"'], {
       encoding: 'utf8', timeout: 30000,
       env: { ...process.env, TEST_ROOT: shellPath(directory), TEST_SETUP: shellPath(path.join(root, 'android/setup.sh')),
-        DSH_HOME: shellPath(path.join(directory, 'home')), DSH_TAVERN_REPOSITORY: 'test-repository',
+        DSH_HOME: shellPath(path.join(directory, 'home')), DSH_TAVERN_REPOSITORY: 'test-repository', DSH_TAVERN_BRANCH: 'main',
         DSH_TAVERN_TARBALL_URL: pathToFileURL(archive).href },
     })
     assert.equal(result.status, 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`)

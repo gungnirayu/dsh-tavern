@@ -263,11 +263,12 @@ function normalizeOperation(raw, index) {
     if (typeof operation.valueJson !== 'string') throw new Error(label + ' 的 valueJson 必须是 JSON 编码字符串')
     try {
       value = JSON.parse(operation.valueJson, (_key, item) => {
-        if (typeof item === 'number' && !Number.isFinite(item)) throw new Error('非有限数字')
+        if (typeof item === 'number' && !Number.isFinite(item)) throw new RangeError('数字必须有限')
         return item
       })
-    } catch {
-      throw new Error(label + ' 的 valueJson 不是有效 JSON（数字必须有限）')
+    } catch (error) {
+      // Name the path and the usual cause so the retry fixes this operation, not guesses.
+      throw new Error(label + '（' + normalized.path + '）的 valueJson 不是有效 JSON：' + (error instanceof RangeError ? error.message : '无法解析') + '；文本值须带 JSON 双引号，例如 "城市街道"')
     }
   } else {
     // Pending deliveries and older in-flight callers already store decoded values.
@@ -449,7 +450,7 @@ export function projectMvuBackgroundRequest(frame) {
       role: 'assistant',
       regexPlacement: 2,
       content: [{ type: 'text', text: str(output.storyText) }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'mvu-final-story' }
+      source: { kind: 'plugin:dsh-tavern', form: 'mvu-final-story' }
     }],
     // Stable schema and rules precede the per-turn snapshot so the shared background prefix stays cacheable.
     turnContext: [

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { projectWorldBookTemplates, prepareWorldBookRecall } from '../tavern-plugin/lib/domain/worldbook-recall.js'
+import { projectWorldBookTemplates, prepareWorldBookRecall, prepareTemplateWorldbook } from '../tavern-plugin/lib/domain/worldbook-recall.js'
 
 function entry(ref, content, options = {}) {
   return {
@@ -61,4 +61,14 @@ for(const ownsHistory of [false,true])test(`worldbook projection respects runtim
  if(ownsHistory)assert.equal(Object.hasOwn(context,'transcript'),false)
  else assert.deepEqual(context.transcript,[{role:'assistant',content:'old'},{role:'assistant',content:'latest'}])
  assert.equal(result.context,'rendered')
+})
+
+test('only leading @@ lines are template decorators; @@ inside prose stays plain', async () => {
+  const calls = []
+  const runtime = { prepareWorldbook: async entries => { calls.push(entries.length); return { entries: [], scopes: {} } } }
+  const book = (...entries) => ({ view: { displayName: 'book', entries } })
+  await prepareTemplateWorldbook(book(entry('lora', '<lora:style@@@2@@@>')), runtime, {})
+  assert.deepEqual(calls, [], 'inline @@ does not start the template runtime')
+  await prepareTemplateWorldbook(book(entry('ctl', '@@generate_before\nbody', { enabled: false })), runtime, {})
+  assert.deepEqual(calls, [1], 'a disabled decorator entry is still a template controller')
 })

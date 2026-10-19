@@ -37,7 +37,8 @@ setTimeout(()=>server.listen(port,'127.0.0.1',()=>console.log('dsh web: http://1
 process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
 `)
   await writeFile(path.join(bin, 'dsh'), '#!/bin/sh\nexec '+quote(process.execPath)+' '+quote(childScript)+' "$@"\n', { mode: 0o755 })
-  const env = { ...process.env, DSH_HOME: root, DSH_TAVERN_CLI_HOME: root, DSH_TAVERN_PORT: String(port), DSH_TAVERN_NO_OPEN: '1', PATH: bin + path.delimiter + process.env.PATH }
+  // The launcher's checkout may carry a desktop install marker (a developer's own Desktop runs from it); this test is the CLI.
+  const env = { ...process.env, DSH_TAVERN_RUNTIME_HOST: 'cli', DSH_HOME: root, DSH_TAVERN_CLI_HOME: root, DSH_TAVERN_PORT: String(port), DSH_TAVERN_NO_OPEN: '1', PATH: bin + path.delimiter + process.env.PATH }
   const run = action => execute(process.execPath, [launcher, action], { env, timeout: 12000 })
   const firstStart = run('start')
   const firstResult = firstStart.catch(error => error)

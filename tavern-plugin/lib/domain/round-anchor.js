@@ -1,3 +1,4 @@
+import { upgradeReferences, upgradedAnchor } from './session-upgrade-references.js'
 import { sessionEvents } from './session-events.js'
 
 // A story round records where it first entered the native session: the seq of
@@ -8,7 +9,7 @@ import { sessionEvents } from './session-events.js'
 // updating, and nothing has to be guessed from text or event order.
 
 export function roundAnchor(turn, inputEvent, replyEvent) {
-  const anchor = { turn: Number(turn), input: Number(inputEvent?.seq), reply: Number(replyEvent?.seq) }
+  const anchor = { formatVersion: 4, turn: Number(turn), input: Number(inputEvent?.seq), reply: Number(replyEvent?.seq) }
   return Number.isSafeInteger(anchor.turn) && Number.isSafeInteger(anchor.input) && Number.isSafeInteger(anchor.reply) ? anchor : null
 }
 
@@ -26,7 +27,9 @@ function lineage(events) {
     const sources = event?.surfaceOp && typeof event.surfaceOp === 'object' && Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : null
     // Guard cycles from damaged logs: a seq is its own root while being resolved.
     roots.set(seq, new Set([seq]))
-    const result = sources ? new Set(sources.flatMap(source => [...of(source)])) : new Set([seq])
+    // A replacement descends from what it cites and is its own root too, so an
+    // anchor written onto a replacement (native surface repair) resolves as well.
+    const result = sources ? new Set([seq, ...sources.flatMap(source => [...of(source)])]) : new Set([seq])
     roots.set(seq, result)
     return result
   }
@@ -36,9 +39,11 @@ function lineage(events) {
 /** Resolve many anchors against one surface; the lineage is computed once. */
 export function createRoundAnchorResolver({ events, nodes }) {
   const of = lineage(events)
+  const references = upgradeReferences(events)
   const surface = nodes.map(Number)
   return function resolve(anchor) {
     if (!validAnchor(anchor)) return null
+    anchor = upgradedAnchor(anchor, references)
     let input = null, reply = null
     for (const seq of surface) {
       const roots = of(seq)

@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict'
+import { join } from 'node:path'
+
+// A failed or stopped latest round can be cleared back to before it began: the story,
+// variables and earlier rounds stay, the input returns to the box, and play goes on.
+// Learned from huajiao1998/dsh-tavern-sqlite-v2's failed-round cleanup.
+export async function failedTurnCleanupChecks({ page, step, savedChat, output, report }) {
+  const composer = () => page.getByRole('textbox', { name: /发消息|Message/ }).filter({ visible: true }).first()
+  const withdraw = () => page.locator('.dsh-tavern-withdraw-failed').filter({ visible: true }).last()
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+  const story = async () => {
+    const chat = await savedChat()
+    const assistants = chat.messages.filter(message => message.role === 'assistant')
+    const last = assistants.at(-1)
+    const variables = Array.isArray(last.variables) ? last.variables[last.swipeId || 0] : last.variables
+    return { replies: assistants.length, last: String(last.sourceText ?? last.text ?? ''), gold: variables?.stat_data?.gold }
+  }
+  async function clearAndCheck(name, input, start) {
+    const before = await story()
+    await composer().fill(input); await composer().press('Enter')
+    await start()
+    await withdraw().waitFor({ timeout: 30000 })
+    await page.screenshot({ path: join(output, name + '-failed.png') })
+    await withdraw().click()
+    await page.waitForFunction(text => [...document.querySelectorAll('textarea, [contenteditable="true"]')].some(box => (box.value ?? box.textContent) === text), input, { timeout: 15000 })
+    await pause(1000)
+    await page.screenshot({ path: join(output, name + '-cleared.png') })
+    assert.deepEqual(await story(), before, '清除后正文、变量与此前回合保持原样')
+    assert.equal(await withdraw().count(), 0, '清除后不再有待处理的失败轮')
+    await composer().fill('')
+  }
+  await step('普通接口失败的一轮可以清除并撤回输入', async () => {
+    await clearAndCheck('provider-error', 'E2E_PROVIDER_ERROR 推门', async () => {})
+  })
+  await step('手动停止的一轮可以清除并撤回输入', async () => {
+    await clearAndCheck('stopped', 'E2E_SLOW 继续', async () => {
+      await page.getByText('雨一直下', { exact: false }).first().waitFor({ timeout: 15000 })
+      await page.locator('button[aria-label*="Stop" i], button[aria-label*="停止"], button[aria-label*="Interrupt" i], button[aria-label*="中断"]').filter({ visible: true }).last().click()
+    })
+  })
+  await step('清除后照常继续游玩', async () => {
+    const before = await story()
+    await composer().fill('领取任务奖励'); await composer().press('Enter')
+    for (let i = 0; i < 120 && (await story()).replies === before.replies; i++) await pause(500)
+    assert.equal((await story()).replies, before.replies + 1, '清除后可以正常写出下一轮')
+    report.failedTurnCleanup = true
+  })
+}

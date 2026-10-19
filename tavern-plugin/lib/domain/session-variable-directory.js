@@ -38,7 +38,7 @@ export function ensureSessionVariableDirectory(session, chat) {
   if (!entries.length) return null
   return appendSessionEvent(session, 'user/message', {
     id: 'tavern-variable-directory:' + session.id, role: 'user', content: [],
-    source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'snapshot', sections: [{ name,
+    source: { kind: 'plugin:dsh-tavern', form: 'snapshot', sections: [{ name,
       text: '【变量目录】\n以下是初始化后的一次性变量路径与类型索引，不代表当前值，也可能未列全。数组仅列容器。需要最新值或更多路径时，调用 tavern_read_variables 的 list、search 或 read；路径相对于 stat_data。变量由后台维护，前台只读查询。\n' + JSON.stringify(entries) }] }
   }, { surfaceOp: 'append' })
 }

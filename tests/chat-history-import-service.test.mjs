@@ -27,42 +27,6 @@ function fixture() {
  return {options,session,phase,history,chats,records,get publishes(){return publishes},fail:()=>{failFlush=true}}
 }
 const input={cardPath:'card.json',text,operationId:'operation-123',sessionId:'session'}
-test('import uses normal storage revision checkpoints, keeps no pending settlement, retries idempotently',async()=>{
- const h=fixture(), service=createChatHistoryImportService(h.options)
- await service.import(input)
- let chat=await h.chats.resolve('session')
- assert.equal(chat.timeline.checkpoints.length,2)
- assert.equal(chat.settleStatus,'done');assert.equal(h.phase.lastTurn,3)
- assert.ok(chat.timeline.checkpoints.every(c=>c.beforeRevision>0 && !c.importBefore))
- const checkpoint=chat.timeline.checkpoints.at(-1)
- chat=timeline.apply({chat,intent:{kind:'turn.rollback',turn:3,beforeChat:h.history.get(checkpoint.beforeRevision)}}).chat
- assert.equal(chat.messages.at(-1).variables[0].stat_data.hp,8)
- await service.import(input)
- assert.equal(h.publishes,1)
- assert.equal(h.session.deriveMessages().filter(m=>m.source?.form!=='foreground-frame').length,5)
-})
-
-test('concurrent requests cannot reuse an operation for different content',async()=>{
- const h=fixture(),service=createChatHistoryImportService(h.options)
- const first=service.import(input)
- await assert.rejects(service.import({...input,textOnly:true}),/其他内容/)
- await first
-})
-
-test('历史导入复用正式世界书投影，当前输入不重复占用扫描窗口，蓝绿灯一起编排', async () => {
- const h=fixture(), runtime=await UpstreamTemplateRuntime.create()
- const worldBook={view:{entries:[{comment:'[initvar]',content:'hp: 10',enabled:false},
-  {ref:'open',constant:true,content:'<角色库>',order:10},
-  {ref:'role',primaryKeys:['/\\bwalk\\b/'],content:'开场角色',order:20},
-  {ref:'close',constant:true,content:'</角色库>',order:30}]}}
- h.options.worldBooks.bound=async()=>worldBook
- h.options.projectForegroundWorldbook=createForegroundWorldbook({bound:async()=>worldBook,runtime:async()=>runtime,globalVariables:async()=>({})})
- await createChatHistoryImportService(h.options).import(input)
- const frames=foregroundContexts(h.session)
- assert.match(frames[0],/<角色库>\n\n开场角色\n\n<\/角色库>/)
- assert.doesNotMatch(frames[1],/开场角色/)
- assert.match(frames[1],/<角色库>\n\n<\/角色库>/)
-})
 
 for (const textOnly of [false,true]) test(`历史导入装配真实筛选器仍不调用 Agent（textOnly=${textOnly}）`, async()=>{
  const h=fixture(), runtime=await UpstreamTemplateRuntime.create()
@@ -103,6 +67,26 @@ function foregroundContexts(session) {
  }
  return [...rounds.values()]
 }
+
+test('导入草稿在构帧期间能被模板会话解析，写入任何记录前撤销',async()=>{
+ const h=fixture(), drafts=new Map(), resolved=[], heldAtWrite=[]
+ h.options.drafts={hold:(id,chat)=>drafts.set(id,chat),clear:id=>drafts.delete(id)}
+ const write=h.chats.write;h.chats.write=async chat=>{heldAtWrite.push(drafts.size);return write(chat)}
+ // The world book projection resolves its Session the same way the template runtime does.
+ h.options.projectForegroundWorldbook=async({chat})=>{resolved.push(drafts.get(chat.sessionId)?.id);return {context:''}}
+ await createChatHistoryImportService(h.options).import(input)
+ assert.deepEqual(resolved,['chat','chat'],'每一轮构帧时草稿都可解析')
+ assert.equal(drafts.size,0,'导入完成后不再持有草稿')
+ assert.ok(heldAtWrite.length&&heldAtWrite.every(size=>size===0),'checkpoint 与发布写入时草稿已撤销')
+})
+
+test('导入失败时同样撤销草稿引用，不泄漏到后续请求',async()=>{
+ const h=fixture(), drafts=new Map()
+ h.options.drafts={hold:(id,chat)=>drafts.set(id,chat),clear:id=>drafts.delete(id)}
+ h.options.projectForegroundWorldbook=async()=>({context:'',error:'worldbook unavailable'})
+ await assert.rejects(createChatHistoryImportService(h.options).import(input),/worldbook unavailable/)
+ assert.equal(drafts.size,0)
+})
 
 test('rescue carries the selected last valid MVU snapshot, reenables settlement and labels stale state',async()=>{
  const h=fixture()

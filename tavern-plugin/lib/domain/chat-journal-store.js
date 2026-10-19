@@ -580,7 +580,7 @@ export function createChatJournalStore(options = {}) {
     const cached=readCache.get(chatId)
     if(!cached||cached.stamp!==await version(chatId)){
       const selected=await native.readSlice(chatId,[],['id','sessionId','mode','backgroundConfigVersion','conversationFeaturesVersion',
-       'backgroundModelSelection','backgroundModelRevision','imageModelSelection','backgroundTasks','webSearchEnabled','sceneImagesEnabled','cardContextRevision','timeline.participants.background.status'])
+       'backgroundModelSelection','backgroundModelRevision','imageModelSelection','backgroundTasks','webSearchEnabled','sceneImagesEnabled','cardContextRevision','timeline.participants.background.status','mvu.enabled','mvu.owner'])
       if(selected!==null)return selected?projectChatBackgroundConfig(selected.chat):undefined
     }
     const state = await cachedState(chatId)
@@ -937,7 +937,7 @@ export function createChatJournalStore(options = {}) {
 
   // Explicit cutover only: original journals and compatible history remain intact.
   // All current writers share serialize()'s cross-process conversation lock.
-  async function migrateNative(chatId,{onProgress=()=>{},assertCanMigrate=()=>{}}={}){
+  async function upgradeStorage(chatId,{onProgress=()=>{},assertCanMigrate=()=>{}}={}){
     safeChatId(chatId)
     if(!compatible)throw new Error('Migration requires the shared conversation lock')
     await flushMaintenance()
@@ -1082,5 +1082,5 @@ export function createChatJournalStore(options = {}) {
     })
   }
 
-  return Object.freeze({ compact, readRetentionHeader, removeLegacyFiles, detachedUpdate: true, migrateNative, migrateCompatibility, restoreLegacy, read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
+  return Object.freeze({ compact, readRetentionHeader, removeLegacyFiles, detachedUpdate: true, upgradeStorage, migrateCompatibility, restoreLegacy, read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
 }

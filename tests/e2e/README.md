@@ -27,6 +27,21 @@
 
 快照由有缺陷的 v2.6 插件真实玩出：`TAVERN_E2E_HOME=<同一目录> TAVERN_E2E_KEEP=1 TAVERN_E2E_BROKEN_STOP=1 TAVERN_E2E_PLUGIN_SOURCE=<v2.6 检出>/tavern-plugin node tests/e2e/gameplay.mjs --broken-save`，再把该目录的 `profile-data` 打包。会话路径包含家目录，快照在本仓库的 `output/e2e-broken-home` 生成，恢复时必须用同一路径；换机器或仓库位置需按上面的命令重新生成快照。
 
+## 存档优先：模型上下文自愈
+
+`TAVERN_E2E_TIMEOUT_MS=60000 node tests/e2e/gameplay.mjs --native-repair`
+玩两轮后停服，只改存档里最后一轮正文（模型上下文仍是旧的，模拟编辑没同步到模型）。验收：重新打开即按存档修复；下一轮模型实际收到的请求包含存档里的正文、不含旧正文；随后回退、重新生成、编辑正文、继续游玩都无报错，最后存档与模型上下文一致。模型请求记录在 `context-requests.jsonl`。约 150 秒。设计见 `docs/design/native-session-repair.md`。
+
+## 故障后存档仍可用
+
+`TAVERN_E2E_TIMEOUT_MS=60000 node tests/e2e/gameplay.mjs --failure-resilience`
+依次制造：正文因长度上限截断、服务商拦截（一个字没写）、写到一半被掐断、手动停止、生成中服务崩溃重启、重新生成被拦截、回退只写进存档而模型上下文没跟上（停服把原生会话还原到回退前）、模型拒答。每种故障之后都继续发一轮、回退这一轮、重新生成最后一轮、再继续，要求：无报错；下一轮模型请求不带故障残留（被拦截/中断的输入、被回退的那一轮）；存档与模型上下文一致。约 3 分钟。
+
+## 预设页统一导入导出
+
+`TAVERN_E2E_TIMEOUT_MS=60000 node tests/e2e/gameplay.mjs --preset-hub`
+在“预设”标签页选择预设、系统提示词方案和长期偏好，导出成一个文件再导入。验收：三项都作为新方案加入并设为使用中，原有内容不被覆盖；详情能进入原编辑页并返回。约 20 秒。
+
 ## 运行
 
 安装项目依赖并准备 Chromium：
@@ -132,3 +147,5 @@ TAVERN_E2E_WRONG_GOLD=1 TAVERN_E2E_TIMEOUT_MS=10000 pnpm test:e2e
 `node tests/e2e/gameplay.mjs --native-format` 在普通完整游玩流程上增加磁盘格式断言和服务重启恢复：必须直接写入 `conversation-state-v2` 的 `head.json` / `blocks`，不能出现旧 snapshots/journals 或兼容迁移标记。页面变量还必须与独立原生读取器读出的当前世界一致。
 
 `node tests/e2e/gameplay.mjs --native-format --mvu-incremental` 进一步验证 Helper 历史楼、末楼、chat/script 变量、第二页面实时同步、MVU 重算及重启后继续写入。两者都只创建合成新局，不测试迁移。
+
+`node tests/e2e/gameplay.mjs --upgrade-save` 验证 DSH 0.2.1 统一升级：在独立测试环境准备旧版会话日志与 journal 剧情存储，重启后通过“升级存档”入口完成转换，核对旧文件与历史版本，再继续游玩、编辑、回退/撤销、切换预设和重启恢复。该选项替代旧 `--migrate-native`；实际覆盖与异常旧档限制见 `docs/verification/dsh-021-save-upgrade.md`。

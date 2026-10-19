@@ -106,7 +106,7 @@ function modelMessages(messages, now) {
       id: 'phone-' + index + '-' + now.toString(36),
       role: message.role,
       content: [{ type: 'text', text: message.text }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern-phone' }
+      source: { kind: 'plugin:dsh-tavern-phone' }
     }
   })
 }

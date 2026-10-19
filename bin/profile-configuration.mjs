@@ -7,6 +7,7 @@ import {
 import path from 'node:path'
 import { isMap, isScalar, isSeq, parseDocument } from 'yaml'
 import { createDurableFilePromotion } from '../tavern-plugin/lib/durable-file-promotion.js'
+import { hostLinePackages } from './dsh-compatibility.mjs'
 
 export const PROFILE_CONFIGURATION_VERSION = 1
 
@@ -57,17 +58,21 @@ export function mergeProfileManifest({ source, current = {}, pluginPath, dataRoo
   // Desktop and Android ship one of them and drop whatever collides with it;
   // CLI ships none, so a layout the user installed there is left alone.
   const selectedLayout = host === 'android' ? 'dsh-web-mobile' : host === 'desktop' ? 'dsh-pocket' : null
-  const excludedMobileBundles = selectedLayout
+  const excludedHostBundles = selectedLayout
     ? ['dsh-pocket', 'dsh-web-mobile', '@dsh-external/dsh-mobile-nav'].filter(name => name !== selectedLayout)
     : []
+  // Official Desktop loads Tavern in its own process; the old launcher would
+  // start a second server against the same save directory.
+  if (host === 'desktop') excludedHostBundles.push('dsh-tavern-launcher')
+  else excludedHostBundles.push('dsh-profile-bridge')
   const sourceBundles = uniqueStrings(sourceProfile.bundles)
     .map(name => name === 'dsh-web-mobile' ? selectedLayout : name)
-    .filter(name => name && !excludedMobileBundles.includes(name))
+    .filter(name => name && !excludedHostBundles.includes(name))
   const previousManagedBundles = uniqueStrings(currentTavern.managedBundles).length > 0
     ? uniqueStrings(currentTavern.managedBundles)
     : LEGACY_MANAGED_BUNDLES
-  const previousManagedBundleSet = new Set([...previousManagedBundles, ...excludedMobileBundles])
-  const userBundles = uniqueStrings(currentProfile.bundles).filter((name) => !previousManagedBundleSet.has(name))
+  const previousManagedBundleSet = new Set([...previousManagedBundles, ...excludedHostBundles])
+  const userBundles = uniqueStrings(currentProfile.bundles).filter((name) => !previousManagedBundleSet.has(name) && !excludedHostBundles.includes(name))
   const bundles = uniqueStrings(sourceBundles.concat(userBundles))
 
   // Local subpackages and host-specific layouts are development dependencies of
@@ -78,13 +83,16 @@ export function mergeProfileManifest({ source, current = {}, pluginPath, dataRoo
       .map(name => [name, sourceDocument.devDependencies[name]]),
   )
   const sourceDependencies = { ...localDependencies, ...object(sourceDocument.dependencies) }
+  for (const [name, pinned] of Object.entries(hostLinePackages(dshVersion))) {
+    if (sourceDependencies[name] !== undefined) sourceDependencies[name] = pinned.version
+  }
   const currentDependencies = object(currentDocument.dependencies)
   const managedDependencies = sourceBundles.filter((name) => sourceDependencies[name] !== undefined)
   const previousManagedDependencies = uniqueStrings(currentTavern.managedDependencies).length > 0
     ? uniqueStrings(currentTavern.managedDependencies)
     : LEGACY_MANAGED_DEPENDENCIES
   const dependencies = { ...currentDependencies }
-  for (const name of [...previousManagedDependencies, ...excludedMobileBundles]) delete dependencies[name]
+  for (const name of [...previousManagedDependencies, ...excludedHostBundles]) delete dependencies[name]
   for (const name of managedDependencies) {
     const sourceValue = sourceDependencies[name]
     if (typeof sourceValue === 'string' && sourceValue.startsWith('link:./tavern-plugin')) {
@@ -124,13 +132,19 @@ const HOST_OPTIONAL_PACKAGES = ['dsh-pocket', 'dsh-web-mobile', '@dsh-external/d
 export function prepareProfileWorkspace(workspaceText, manifest) {
   const document = parseDocument(String(workspaceText || ''))
   if (document.errors.length > 0) throw new Error(`无法读取 pnpm workspace 配置：${document.errors[0].message}`)
+  // A host-line version replaces the adapted one, so its patch replaces the adapted patch.
+  const pinnedPackages = Object.entries(hostLinePackages(manifest.dshTavern?.dshVersion))
+  const versionSensitive = [...HOST_OPTIONAL_PACKAGES, ...pinnedPackages.map(([name]) => name)]
   for (const key of Object.keys(object(document.toJS()?.patchedDependencies))) {
-    const name = HOST_OPTIONAL_PACKAGES.find(item => key === item || key.startsWith(`${item}@`))
+    const name = versionSensitive.find(item => key === item || key.startsWith(`${item}@`))
     if (!name) continue
     // A user-installed layout may pin another version than the one patched.
     const version = key.slice(name.length + 1)
     const installed = manifest.dependencies?.[name]
     if (!installed || (version && installed !== version)) document.deleteIn(['patchedDependencies', key])
+  }
+  for (const [name, pinned] of pinnedPackages) {
+    if (pinned.patch && manifest.dependencies?.[name] === pinned.version) document.setIn(['patchedDependencies', `${name}@${pinned.version}`], pinned.patch)
   }
   return String(document)
 }
@@ -214,6 +228,25 @@ export function migrateLegacyProfilePatch(currentText, legacyManagedText) {
   }
   current.contents.items = kept
   return removed ? current.toString() : String(currentText)
+}
+
+// First official-desktop install retains both profiles' user additions. The
+// old Tavern profile is read-only; the caller publishes desktop transactionally.
+export function mergeDesktopLegacyProfile(current, legacy) {
+  return { ...legacy, ...current, name: current.name || 'dsh-profile-desktop',
+    dependencies: { ...object(legacy.dependencies), ...object(current.dependencies) },
+    dsh: { ...object(legacy.dsh), ...object(current.dsh), profile: {
+      ...object(legacy.dsh?.profile), ...object(current.dsh?.profile),
+      bundles: uniqueStrings([...(legacy.dsh?.profile?.bundles || []), ...(current.dsh?.profile?.bundles || [])]) } },
+    dshTavern: { ...object(legacy.dshTavern), ...object(current.dshTavern) } }
+}
+
+export function mergeProfilePatchTexts(legacyText, currentText) {
+  const legacy = parsedSequence(legacyText, '旧 Tavern 用户配置')
+  const current = parsedSequence(currentText, '官方 Desktop 用户配置')
+  const known = new Set(current.contents.items.map(semanticKey))
+  current.contents.items.unshift(...legacy.contents.items.filter(row => !known.has(semanticKey(row))))
+  return current.toString()
 }
 
 function defaultTimestamp() {

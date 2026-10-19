@@ -1,7 +1,11 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
 const root = new URL('../', import.meta.url)
-const read = name => readFileSync(new URL(name, root), 'utf8')
+// 0.2.0-rc.2 适配：生成物必须与平台无关。Windows 检出把下面这些 YAML 写成 CRLF，而本文件的
+// name 替换锚定 `\n`，于是 Windows 上生成的 plugin.patch.yml 与 Linux/CI 的不一致：
+// bundle patch 里的 `name: dsh-tavern-plugin` 不被替换，profile patch 因此丢掉
+// `./tavern-plugin/lib/index.js` 这个入口。读入时统一归一为 LF。
+const read = name => readFileSync(new URL(name, root), 'utf8').replace(/\r\n/g, '\n')
 // The host Profile already supplies the Web layer. The standard plugin bundle
 // only adds Tavern and its bundled extensions; relative entry names are anchored by DSH.
 const content = [
@@ -23,5 +27,6 @@ const content = [
 
 const target = new URL('plugin.patch.yml', root)
 if (process.argv.includes('--check')) {
-  if (readFileSync(target, 'utf8') !== content) throw new Error('plugin.patch.yml 已过期，请运行 pnpm build:plugin-package')
+  // 0.2.0-rc.2 适配：换行符是检出产物，不是内容差异，比较前同样归一为 LF。
+  if (readFileSync(target, 'utf8').replace(/\r\n/g, '\n') !== content) throw new Error('plugin.patch.yml 已过期，请运行 pnpm build:plugin-package')
 } else writeFileSync(target, content)

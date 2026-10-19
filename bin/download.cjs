@@ -153,13 +153,46 @@ function runtimeFiles(metadata) {
   return files
 }
 
+// jsDelivr's nodes keep separate caches of the mutable @branch manifest, and a purge is often
+// throttled after a release: ask all of them and keep the newest (CI's release sequence).
+const JSDELIVR_NODES = ['cdn.jsdelivr.net', 'fastly.jsdelivr.net', 'gcore.jsdelivr.net']
+function manifestCandidates(metadataUrl, exact) {
+  const url = new URL(metadataUrl)
+  if (exact || url.hostname !== JSDELIVR_NODES[0] || !/@[^/]+\/dsh-tavern-runtime\.json$/.test(url.pathname)) return [metadataUrl]
+  return JSDELIVR_NODES.map(host => { const each = new URL(url); each.hostname = host; return each.href })
+}
+function compareVersions(left, right) {
+  const parts = value => String(value || '').split(/[-+]/)[0].split('.').map(part => Number(part) || 0)
+  const [a, b] = [parts(left), parts(right)]
+  for (let index = 0; index < 3; index++) if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0)
+  return 0
+}
+async function readManifest({ metadataUrl, exact, minVersion, stallMs, attempts, fetch: request, status = () => {} }) {
+  const urls = manifestCandidates(metadataUrl, exact)
+  const results = await Promise.allSettled(urls.map(async url => {
+    const { bytes } = await download([url], { label: '运行清单', stallMs: Math.min(stallMs, 15000), attempts, fetch: request })
+    const metadata = JSON.parse(bytes.toString('utf8'))
+    runtimeFiles(metadata)
+    return { url, metadata }
+  }))
+  const found = results.filter(result => result.status === 'fulfilled').map(result => result.value)
+  if (!found.length) throw results[0].reason
+  const sequence = item => Number(item.metadata.releaseSequence) || 0
+  const best = found.reduce((newest, item) => sequence(item) > sequence(newest) ? item : newest)
+  if (found.length > 1 && found.some(item => item.metadata.revision !== best.metadata.revision)) status(`下载源各节点版本不一，使用最新的 ${hostOf(best.url)}（v${best.metadata.version || '?'}）`)
+  // Never install code older than this installer: a stale CDN would hand back a release built for another host.
+  if (minVersion && compareVersions(best.metadata.version, minVersion) < 0) {
+    throw Object.assign(new Error(`下载源（jsDelivr）还没更新到 v${minVersion}，当前只有 v${best.metadata.version || '未知'}。请过半小时左右重试；或安装 git 后重试（会直接从 GitHub 下载）。`), { code: 'DSH_TAVERN_CDN_STALE' })
+  }
+  return best.metadata
+}
+
 // Download the runtime files listed by a jsDelivr manifest into `destination`.
 // Files whose bytes already match in `installed` are reused instead of downloaded.
 async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, concurrency = 6, stallMs = 30000,
-  budgetMs = 300000, attempts = 2, status = () => {}, fetch: request, targetCommit = '' } = {}) {
+  budgetMs = 300000, attempts = 2, status = () => {}, fetch: request, targetCommit = '', minVersion = '', exactManifest = false } = {}) {
   const source = hostOf(rootUrl)
-  const { bytes } = await download([metadataUrl], { label: '运行清单', stallMs: Math.min(stallMs, 15000), attempts, fetch: request })
-  const metadata = JSON.parse(bytes.toString('utf8'))
+  const metadata = await readManifest({ metadataUrl, exact: exactManifest, minVersion, stallMs, attempts, fetch: request, status })
   const files = runtimeFiles(metadata)
   // The @main manifest can lag (CDN cache, or CI not yet published). When the app
   // asked for a specific commit, refuse a different one rather than silently
@@ -294,7 +327,8 @@ const seconds = (value, fallback) => (value === undefined ? fallback : Number(va
 
 // CLI used by the installer scripts:
 //   node download.cjs file <destination> [--sha256 H] [--stall S] [--deadline S] [--attempts N] <url>...
-//   node download.cjs runtime <metadata-url> <root-url> <destination> [<installed-dir>] [--stall S] [--budget S]
+//   node download.cjs runtime <metadata-url> <root-url> <destination> [<installed-dir>] [--stall S] [--budget S] [--min-version V]
+//     (DSH_TAVERN_CDN_METADATA_URL set: that manifest only, no other jsDelivr nodes)
 //   node download.cjs proxy-env   prints KEY=VALUE lines to add (Windows system proxy)
 async function main(argv) {
   const [command, ...args] = argv
@@ -312,7 +346,8 @@ async function main(argv) {
     if (!metadataUrl || !rootUrl || !destination) throw new Error('用法：download.cjs runtime <清单 URL> <CDN 根 URL> <目标目录> [已安装目录]')
     const metadata = await downloadRuntime({ metadataUrl, rootUrl: rootUrl.replace(/\/+$/, ''), destination, installed,
       stallMs: seconds(options.stall, 30000), budgetMs: seconds(options.budget, 300000), status,
-      targetCommit: process.env.DSH_TAVERN_TARGET_COMMIT })
+      targetCommit: process.env.DSH_TAVERN_TARGET_COMMIT, minVersion: options['min-version'] || '',
+      exactManifest: Boolean(process.env.DSH_TAVERN_CDN_METADATA_URL) })
     status(`下载代码完成：${metadata.revision.slice(0, 12)}`)
     return
   }
@@ -325,7 +360,7 @@ async function main(argv) {
   throw new Error(`未知命令：${command || '(空)'}`)
 }
 
-module.exports = { download, downloadFile, downloadRuntime, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
+module.exports = { download, downloadFile, downloadRuntime, readManifest, manifestCandidates, compareVersions, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1 })

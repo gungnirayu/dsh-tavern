@@ -61,12 +61,24 @@ function projectCandidateIdentityMacros(value, card, chat) {
   })
 }
 
+// Some models double-escape tool arguments: literal "\\u7a97" text becomes the character.
+export function decodeLiteralUnicodeEscapes(value) {
+  const text = str(value)
+  if (!/\\u[0-9a-fA-F]{4}/.test(text)) return text
+  return text.replace(/(?:\\u[0-9a-fA-F]{4})+/g, run => {
+    try {
+      const decoded = JSON.parse('"' + run + '"')
+      return decoded.isWellFormed() ? decoded : run
+    } catch { return run }
+  })
+}
+
 function validatedChoices(source, scriptMode, logger) {
   const choices = []
   for (const item of Array.isArray(source) ? source : []) {
     if (item === null || typeof item !== 'object') continue
     const type = choiceType(item.type)
-    const text = str(item.text).trim()
+    const text = decodeLiteralUnicodeEscapes(item.text).trim()
     if (type === null || text === '' || choices.some(function (choice) { return choice.text === text })) continue
     choices.push({ type, text })
   }
@@ -270,6 +282,7 @@ export function createCandidateGenerator(options) {
     await waitUntilSettled(chat)
     chat = await store.readChat(chat.id)
     if (chat === undefined) throw new Error('聊天不存在')
+    const expectedTimeline = { branchId: str(chat.timeline?.branchId), revision: Number(chat.timeline?.revision) || 0 }
     const cardPath = str(chat.cardPath || chat.cardId)
     const card = await store.readCard(cardPath, chat)
     if (card === undefined) throw new Error('人物卡不存在: ' + cardPath)
@@ -290,7 +303,7 @@ export function createCandidateGenerator(options) {
     const constantWorldBookContext = preparedWorldbook !== undefined ? preparedWorldbook.context : typeof options.stableWorldBookContext === 'function'
       ? await options.stableWorldBookContext(chat, card) : ''
     const context = await planner.plan({ purpose: 'candidate', card, chat, task, scriptWindow, constantWorldBookContext })
-    taskRun = await tasks.begin(chat, 'candidate', { requestId, bindExistingSession: true, prepareCommit: input.prepareCommit })
+    taskRun = await tasks.begin(chat, 'candidate', { requestId, bindExistingSession: true, prepareCommit: input.prepareCommit, expectedTimeline })
     chat = taskRun.chat
     const duplicate = preparedValue()
     if (duplicate !== null) return duplicate
@@ -311,7 +324,7 @@ export function createCandidateGenerator(options) {
       id: 'choices-' + now().toString(36),
       role: 'user',
       content: [{ type: 'text', text: request }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern' }
+      source: { kind: 'plugin:dsh-tavern' }
     }])
     const research = scriptMode ? scriptResearchAttempt(script, scriptWindow, card, chat) : null
     let submittedChoices = null
@@ -366,6 +379,7 @@ export function createCandidateGenerator(options) {
       persistent: true,
       persistentSessionId,
       rewindTo: participantRequest.rewindTo,
+      rewindFormatVersion: participantRequest.formatVersion,
       webSearchEnabled: chat.webSearchEnabled === true
     }
     async function execute() {

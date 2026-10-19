@@ -154,3 +154,32 @@ export function foregroundFrameText(frame) {
     .filter(Boolean)
     .join('\n\n')
 }
+
+// Where a foreground contribution came from, as plugins see it (docs/plugin-api.md getRequestContext).
+function contributionOrigin(source) {
+  if (source.stage === 'plugin') return 'plugin'
+  if (source.stage === 'context-plan') return 'tavern:' + (str(source.sectionKind) || 'context')
+  if (source.stage === 'runtime-preset') return 'preset'
+  return 'tavern:' + (str(source.stage) || 'other')
+}
+
+/**
+ * The context the latest foreground request prepared for `turn` on the current branch used,
+ * read-only: the player input and each section with its slot and origin. Null when no frame
+ * is kept for that turn (frames of the last 40 preparations are kept).
+ */
+export function foregroundRequestContext(chat, turn) {
+  const branchId = str(chat && chat.timeline && chat.timeline.branchId)
+  const frames = Object.values(chat && typeof chat.foregroundFrames === 'object' && chat.foregroundFrames ? chat.foregroundFrames : {})
+  const frame = frames.filter(item => item && item.kind === 'foreground' && Number(item.turn) === Number(turn) && (!branchId || item.branchId === branchId)).at(-1)
+  if (!frame) return null
+  return {
+    turn: Number(frame.turn),
+    input: str(frame.userInput && frame.userInput.projectedText) || str(frame.userInput && frame.userInput.sourceText),
+    sections: (Array.isArray(frame.contributions) ? frame.contributions : []).map(item => {
+      const source = item && item.source && typeof item.source === 'object' ? item.source : {}
+      const origin = contributionOrigin(source)
+      return { slot: str(item.slot), origin, ...(origin === 'plugin' ? { plugin: str(source.plugin), name: str(source.name) } : {}), text: str(item.text) }
+    })
+  }
+}

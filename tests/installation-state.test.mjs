@@ -197,12 +197,13 @@ test('CLI lock release is PID and generation fenced; a nested CLI cannot release
 test('standalone Unix bootstrap refuses competing lock before installation mutations', { skip: process.platform === 'win32' }, t => {
   const dshHome = home(t)
   const owner = acquireInstallation({ dshHome })
-  writeFileSync(path.join(dshHome, 'settings.yaml'), 'keep: true\n')
-  const result = spawnSync('sh', [path.join(root, 'install.sh')], { encoding: 'utf8', env: { ...process.env, DSH_HOME: dshHome, DSH_TAVERN_HOST: 'desktop', DSH_TAVERN_INSTALL_ATTEMPT: '' } })
+  writeFileSync(path.join(dshHome, 'keep.txt'), 'keep: true\n')
+  // The CLI host needs no desktop app, so the lock is the first thing that can stop it.
+  const result = spawnSync('sh', [path.join(root, 'install.sh')], { encoding: 'utf8', env: { ...process.env, DSH_HOME: dshHome, DSH_TAVERN_HOST: 'cli', DSH_TAVERN_CLI_HOME: dshHome, DSH_TAVERN_INSTALL_ATTEMPT: '' } })
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /INSTALLATION_BUSY/)
   for (const name of ['source-cache', 'apps', 'profiles', 'profile-data', '.dsh-tavern-install-root']) assert.equal(existsSync(path.join(dshHome, name)), false, name)
-  assert.equal(readFileSync(path.join(dshHome, 'settings.yaml'), 'utf8'), 'keep: true\n')
+  assert.equal(readFileSync(path.join(dshHome, 'keep.txt'), 'utf8'), 'keep: true\n')
   assert.equal(readInstallation(dshHome).attemptId, owner.attemptId)
   owner.release()
 })
@@ -214,7 +215,7 @@ test('standalone installer embeddings are current and ownership precedes persist
   assert.ok(unix.indexOf(' acquire --home ') < unix.indexOf("printf 'cli-v1\\n'"))
   assert.ok(unix.indexOf(' acquire --home ') < unix.indexOf('mkdir -p "$(dirname -- "${SOURCE_CACHE}")"'))
   assert.ok(windows.indexOf('$OwnerJson = & node') < windows.indexOf("Set-Content -LiteralPath (Join-Path $DshRoot '.dsh-tavern-install-root')"))
-  assert.ok(windows.indexOf('$OwnerJson = & node') < windows.indexOf('[Environment]::SetEnvironmentVariable'))
+  assert.ok(windows.indexOf('$OwnerJson = & node') < windows.indexOf("[Environment]::SetEnvironmentVariable('Path', $NewUserPath, 'User')"))
 })
 
 test('standalone post-download stages use the real process supervisor to bound hung descendants', { skip: process.platform === 'win32' }, t => {
@@ -324,4 +325,18 @@ test('a retained lock without ownerDone still treats a live owner as a writer', 
   owner.retain('nested profile cleanup unverified')
   age(owner.lockDir, 5 * 60 * 1000)
   assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
+})
+
+test('an unadopted reservation is reclaimed once its launched updater has exited', async t => {
+  const dshHome = home(t)
+  const exited = await child('')
+  const reservation = acquireInstallation({ dshHome, state: 'reserved', pid: 0 })
+  assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
+  reservation.update({ launcherPid: process.pid })
+  assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
+  reservation.update({ launcherPid: exited.pid })
+  assert.equal(readInstallation(dshHome).state, 'reserved')
+  const successor = acquireInstallation({ dshHome })
+  assert.equal(successor.created, true)
+  successor.release()
 })

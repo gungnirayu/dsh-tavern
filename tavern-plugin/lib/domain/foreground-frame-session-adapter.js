@@ -29,7 +29,7 @@ export function createForegroundFrameSessionAdapter(options = {}) {
     const snapshots = snapshot ? [{
       id: makeId() + ':worldbook', role: 'user',
       content: [{ type: 'text', text: snapshot.rendered }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'worldbook-snapshot',
+      source: { kind: 'plugin:dsh-tavern', form: 'worldbook-snapshot',
         worldbookSnapshot: snapshot, trace: { frameId: frame.frameId, turn: frame.turn, operationId: frame.operationId } }
     }] : []
     if (typeof frame.source?.card?.systemPromptText === 'string') {
@@ -37,7 +37,7 @@ export function createForegroundFrameSessionAdapter(options = {}) {
       if (update) snapshots.push({
         id: makeId() + ':card-system-prompt', role: 'user',
         content: [{ type: 'text', text: update.rendered }],
-        source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'card-system-prompt-update',
+        source: { kind: 'plugin:dsh-tavern', form: 'card-system-prompt-update',
           trace: { frameId: frame.frameId, turn: frame.turn, operationId: frame.operationId, ...cardSystemPromptSource(update) } }
       })
     }
@@ -56,8 +56,7 @@ export function createForegroundFrameSessionAdapter(options = {}) {
         role: 'user',
         content: [{ type: 'text', text }],
         source: {
-          kind: 'plugin',
-          plugin: 'dsh-tavern',
+          kind: 'plugin:dsh-tavern',
           form: 'foreground-frame',
           sections,
           trace: {

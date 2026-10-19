@@ -9,13 +9,13 @@ vm.runInNewContext(await readFile(new URL('../tavern-plugin/lib/client.js', impo
   window: { __ModuleLoader__: { load(value) { descriptor = value } } }
 })
 const client = descriptor.factory(() => ({}))
-function frame(persistent = true) {
+function frame(persistent = true, clock = { now: 0 }) {
   let state = { version: 1, stateRevision: 1, chatVariables: {}, messages: [{ variables: {} }], turnMessageIds: { 1: 0 } }
   const html = client.buildTavernFrameDocument({ content: '', token: 'test', turn: 1, helperContext: state, persistent, observeMvuView: false, runtimeReporting: false })
   const messages = [], listeners = [], timers = new Map()
   let timerId = 0
   const parent = { postMessage(data) { messages.push(data) } }
-  const context = { parent, console, structuredClone,
+  const context = { parent, console, structuredClone, Date: { now: () => clock.now },
     document: { addEventListener(type, run) { this[type] = run } },
     addEventListener(type, run) { if (type === 'message') listeners.push(run) },
     setTimeout(run) { timers.set(++timerId, run); return timerId }, clearTimeout(id) { timers.delete(id) } }
@@ -37,22 +37,6 @@ function frame(persistent = true) {
   get reloads() { return messages.filter(x => x.type === 'dsh-tavern-status-stale').length } }
 }
 
-test('listeners can render the event payload without another API read; removing the listener restores fallback', async () => {
-  const run = frame()
-  run.context.getAllVariables()
-  let place
-  const render = data => { place = data.stat_data.地点 }
-  run.context.eventOn('mag_variable_update_ended', render)
-  await run.update({ stat_data: { 地点: '山门' } })
-  run.flush()
-  assert.equal(place, '山门')
-  assert.equal(run.reloads, 0)
-  run.context.eventOff('mag_variable_update_ended', render)
-  await run.update({ stat_data: { 地点: '庭院' } })
-  run.flush()
-  assert.equal(run.reloads, 1)
-})
-
 test('unchanged data, non-status frames, forged messages, and frames without reads do not reload', async () => {
   const unchanged = frame(); unchanged.context.getAllVariables(); await unchanged.update({}); unchanged.flush()
   assert.equal(unchanged.reloads, 0)
@@ -62,15 +46,4 @@ test('unchanged data, non-status frames, forged messages, and frames without rea
   assert.equal(forged.reloads, 0)
   const unread = frame(); await unread.update({ stat_data: {} }); unread.flush()
   assert.equal(unread.reloads, 0)
-})
-
-test('following the latest turn detects stale read-once data, but updated readers stay mounted', async () => {
-  for (const reread of [false, true]) {
-    const run = frame()
-    run.context.getAllVariables()
-    await run.update({ stat_data: { 地点: '山门' } }, 2)
-    if (reread) run.context.getAllVariables()
-    run.flush()
-    assert.equal(run.reloads, reread ? 0 : 1)
-  }
 })

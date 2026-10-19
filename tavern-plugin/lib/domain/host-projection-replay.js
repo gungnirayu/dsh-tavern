@@ -8,7 +8,11 @@ function coldApply(def) {
   const apply = def.apply
   const owned = new WeakSet()
   let lastNodes, lastSystem
-  if (def.key === 'contextBreakdown' && def.stateVersion === 4) return function (state, event) {
+  // 0.2.0-rc.2 适配：dsh-token-meter 的 contextBreakdown 定义 stateVersion 从 4 升到 5
+  // （state schema 未变，仍是 { nodes: [{ seq, heuristicTokens, system }], breakdown }）。
+  // 版本号只表示「可能变了」，因此这里改判 >= 4：真正决定冷折叠能否成立的是下面几行
+  // 对 state 形状的运行时断言，形状不符时一律退回原生 apply。
+  if (def.key === 'contextBreakdown' && def.stateVersion >= 4) return function (state, event) {
     if (event.surfaceOp !== 'append' || !appendTypes.has(event.type)) return apply(state, event)
     if (!Array.isArray(state.nodes) || !state.breakdown) return apply(state, event)
     if (lastNodes !== state.nodes) {

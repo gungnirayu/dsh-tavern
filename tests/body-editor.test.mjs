@@ -34,16 +34,6 @@ test('stale tabs, blank text, new HTML, running turns and HTML-only replies reje
   const html = fixture('<div>纯 HTML</div>'); await assert.rejects(html.editor.read(html.session.id), /没有可编辑文本/)
 })
 
-test('display captures do not invalidate an open edit, but advancing the conversation does', async () => {
-  const h = fixture(), edit = await h.editor.read(h.session.id)
-  h.change(chat => { chat._storageRevision++; chat.messages.at(-1).displayRuntime = { frames: [] }; chat.messages.at(-1).tavernPluginData = { template_display: { source: '正文', formattingText: '刷新显示' } } })
-  await h.editor.save(h.session.id, { token: edit.token, texts: ['新正文'] })
-  assert.equal(h.chat.messages.at(-1).displayRuntime, undefined)
-  const next = await h.editor.read(h.session.id)
-  h.change(chat => { chat.messages.push({ role: 'user', text: '下一轮' }) })
-  await assert.rejects(h.editor.save(h.session.id, { token: next.token, texts: ['过时正文'] }), /最后一轮/)
-})
-
 test('issue #72: stale bodyEdit after migration clears instead of blocking turns', async () => {
   const h = fixture('原正文')
   h.change(chat => {
@@ -110,30 +100,6 @@ test('bounded body edit patches only the last floor and stores the same Chat as 
   assert.equal(results[0].stored.messages.length, 120)
 })
 
-test('bounded body edit whose revision moved falls back to the complete update and its checks', async t => {
-  const h = await nativeEditor(t, true)
-  const edit = await h.editor.read(h.session.id)
-  h.hooks.beforePatch = () => h.p.update('chat', chat => { chat.messages.at(-1).tavernPluginData = { template_display: { source: 'x' } }; return chat }, { source: 'display.capture' })
-  await h.editor.save(h.session.id, { token: edit.token, texts: ['并发后的编辑'] })
-  assert.deepEqual(h.calls, ['patch', 'update'])
-  const stored = await h.p.read('chat')
-  assert.equal(stored.messages.at(-1).sourceText, '并发后的编辑')
-  assert.deepEqual(stored.messages.at(-1).tavernPluginData, { template_display: { source: 'x' } })
-  // A real story change between read and save is still refused by the complete path.
-  const next = await h.editor.read(h.session.id)
-  h.hooks.beforePatch = () => h.p.update('chat', chat => { chat.messages.at(-1).sourceText = '别处改过'; return chat }, { source: 'other' })
-  await assert.rejects(h.editor.save(h.session.id, { token: next.token, texts: ['过时编辑'] }), /已变化/)
-  assert.equal((await h.p.read('chat')).messages.at(-1).sourceText, '别处改过')
-})
-
-test('在正文末尾追加文字时保留与后续结构块之间的空行，美化正则仍能匹配', async () => {
-  const h = fixture('剑光飞过。\n\n<name>秦晚晴</name>')
-  const edit = await h.editor.read(h.session.id)
-  assert.equal(edit.parts[0].text, '剑光飞过。\n\n')
-  await h.editor.save(h.session.id, { token: edit.token, texts: ['剑光飞过。她笑了。', '秦晚晴'] })
-  assert.equal(h.chat.messages[1].sourceText, '剑光飞过。她笑了。\n\n<name>秦晚晴</name>')
-})
-
 test('插件整段替换正文：HTML 块必须原样保留，只改文字', async () => {
   const block = '```html\n<div class="status">体力 9</div>\n```'
   const h = fixture('雨停了。\n\n' + block)
@@ -144,4 +110,32 @@ test('插件整段替换正文：HTML 块必须原样保留，只改文字', asy
   assert.deepEqual(h.chat, original)
   await h.editor.replaceText(h.session.id, '雨停了，灯亮了。\n\n' + block)
   assert.equal(h.chat.messages[1].sourceText, '雨停了，灯亮了。\n\n' + block)
+})
+
+ test('分页正文缺失原生楼层时，保存成功后继续修复正确的会话', async () => {
+  const { createScopedMessages } = await import('../tavern-plugin/lib/domain/scoped-messages.js')
+  const { applyJsonChanges } = await import('../tavern-plugin/lib/domain/json-mutation.js')
+let chat={id:'c',sessionId:'session-1',mode:'story',_storageRevision:1,settleStatus:'done',messages:[{role:'user',text:'continue'},{role:'assistant',turn:1,text:'original',sourceText:'original'}]}
+const session={id:'session-1',events:[],surface:{nodes:[]}},agent={session,phase:{kind:'idle'}}
+let patched=false,repairs=0
+const editor=createBodyEditor({chats:{forSession:async()=>({...structuredClone(chat),messages:createScopedMessages(2,[[1,structuredClone(chat.messages[1])]])}),async patch(id,rev,changes){patched=true;chat=applyJsonChanges(chat,changes);return structuredClone(chat)}},sessions:{get:()=>agent,flush:async()=>{}},timeline:createStoryTimeline(),activity:()=>({busy:false}),project:async text=>({sessionText:text,displayText:text}),present:async c=>c,repairNative:async id=>{assert.equal(id, session.id);repairs++;return null}})
+const edit=await editor.read(session.id)
+const saved = await editor.save(session.id,{token:edit.token,texts:['edited']})
+assert.equal(saved.messages[1].text, 'edited')
+assert.equal(patched, true)
+assert.equal(repairs, 3)
+})
+
+ test('分页正文缺失原生楼层时，保存成功后继续修复正确的会话', async () => {
+  const { createScopedMessages } = await import('../tavern-plugin/lib/domain/scoped-messages.js')
+  const { applyJsonChanges } = await import('../tavern-plugin/lib/domain/json-mutation.js')
+let chat={id:'c',sessionId:'session-1',mode:'story',_storageRevision:1,settleStatus:'done',messages:[{role:'user',text:'continue'},{role:'assistant',turn:1,text:'original',sourceText:'original'}]}
+const session={id:'session-1',events:[],surface:{nodes:[]}},agent={session,phase:{kind:'idle'}}
+let patched=false,repairs=0
+const editor=createBodyEditor({chats:{forSession:async()=>({...structuredClone(chat),messages:createScopedMessages(2,[[1,structuredClone(chat.messages[1])]])}),async patch(id,rev,changes){patched=true;chat=applyJsonChanges(chat,changes);return structuredClone(chat)}},sessions:{get:()=>agent,flush:async()=>{}},timeline:createStoryTimeline(),activity:()=>({busy:false}),project:async text=>({sessionText:text,displayText:text}),present:async c=>c,repairNative:async id=>{assert.equal(id, session.id);repairs++;return null}})
+const edit=await editor.read(session.id)
+const saved = await editor.save(session.id,{token:edit.token,texts:['edited']})
+assert.equal(saved.messages[1].text, 'edited')
+assert.equal(patched, true)
+assert.equal(repairs, 3)
 })

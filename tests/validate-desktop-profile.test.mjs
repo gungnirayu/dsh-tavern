@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import test from 'node:test'
+import { promisify } from 'node:util'
+
+const run = promisify(execFile)
+const script = new URL('../bin/validate-desktop-profile.mjs', import.meta.url).pathname
+const bridge = new URL('../tavern-plugin/packages/dsh-profile-bridge', import.meta.url).pathname
+// The host's own profile loader validates the profile: a real DSH install provides it.
+const hostRoot = process.env.DSH_BOOT_MODULE ? process.env.DSH_BOOT_MODULE.split(path.sep + 'node_modules' + path.sep)[0] : ''
+
+// ~/.dsh is shared by the official DeepSeek Harness and the community DSH NEXT. A desktop profile
+// made by one lists bundles only that app ships; the other cannot resolve them.
+async function profileWith(t, bundles, name = 'desktop') {
+  const home = await mkdtemp(path.join(tmpdir(), 'tavern-validate-profile-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const dir = path.join(home, 'profiles', name)
+  await mkdir(path.join(dir, 'node_modules'), { recursive: true })
+  await cp(bridge, path.join(dir, 'node_modules', 'dsh-profile-bridge'), { recursive: true })
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'desktop', private: true, dsh: { profile: { bundles } } }))
+  await writeFile(path.join(dir, 'cordis.patch.yml'), '[]\n')
+  return { home, dir }
+}
+const env = home => ({ ...process.env, DSH_HOME: home, DSH_TAVERN_HOST_DEPENDENCY_ANCHOR: path.join(hostRoot, 'package.json') })
+
+test('原版 Desktop 切换入口：另一个桌面应用自带的插件包只提示，酒馆自己的配置仍然严格', { skip: !hostRoot && '需要 DSH_BOOT_MODULE 指向一套 DSH' }, async t => {
+  const { home, dir } = await profileWith(t, ['dsh-profile-bridge', '@agents-anywhere/dsh-bridge-next'])
+  const { stdout } = await run(process.execPath, [script, dir], { env: env(home) })
+  assert.match(stdout, /@agents-anywhere\/dsh-bridge-next 由另一个桌面应用提供/)
+  assert.match(stdout, /桌面版配置验证通过/)
+
+  // The same unresolved bundle in Tavern's own profile is a real installation failure.
+  const own = await profileWith(t, ['dsh-profile-bridge', '@agents-anywhere/dsh-bridge-next'], 'tavern')
+  await assert.rejects(run(process.execPath, [script], { env: env(own.home) }), /dsh-bridge-next/)
+})
+
+test('原版 Desktop 切换入口：酒馆加进去的 dsh-profile-bridge 加载不了仍是失败', { skip: !hostRoot && '需要 DSH_BOOT_MODULE 指向一套 DSH' }, async t => {
+  const { home, dir } = await profileWith(t, ['dsh-profile-bridge'])
+  await rm(path.join(dir, 'node_modules', 'dsh-profile-bridge'), { recursive: true })
+  await assert.rejects(run(process.execPath, [script, dir], { env: env(home) }), /dsh-profile-bridge/)
+})

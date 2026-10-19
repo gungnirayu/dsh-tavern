@@ -2343,6 +2343,9 @@ window.__ModuleLoader__.load({
 				"}"
 			];
             parts.push('html[data-dsh-material="none"], html[data-dsh-material="none"] *, html[data-dsh-material="none"] *::before, html[data-dsh-material="none"] *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }');
+            // DSH 0.2 menus paint a see-through fill meant to sit on that blur; with the blur
+            // gone the page shows through the menu, so give them the opaque menu colour.
+            parts.push('html[data-dsh-material="none"] body { --dsw-menu-surface-fill: var(--dsw-specific-menu, var(--dsw-alias-bg-base)); }');
 			const el = document.createElement("style");
 			el.id = MATERIAL_CSS_SOURCE;
 			el.textContent = parts.join("\n");

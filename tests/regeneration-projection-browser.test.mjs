@@ -58,3 +58,38 @@ test('连续三次重生成期间局部挂载，再发送新输入：不串轮�
     assert.ok(result.every(Boolean), JSON.stringify(result))
   } finally { await browser.close() }
 })
+
+test('重生成期间只藏会被替代的正文：玩家的输入留在页面上', async () => {
+  const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
+  const browser = await chromium.launch({ headless: true })
+  try {
+    const page = await browser.newPage()
+    await page.setContent('<main></main>')
+    const result = await page.evaluate(source => {
+      window.__ModuleLoader__ = { load(d) { window.client = d.factory(() => ({})) } }
+      window.eval(source)
+      const root = document.querySelector('main')
+      const projection = client.createTurnHistoryProjection({ root: () => root, storage: () => ({ getItem: () => '{}' }) })
+      function row(turn, kind, text) {
+        const node = document.createElement('div')
+        node.setAttribute('data-chat-flow-kind', kind)
+        node.setAttribute('data-chat-turn', String(turn))
+        node.textContent = text
+        root.append(node)
+        return node
+      }
+      const input = row(1, 'user', '第一轮输入')
+      const body = row(1, 'assistant-step', '第一轮正文')
+      const tail = row(1, 'turn-tail', '')
+      const hidden = node => getComputedStyle(node).display === 'none'
+      projection.apply('s', [], {}, [1])
+      const replacing = { input: hidden(input), body: hidden(body), tail: hidden(tail) }
+      // 提交或中止后这一楼恢复正常：不能留下任何隐藏残留。
+      projection.apply('s', [], {}, [])
+      const restored = { input: hidden(input), body: hidden(body), tail: hidden(tail) }
+      return { replacing, restored }
+    }, source)
+    assert.deepEqual(result.replacing, { input: false, body: true, tail: true }, '只藏正文和尾行，输入必须留着')
+    assert.deepEqual(result.restored, { input: false, body: false, tail: false })
+  } finally { await browser.close() }
+})

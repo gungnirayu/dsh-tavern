@@ -5,10 +5,10 @@ import assert from 'node:assert/strict'
 export function stubFrameDependencyImports(script) {
   if (!script.includes('import(')) return script
   const dependencies = []
-  const stubbed = script.replace(/import\(new URL\("\/api\/dsh-tavern\/vendor\/runtime-assets\/(zod)\/index\.mjs",document\.baseURI\)\.href\)/g, (_, name) => {
+  const stubbed = script.replace(/import\(new URL\("\/api\/dsh-tavern\/vendor\/runtime-assets\/(zod|yaml)\/index\.mjs",document\.baseURI\)\.href\)/g, (_, name) => {
     dependencies.push(name)
     return 'Promise.resolve({})'
   })
-  assert.deepEqual(dependencies, ['zod'], 'Update the fixture for the current frame dependency imports')
+  assert.deepEqual(dependencies, ['zod', 'yaml'], 'Update the fixture for the current frame dependency imports')
   return stubbed
 }

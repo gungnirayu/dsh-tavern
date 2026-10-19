@@ -9,9 +9,9 @@
 				onError: function (event) { event.currentTarget.hidden = true; }
 			}) : React.createElement("span", { className: "dsh-tavern-card-thumb placeholder", "aria-hidden": "true" }, Array.from(String(card && card.name || "?").replace(/^[^\p{L}\p{N}]+/u, ""))[0] || "?");
 			return React.createElement(React.Fragment, null, image, React.createElement("span", { className: "dsh-tavern-card-list-copy" },
-				React.createElement("b", null, card.name),
+				React.createElement("b", { title: card.name }, card.name),
 				props.showPath && card.path ? React.createElement("span", { title: card.path, style: { overflowWrap: "anywhere" } }, "文件：" + String(card.path).replace(/\\/g, "/").split("/").pop()) : null,
-				React.createElement("span", { className: card.readError ? "dsh-tavern-dock-error" : undefined }, card.readError || props.detail),
+				card.readError || props.detail ? React.createElement("span", { className: card.readError ? "dsh-tavern-dock-error" : undefined }, card.readError || props.detail) : null,
 				props.extra ? React.createElement("span", null, props.extra) : null
 			));
 		}
@@ -163,9 +163,15 @@
 			return item.cardPath ? "card:" + item.cardPath : "unbound:" + (item.chatId || item.sessionId);
 		}
 
+		// Latest of opened, saved, or replied to (the live session summary), for "most recent" orderings.
+		function tavernHistoryActivity(item, summaries = {}) {
+			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
+			return Math.max(timestamp(item.lastOpenedAt), timestamp(item.updatedAt), timestamp(summaries[item.sessionId]?.updatedAt));
+		}
+
 		function groupTavernHistory(history, summaries = {}) {
 			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
-			function activity(item) { return Math.max(timestamp(item.lastOpenedAt), timestamp(item.updatedAt), timestamp(summaries[item.sessionId]?.updatedAt)); }
+			function activity(item) { return tavernHistoryActivity(item, summaries); }
 			// Groups follow the latest activity; conversations inside keep their creation order.
 			const groups = new Map();
 			for (const item of history.slice().sort((a, b) => timestamp(b.createdAt) - timestamp(a.createdAt))) {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -24,16 +24,30 @@ test('清单损坏时保留原文件，不自动重置用户配置', async (t) =
   assert.equal(await readFile(paths.config, 'utf8'), 'invalid: [')
 })
 
-test('实际 Unix 安装脚本更新程序两次，用户工具、清单和 Skill 保持原样', { skip: process.platform === 'win32' }, async (t) => {
+// The desktop installer runs on the host app's own Node, pnpm and DSH (official DeepSeek Harness or the
+// community DSH NEXT). A minimal community-layout app stands in for it: package name, a DSH entry that
+// prints the adapted version, a no-op pnpm, and this test's Node.
+async function fakeDesktopApp(root) {
+  const app = path.join(root, 'Fake DSH.app/Contents')
+  const runtime = path.join(app, 'Resources/runtime', process.arch, 'primary-runtime/dependencies')
+  await mkdir(path.join(app, 'MacOS'), { recursive: true })
+  await writeFile(path.join(app, 'MacOS/Fake DSH'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  await mkdir(path.join(app, 'Resources/app/lib'), { recursive: true })
+  await writeFile(path.join(app, 'Resources/app/package.json'), '{"name":"dsh-plugin-desktop"}')
+  await writeFile(path.join(app, 'Resources/app/lib/desktop-cli.js'), 'console.log(' + JSON.stringify(adaptedDshVersion) + ')\n')
+  await mkdir(path.join(runtime, 'node/bin'), { recursive: true })
+  await symlink(process.execPath, path.join(runtime, 'node/bin/node'))
+  await mkdir(path.join(runtime, 'pnpm/bin'), { recursive: true })
+  await writeFile(path.join(runtime, 'pnpm/bin/pnpm.mjs'), '')
+  return path.join(app, 'MacOS/Fake DSH')
+}
+
+test('实际 Unix 安装脚本更新程序两次，用户工具、清单和 Skill 保持原样', { skip: process.platform !== 'darwin' && '桌面版安装只支持 macOS 与 Windows' }, async (t) => {
   const { root, dataRoot, paths } = await fixture(t)
   const source = path.join(root, 'source')
-  const mockBin = path.join(root, 'mock-bin')
   const app = path.join(root, 'apps/dsh-tavern')
   await mkdir(path.join(source, 'bin'), { recursive: true })
-  await mkdir(mockBin)
-  for (const command of ['pnpm', 'dsh']) {
-    await writeFile(path.join(mockBin, command), '#!/bin/sh\n' + (command === 'dsh' ? `echo '${adaptedDshVersion}'\n` : '') + 'exit 0\n', { mode: 0o755 })
-  }
+  const desktop = await fakeDesktopApp(root)
   // Mock external package installation and the launcher; run the actual release
   // download/extract/copy path against a local Git repository (no network).
   await writeFile(path.join(source, 'package.json'), '{"name":"user-extension-update-fixture"}')
@@ -42,7 +56,9 @@ test('实际 Unix 安装脚本更新程序两次，用户工具、清单和 Skil
     await mkdir(path.dirname(path.join(source, file)), { recursive: true })
     await writeFile(path.join(source, file), '')
   }
-  for (const file of ['bin/dsh-compatibility.mjs', 'config/dsh-compatibility.json']) {
+  // The installer runs the downloaded release's version check, which reads the allowlist module.
+  for (const file of ['bin/dsh-compatibility.mjs', 'config/dsh-compatibility.json', 'tavern-plugin/lib/domain/host-compatibility.js']) {
+    await mkdir(path.dirname(path.join(source, file)), { recursive: true })
     await writeFile(path.join(source, file), await readFile(new URL('../' + file, import.meta.url)))
   }
   const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -66,7 +82,7 @@ test('实际 Unix 安装脚本更新程序两次，用户工具、清单和 Skil
     execFileSync('sh', [fileURLToPath(new URL('../install.sh', import.meta.url))], {
       encoding: 'utf8', timeout: 30000,
       env: {
-        ...process.env, PATH: mockBin + path.delimiter + process.env.PATH,
+        ...process.env, DSH_DESKTOP_APP_EXECUTABLE: desktop,
         DSH_HOME: root, DSH_TAVERN_HOST: 'desktop', DSH_TAVERN_APP_DIR: app,
         DSH_TAVERN_GIT_URL: source, DSH_TAVERN_TARGET_COMMIT: git('rev-parse', 'HEAD'),
         DSH_TAVERN_CDN_METADATA_URL: 'data:,invalid', DSH_TAVERN_ARCHIVE_URL: 'file:///nonexistent-tavern-test-archive',

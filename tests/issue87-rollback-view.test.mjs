@@ -26,13 +26,14 @@ test('cached rollback controls follow the stored Session surface without resumin
     readChanges:async()=>null,activity:()=>({busy:false}),trace:context.requestPerformance,foregroundRunning:()=>false,synchronize:()=>{}})
   const run=reader.read
   assert.equal((await run('s')).canRollback,true)
+  // The save decides availability; a surface that lost the round is repaired on rollback.
   session.surface.nodes=[]
-  assert.equal((await run('s')).canRollback,false)
+  const lost=await run('s')
+  assert.equal(lost.canRollback,true)
+  assert.equal(lost.rollbackUnavailableReason,'')
   session.surface.nodes=[0,1]
   assert.equal((await run('s')).canRollback,true)
+  // Rollback resumes an unloaded session itself.
   loaded=false
-  const missing=await run('s')
-  assert.equal(missing.canRollback,false)
-  assert.match(missing.rollbackUnavailableReason,/尚未加载/)
-  assert.doesNotMatch(missing.rollbackUnavailableReason,/已不在可回退/)
+  assert.equal((await run('s')).canRollback,true)
 })

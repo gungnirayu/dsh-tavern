@@ -282,7 +282,8 @@ export function createUserPreferenceProfile({ store, now = Date.now }) {
           const revision = Math.max(...value.profiles.map(item => integer(item.data.revision))) + 1
           const timestamp = now()
           const content = input.content.trim()
-          data = { ...data, revision, confirmed: { ...normalizeDraft({ summary: content, injectionText: content }, revision, timestamp), profileRevision: revision, confirmedAt: timestamp }, updatedAt: timestamp }
+          const summary = typeof input.summary === 'string' && input.summary.trim() ? input.summary.trim() : content
+          data = { ...data, revision, confirmed: { ...normalizeDraft({ summary, injectionText: content }, revision, timestamp), profileRevision: revision, confirmedAt: timestamp }, updatedAt: timestamp }
         }
         value.profiles.push({ id, name, data })
         value.selectedId = id

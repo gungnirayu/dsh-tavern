@@ -1,5 +1,5 @@
-import { parseExpressionAt } from 'acorn'
 import { checkMvuCard, looksLikeMvuCard } from './mvu-card-check.js'
+import { parseJsonWithLocation } from './resource-validation.js'
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 // Static validation only: never execute card scripts or rewrite the document.
@@ -7,24 +7,9 @@ export function validateCardText(text) {
   const errors = [], warnings = []
   const issue = (path, message) => errors.push({ path, message })
   const result = () => ({ valid: errors.length === 0, errors, warnings })
-  let raw
-  try { raw = JSON.parse(text) } catch (error) {
-    // V8 messages contain document excerpts. Return location only.
-    const position = /position (\d+)/.exec(error.message)
-    const line = /line (\d+) column (\d+)/.exec(error.message)
-    let location = ''
-    if (position) {
-      const prefix = text.slice(0, Number(position[1]))
-      location = '（第 ' + prefix.split('\n').length + ' 行，第 ' + (prefix.length - prefix.lastIndexOf('\n')) + ' 列）'
-    } else if (line) location = '（第 ' + line[1] + ' 行，第 ' + line[2] + ' 列）'
-    if (!location) {
-      try { parseExpressionAt(text, 0, { ecmaVersion: 2020, locations: true }) } catch (syntax) {
-        if (syntax.loc) location = '（第 ' + syntax.loc.line + ' 行，第 ' + (syntax.loc.column + 1) + ' 列）'
-      }
-    }
-    issue('/', 'JSON 语法错误' + location)
-    return result()
-  }
+  const parsed = parseJsonWithLocation(text)
+  if (parsed.error) { issue('/', parsed.error); return result() }
+  let raw = parsed.value
   let prefix = ''
   if (object(raw) && raw.kind === 'dsh-tavern-character-workspace') {
     if (raw.version !== 1) issue('/version', '不支持的人物卡工作版版本')

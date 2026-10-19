@@ -19,6 +19,8 @@ import { createMvuSettlementReconciler } from '../tavern-plugin/lib/domain/mvu-s
 import { LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission } from '../tavern-plugin/lib/domain/story-ledger.js'
 import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, lastSubmittedPosture, normalizePostureSubmission } from '../tavern-plugin/lib/domain/posture-submission.js'
 import { CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL } from '../tavern-plugin/lib/domain/character-design-document.js'
+import { createPostureItem, plainSettlementPlan, runPipelineStages } from '../tavern-plugin/lib/domain/background-pipeline.js'
+import { producerSource } from '../tavern-plugin/lib/domain/message-source.js'
 
 const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
 function section(start, end) {
@@ -51,6 +53,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
     collectMvuHelperContext, normalizeBackgroundTasks, pendingMvuSettlementState, structuredClone, Date, AbortController, console: { log() {}, error() {} },
     str: value => value == null ? '' : String(value),
+    producerSource,
     backgroundTasks: tasks, storyTimeline: timeline,
     readChat: store.readChat, chatForSession: store.readChat, writeChat: store.writeChat,
     patchChat: async (_id,revision,changes)=>{
@@ -76,8 +79,11 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission,
     conversationRegistry: { list: async () => [] }, ctx: { effect() {} },
     mvuSettlement: { settleVariables: async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } }) },
-    pluginApi: { replaceSettlement: async () => null }
+    pluginApi: { replaceSettlement: async () => null, checkVersions: async () => {} }
   })
+  sandbox.postureItem = createPostureItem({ prompt: () => sandbox.runtimePrompt('posture-settlement'), tool: POSTURE_SUBMIT_TOOL })
+  sandbox.plainSettlementPlan = plainSettlementPlan
+  sandbox.runPipelineStages = runPipelineStages
   sandbox.mvuReceiptsOf = createSessionStateView({activity:chat=>tasks.activity(chat),evidence:()=>({})}).receipts
   vm.runInContext(section('  function pendingMvuTarget(', '  async function mvuUpdateRules('), sandbox)
   vm.runInContext(section('  async function runSettlement(', '  const mvuSettlementReconciler'), sandbox)
@@ -418,11 +424,12 @@ test('插件结算任务：结算前的在结算待办时运行，结算后的�
   h.sandbox.pluginApi.runSettlementTasks = async ({ gameId, phase, around }) => {
     const activity = h.tasks.activity(h.get())
     seen.push(phase + ':' + gameId + ':' + activity.role + ':' + activity.phase)
-    if (around) await around(async () => { const inside = h.tasks.activity(h.get()); seen.push('inside:' + inside.role + ':' + inside.busy) })
+    if (around) await around(async operationId => { const inside = h.tasks.activity(h.get()); assert.equal(operationId, inside.operationId); seen.push('inside:' + inside.role + ':' + inside.busy) })
   }
   const jobs = createSettlementJobs({ run: (...args) => h.sandbox.runSettlementCycle(...args), onSettled: () => {} })
   await jobs.start('chat')
-  assert.deepEqual(seen, ['before:session:settlement:pending', 'tavern', 'after:session:settlement:idle', 'inside:plugin-task:true'])
+  // Parallel tasks start together with Tavern's own settlement (they run alongside it).
+  assert.deepEqual(seen, ['before:session:settlement:pending', 'parallel:session:settlement:pending', 'tavern', 'after:session:settlement:idle', 'inside:plugin-task:true'])
   assert.equal(h.get().settleStatus, 'done')
   assert.equal(h.tasks.activity(h.get()).busy, false, 'the plugin-task operation is closed afterwards')
   jobs.dispose()
@@ -440,7 +447,7 @@ test('手动插件任务：登记为独占的后台任务，跑完后关闭；�
   const calls = []
   h.sandbox.pluginSettlementProgress = { begin: () => () => {} }
   h.sandbox.pluginApi.manualTaskFor = async (gameId, key, input) => { calls.push([gameId, key, input]) }
-  h.sandbox.pluginApi.runManualTask = async () => { await new Promise(resolve => { release = resolve }); return true }
+  h.sandbox.pluginApi.runManualTask = async ({ operationId }) => { assert.equal(operationId, h.tasks.activity(h.get()).operationId); await new Promise(resolve => { release = resolve }); return true }
   assert.deepEqual(JSON.parse(JSON.stringify(await h.sandbox.startPluginTask('session', 'alpha:summary', '人物'))), { started: true })
   assert.deepEqual(calls, [['session', 'alpha:summary', '人物']])
   const busy = h.tasks.activity(h.get())
@@ -453,4 +460,77 @@ test('手动插件任务：登记为独占的后台任务，跑完后关闭；�
   await job
   assert.equal(h.tasks.activity(h.get()).busy, false)
   assert.equal(jobs.size, 0)
+})
+
+// Guards for the background task pipeline refactor (docs/design/background-task-pipeline.md):
+// what Tavern's own settlement asks of the model must stay byte-identical.
+function settlementRequest(input) {
+  return JSON.parse(JSON.stringify({ task: input.task, persistent: input.persistent, system: input.system, tools: (input.tools || []).map(tool => tool.name),
+    messages: (input.messages || []).map(message => message.content.map(block => block.text).join('')), maxToolCalls: input.maxToolCalls, temperature: input.temperature,
+    turn: input.turn, backgroundTasks: input.backgroundTasks }))
+}
+
+test('管线护栏：普通卡开姿势时，结算请求的提示词、工具与结束条件逐字不变', async () => {
+  const h = await harness({ beginRunning: false, mvu: false })
+  h.sandbox.runtimePrompt = name => '〈' + name + '〉'
+  const requests = []
+  h.sandbox.backgroundAgentRunner.run = async input => {
+    requests.push(settlementRequest(input))
+    assert.equal(input.stopToolsWhen(), false)
+    await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } })
+    assert.equal(input.stopToolsWhen(), true)
+    assert.equal(input.acceptWithoutText(), true)
+    return { text: '' }
+  }
+  await h.sandbox.queueSettlement('chat')
+  assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '〈posture-settlement〉\n\nposture_submit 是本任务最后一步。', tools: ['posture_submit'],
+    messages: ['【本轮正文】\n门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false } }])
+  assert.equal(h.get().settleStatus, 'done')
+})
+
+test('管线护栏：只开台词标注时照样跑结算（不提交姿势）；全部关闭时不调用模型也提交', async () => {
+  const cast = await harness({ beginRunning: false, mvu: false })
+  await cast.store.writeChat({ ...cast.get(), backgroundTasks: { posture: false, variables: true } })
+  cast.sandbox.settlementItems = { wanted: async () => true }
+  const requests = []
+  cast.sandbox.backgroundAgentRunner.run = async input => { requests.push(settlementRequest(input)); assert.equal(input.acceptWithoutText(), false); return { text: '完成' } }
+  await cast.sandbox.queueSettlement('chat')
+  assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '本轮不生成或提交姿势。完成启用的后台任务后简短回复完成。\n\n', tools: [],
+    messages: ['【本轮正文】\n门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false } }])
+  assert.equal(cast.get().settleStatus, 'done')
+
+  const off = await harness({ beginRunning: false, mvu: false })
+  await off.store.writeChat({ ...off.get(), backgroundTasks: { posture: false, variables: true } })
+  off.sandbox.settlementItems = { wanted: async () => false }
+  let runs = 0
+  off.sandbox.backgroundAgentRunner.run = async () => { runs++; return { text: '' } }
+  await off.sandbox.queueSettlement('chat')
+  assert.equal(runs, 0)
+  assert.equal(off.get().settleStatus, 'done')
+})
+
+test('管线护栏：官方 MVU 卡的变量结算收到的提示词与开关逐字不变', async () => {
+  const h = await harness({ beginRunning: false, mvu: true })
+  h.sandbox.runtimePrompt = name => '〈' + name + '〉'
+  const inputs = []
+  h.sandbox.mvuSettlement.settleVariables = async input => {
+    inputs.push(JSON.parse(JSON.stringify({ system: input.system, backgroundTasks: input.backgroundTasks, guidance: input.guidance, preserveForeground: input.preserveForeground,
+      storyText: input.storyText, turn: input.turn, messageId: input.messageId, swipeId: input.swipeId, webSearchEnabled: input.webSearchEnabled })))
+    return { receipt: { version: 1, status: 'unchanged', changes: [] } }
+  }
+  await h.sandbox.queueSettlement('chat')
+  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false }, guidance: '',
+    preserveForeground: false, storyText: '门开了', turn: 2, messageId: 1, swipeId: 0, webSearchEnabled: false }])
+})
+
+test('管线护栏：一轮的阶段顺序是前置任务、主结算、后置任务、收尾', async () => {
+  const h = await harness({ beginRunning: false, mvu: false })
+  const seen = []
+  h.sandbox.backgroundAgentRunner.run = async input => { seen.push('settle'); await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } }); return { text: '' } }
+  h.sandbox.taskStateReader.read = async () => h.store.readChat()
+  h.sandbox.pluginApi.runSettlementTasks = async ({ phase, around }) => { seen.push(phase); if (around) await around(async () => {}) }
+  const jobs = createSettlementJobs({ run: (...args) => h.sandbox.runSettlementCycle(...args), onSettled: () => seen.push('settled') })
+  await jobs.start('chat')
+  assert.deepEqual(seen, ['before', 'parallel', 'settle', 'after', 'settled'])
+  jobs.dispose()
 })

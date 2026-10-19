@@ -14,6 +14,8 @@
 2. **默认是对的。** 插件作者多半是用 AI 写插件的业余作者。回退、分叉、重新生成这类最容易写错的事，由 Tavern 统一处理，插件不用管。
 3. **插件出问题，游戏不出问题。** 任何插件出错、超时、交回不合格的结果，都只影响它自己那一份，或者退回 Tavern 自己的做法。
 
+开放层还有一个目的：**吸收原作者想不到的信息。** 该做什么功能、做成什么样，信息分散在玩家和插件作者手里。插件把这些信息变成能试用的东西；好的插件精简后吸收进本体，或者只吸收思路（见[插件生态](plugin-ecosystem.md)）。所以拿不准的需求，优先开接口，而不是自己猜着做。
+
 ## 2. 阶段
 
 阶段的**输入和输出**是要长期兼容的约定；阶段内部 Tavern 怎么实现，随时可以改。
@@ -21,14 +23,15 @@
 | 阶段 | 输入 | 输出 | 现在开放的 |
 |---|---|---|---|
 | 输入 | 玩家原话 | 保存的玩家消息、发给模型的输入 | — |
-| 上下文 | 本轮输入、存档状态 | 固定前缀、本轮上下文（世界书、现场状态、Guide 等） | 添加：`promptSection`、`turnSection`、`worldbookSource` |
+| 上下文 | 本轮输入、存档状态 | 固定前缀、本轮上下文（世界书、现场状态、Guide 等） | 添加：`promptSection`、`turnSection`、`worldbookSource`、`worldbookEntries`；观察：`getRequestContext`（本轮实际用到的各段） |
 | 生成 | 组装好的请求 | 模型原始回复 | — |
-| 回复 | 模型原始回复 | 保存的正文、显示用的正文 | 浏览器侧：正文标记、媒体渲染 |
-| 结算 | 本轮正文、存档状态 | 现场姿势、变量更新、人物设计 | 添加：`settlementSection`、`settlementTool`，以及插件自己的结算任务 `settlementTask`（结算前或后，玩家可排序、开关）；替换：`replaceSettlement`（普通卡的姿势结算） |
+| 回复 | 模型原始回复 | 保存的正文、显示用的正文 | 浏览器侧：正文标记、媒体渲染；替换显示：`registerTurnView`（正文本身不变） |
+| 结算 | 本轮正文、存档状态 | 现场姿势、变量更新、人物设计 | 添加：`settlementSection`、`settlementTool`，以及插件自己的结算任务 `settlementTask`（结算前、与结算同时、结算后，玩家可排序、开关）；替换：`replaceSettlement`（普通卡的姿势结算） |
 | 候选 | 本轮正文、存档状态 | 下一步行动候选 | 添加：`candidateSection` |
 | 压缩 | 历史消息 | 历史摘要 | 添加：`compactionSection` |
-| 生命周期 | — | 轮次写完、回退、撤销回退、重新生成、分叉、删局 | 观察：`onTurnSettled`、`onTimelineChanged`、`onGameRemoved` |
-| 界面 | — | 媒体、按钮、面板 | 浏览器侧 `tavernUi`（含侧栏面板 `registerPanel`）；宿主侧 `attach` 等 |
+| 生命周期 | — | 轮次写完、回退、撤销回退、重新生成、分叉、删局 | 观察：`onTurnSettled`、`onTimelineChanged`、`onGameRemoved`、`versionSignal`（版本失效即中止） |
+| 人物卡 | 卡库、卡文件 | 卡的工作版、角色素材、素材包 | 观察：`onCardChanged`；添加：`cardImporter`（Tavern 不认识的格式）、写角色素材与素材包；改卡：`updateCardRaw`（可带 `expectedRevision`） |
+| 界面 | — | 媒体、按钮、面板 | 浏览器侧 `tavernUi`（含侧栏面板 `registerPanel`、状态分节 `registerStatusSection`、`watchState`）；宿主侧 `attach`、`publishState` 等 |
 
 ## 3. 三种介入方式
 
@@ -94,6 +97,16 @@ const data = await ctx.tavern.readGameData({ gameId })
 - 每个插件只能读写自己的数据。
 
 **分叉：** 媒体项和按轮数据都按游戏编号存储，而正文版本的编号里包含游戏编号。分叉时按新游戏重新计算有数据的那几轮的正文版本，把媒体项和按轮数据一起搬过去（第 1 批已实现；此前分叉时插件媒体项不会带过去）。
+
+### 4.1 为什么没有「快照 token + 两阶段提交」（第 3 版）
+
+外部插件提议过让插件参与 Tavern 的轮次事务（prepare / commit / invalidate / fork），并由宿主签发快照 token。没有采用，因为本节的做法已经给出同样的保证，而且更不容易写错：
+
+- **迟到的结果写不进来**：`saveTurnData`、`attach`、`setVariables`、`editTurn` 都校验 `textVersion`，旧版本的写入一律拒绝。`textVersion` 本身就是宿主签发、插件拼不出来的版本标识。
+- **不会出现「剧情已回退、插件还指向旧版本」**：插件数据和媒体挂在版本上，读取时只认当前版本，回退、撤销回退、分叉都不需要插件做任何事。
+- **在途任务能及时停**：`versionSignal` 在版本失效时中止，结算任务的 `signal` 也一样。插件只负责「停」，不用实现提交和回滚。
+
+两阶段提交要求每个插件都正确实现四个回调，错一个就会出现不一致；而版本绑定让「默认是对的」。确有绑定版本也解决不了的需求时，再按具体场景开放。
 
 ## 5. 玩家可见与管理
 

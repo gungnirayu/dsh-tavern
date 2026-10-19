@@ -84,7 +84,7 @@ export function createScenePlans({ store }) {
     return { chatId, target, profile, styleNeeded, previousStyle, replace: replan, generation: data.generation, sources, people, identities, takenIds, previousScene, previousTurn: previous?.turn, previousMoment: previous?.moment || 'end', gapComplete, input, saved, block }
   }
   async function commit(prepared, submission) {
-    keys(submission, ['description', 'characters', 'subjects', 'scene', 'continuity', 'expressions', 'moment', 'orientation', 'negative', 'anchor', 'style'], 'plan')
+    keys(submission, ['description', 'characters', 'subjects', 'scene', 'continuity', 'expressions', 'moment', 'orientation', 'negative', 'anchor', 'style', 'views'], 'plan')
     const moment = submission.moment ?? 'end', orientation = submission.orientation ?? ''
     assert(['end', 'earlier'].includes(moment), 'moment 必须是 end 或 earlier')
     assert(['', 'portrait', 'landscape', 'square'].includes(orientation), 'orientation 必须是 portrait、landscape 或 square')
@@ -176,6 +176,23 @@ export function createScenePlans({ store }) {
       assert(Boolean(tags) === Boolean(value.text), path + '.tags：expression 不能省略非空事实或为已清除事实增加标签')
       if (!prepared.block(owner, item.field, value.text)) value.blockId = makeBlock(owner, item.field, value.text, tags)
     }
+    // How each subject faces the camera in this one picture. Tags for parts the camera
+    // cannot see fight the visible ones (eye colour on a back view), so a back view
+    // drops the expression and a view may carry this angle's visible appearance.
+    // Per picture only: persistent appearance is never rewritten from a view.
+    const views = Object.create(null)
+    assert(submission.views === undefined || (Array.isArray(submission.views) && submission.views.length <= 8), 'views 必须是最多 8 项的数组')
+    for (const [index, view] of (submission.views || []).entries()) {
+      const path = 'views[' + index + ']'
+      keys(view, ['id', 'angle', 'appearance'], path)
+      const id = aliases[view.id] || view.id
+      assert(subjects.includes(id), path + '.id (' + view.id + ')：views 只能引用 subjects 中的人物')
+      assert(!Object.hasOwn(views, id), path + '：同一人物只能有一个视角')
+      assert(['front', 'side', 'back'].includes(view.angle), path + '.angle 必须是 front、side 或 back')
+      const appearance = text(view.appearance ?? '', path + '.appearance', 1200)
+      views[id] = { angle: view.angle, ...(appearance ? { appearance } : {}) }
+    }
+    const shownFields = id => personFields.filter(field => !(field === 'expression' && views[id]?.angle === 'back'))
     const blockIds = [], characterVersions = {}
     function append(owner, field, value) {
       if (!value?.text) return
@@ -186,7 +203,7 @@ export function createScenePlans({ store }) {
     }
     for (const id of subjects) {
       const person = people[id]
-      for (const field of personFields) append(id, field, person.fields[field])
+      for (const field of shownFields(id)) append(id, field, person.fields[field])
       // Character facts are channel-independent. Prompt block references belong
       // to the frame; switching expression profiles must not rewrite a person.
       const facts = { ...person, fields: Object.fromEntries(Object.entries(person.fields).map(([field, value]) => [field,
@@ -201,7 +218,10 @@ export function createScenePlans({ store }) {
     const promptParts = [sceneTags('composition')].filter(Boolean)
     for (const id of subjects) {
       const person = people[id]
-      const tags = personFields.filter(field => person.fields[field]?.text).map(field => { const value = person.fields[field]; return (pendingBlocks[value.blockId] || prepared.block(id, field, value.text)).tags })
+      const tags = shownFields(id).filter(field => person.fields[field]?.text).map(field => {
+        if (field === 'appearance' && views[id]?.appearance) return views[id].appearance
+        const value = person.fields[field]; return (pendingBlocks[value.blockId] || prepared.block(id, field, value.text)).tags
+      })
       promptParts.push(person.name + ': ' + tags.join(', '))
     }
     if (sceneTags('environment')) promptParts.push(sceneTags('environment'))
@@ -210,7 +230,7 @@ export function createScenePlans({ store }) {
     // An earlier moment of the turn is drawn from its own text; the next image
     // re-reads the rest of that turn instead of continuing from this frame.
     const frame = { targetKey: prepared.target.key, turn: prepared.target.turn, profile: prepared.profile, description, subjects, scene, characterRefs: Object.keys(characterVersions), blockIds, prompt,
-      ...(moment === 'earlier' ? { moment } : {}), ...(orientation ? { orientation } : {}), ...(negative ? { negative } : {}), ...(anchor ? { anchor } : {}), ...(artStyle ? { artStyle: { text: artStyle.text, tags: artStyle.tags } } : {}) }
+      ...(moment === 'earlier' ? { moment } : {}), ...(orientation ? { orientation } : {}), ...(negative ? { negative } : {}), ...(anchor ? { anchor } : {}), ...(Object.keys(views).length ? { views: { ...views } } : {}), ...(artStyle ? { artStyle: { text: artStyle.text, tags: artStyle.tags } } : {}) }
     frame.id = digest(frame)
     await store.updateJson(pathFor(prepared.chatId), previous => {
       const data = previous || empty()
@@ -227,7 +247,9 @@ export function createScenePlans({ store }) {
     const blocks = frame.blockIds.map(id => {
       const block = data.blocks[id]
       const text = block.owner === 'scene' ? frame.scene[block.field]?.text : people.find(person => person.id === block.owner)?.fields[block.field]?.text
-      return { ...block, text: text || '' }
+      // A view's visible appearance stands in for the whole one in this picture (NovelAI captions read blocks).
+      const seen = block.field === 'appearance' ? frame.views?.[block.owner]?.appearance : ''
+      return { ...block, ...(seen ? { tags: seen } : {}), text: text || '' }
     })
     return { ...frame, blocks, people }
   }

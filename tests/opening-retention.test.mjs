@@ -34,3 +34,22 @@ for (const targetMode of ['card', 'story']) test(`完成 ${targetMode} 创建时
   assert.equal(state.openingPicker, targetMode === 'card' ? draft : null)
   assert.deepEqual(calls, targetMode === 'card' ? [] : [['releaseOpeningPreparation', 'draft']])
 })
+
+test('切换游玩 / 卡片时回到该模式下最近用过的对话，而不是最新创建的（#220）', async () => {
+  const { ctx } = fixture()
+  const opened = []
+  vm.runInContext(source.slice(source.indexOf('function tavernHistoryActivity('), source.indexOf('function groupTavernHistory(')), ctx)
+  Object.assign(ctx, {
+    summaries: { 'card-old': { updatedAt: 500 } }, groupOfMode: mode => mode === 'card' ? 'card' : 'play',
+    openSessionWhenReady: async sessionId => { opened.push(sessionId) },
+    history: [
+      { sessionId: 'card-new', mode: 'card', createdAt: 300, updatedAt: 300, lastOpenedAt: 300 },
+      { sessionId: 'card-old', mode: 'card', createdAt: 100, updatedAt: 100, lastOpenedAt: 100 },
+      { sessionId: 'play-new', mode: 'story', requestMode: 'dsh', createdAt: 300, updatedAt: 300, lastOpenedAt: 300 },
+      { sessionId: 'play-old', mode: 'story', requestMode: 'dsh', createdAt: 100, updatedAt: 100, lastOpenedAt: 900 },
+    ],
+  })
+  await ctx.switchMode('card')
+  await ctx.switchMode('play')
+  assert.deepEqual(opened, ['card-old', 'play-old'])
+})

@@ -37,7 +37,7 @@ export function registerPresetTools({
 
   tools.register(defineTool({
     name: 'tavern_update_preset',
-    description: '仅在用户明确确认后，按 JSON Pointer 修改预设的最小路径并重新校验。不会应用或运行目标预设。',
+    description: '按用户要求，以 JSON Pointer 修改预设的最小路径并重新校验。不会应用或运行目标预设。',
     parameters: {
       path: { type: 'string', required: true, description: 'presets/... 相对路径' },
       operations: {

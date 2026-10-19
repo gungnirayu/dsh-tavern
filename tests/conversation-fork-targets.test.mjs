@@ -14,11 +14,8 @@ test('重新生成的轮次映射回剧情轮次，被替换的原回复不再�
   assert.deepEqual(forkTurnsByMessageId(session(events), { 2: 3 }), { a: 1, 'regen-2': 2 })
 })
 
-test('只有最近 50 轮显示分叉按钮', () => {
-  const events = []
-  for (let turn = 1, seq = 1; turn <= 60; turn++) events.push(start(seq++, turn), reply(seq++, turn, 'm' + turn), end(seq++, turn))
-  const turns = Object.values(forkTurnsByMessageId(session(events))).sort((a, b) => a - b)
-  assert.equal(turns[0], 11)
-  assert.equal(turns.at(-1), 60)
-  assert.equal(turns.length, 50)
+test('一轮有多条模型消息时都能找到这一轮，宿主显示的不一定是最后一条 (#234)', () => {
+  const events = [start(1, 1), reply(2, 1, 'opening'), end(3, 1),
+    start(4, 2), reply(5, 2, 'tool-step'), reply(6, 2, 'visible'), reply(7, 2, 'projection'), end(8, 2)]
+  assert.deepEqual(forkTurnsByMessageId(session(events)), { opening: 1, 'tool-step': 2, visible: 2, projection: 2 })
 })

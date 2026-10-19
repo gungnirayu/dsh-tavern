@@ -2,10 +2,14 @@
 
 import { realpathSync } from 'node:fs'
 import path from 'node:path'
-import { SCRIPT_PATH } from './launcher-environment.mjs'
+import { spawnSync } from 'node:child_process'
+import officialDesktop from './official-desktop-runtime.cjs'
+import { fileURLToPath } from 'node:url'
+import { SCRIPT_PATH, RUNTIME_HOST, DSH_ROOT } from './launcher-environment.mjs'
 import { installProfile, parseInstallHost } from './profile-installation.mjs'
 import { startService, stopService, statusService, openService, bootstrapFrontendOnce } from './service-lifecycle.mjs'
 import { updateApplication, parseUpdateOptions } from './application-update.mjs'
+import { recordUpdateDiagnostic } from './update-diagnostics.mjs'
 
 // Keep the existing import surface while the executable only dispatches commands.
 export { resolveServicePort, resolveDshInvocation } from './launcher-environment.mjs'
@@ -23,8 +27,35 @@ function usage() {
   console.log('用法：dsh-tavern install [--host cli|desktop|android] | {update|start|open|stop|restart|status}')
 }
 
+// A detached in-app update has no console; keep its trail next to its status file.
+function updateDiagnostic(event, details = {}) {
+  if (process.argv[2] !== 'update') return
+  // Read the two flags leniently: invalid arguments are themselves worth recording.
+  const flag = name => { const args = process.argv.slice(3), at = args.indexOf(name); return at >= 0 ? args[at + 1] : args.find(arg => arg.startsWith(name + '='))?.slice(name.length + 1) }
+  const statusFile = flag('--status-file')
+  if (statusFile && path.isAbsolute(statusFile)) recordUpdateDiagnostic(path.dirname(statusFile), { attemptId: flag('--attempt-id'), event, ...details })
+}
+
 async function main() {
   const action = process.argv[2] || 'status'
+  updateDiagnostic('updater.started', { execPath: process.execPath, electron: process.versions.electron || '', runtimeHost: RUNTIME_HOST, cwd: process.cwd() })
+  if (RUNTIME_HOST === 'desktop' && ['install', 'update'].includes(action)) {
+    const executable = officialDesktop.discover()
+    // Official: the app's Electron in Node mode. Community: its bundled Node.
+    const runner = officialDesktop.runner(executable)
+    if (path.resolve(process.execPath) !== path.resolve(runner)) {
+      updateDiagnostic('updater.relaunch', { executable, runner })
+      const setup = spawnSync(runner, ['--expose-internals', fileURLToPath(new URL('./official-desktop-runtime.cjs', import.meta.url)), DSH_ROOT],
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_APP_EXECUTABLE: executable }, encoding: 'utf8' })
+      if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || setup.stderr || '桌面环境准备失败')
+      const result = spawnSync(runner, ['--expose-internals', SCRIPT_PATH, ...process.argv.slice(2)],
+        { env: { ...process.env, ...JSON.parse(setup.stdout), ELECTRON_RUN_AS_NODE: '1' }, stdio: 'inherit' })
+      if (result.error) throw result.error
+      process.exitCode = result.status ?? 1
+      return
+    }
+    Object.assign(process.env, officialDesktop.prepare({ executable, home: DSH_ROOT }))
+  }
   switch (action) {
     case 'install':
       await installProfile(parseInstallHost(process.argv.slice(3)))
@@ -67,5 +98,10 @@ async function main() {
 
 const isEntrypoint = process.argv[1] && realpathSync(SCRIPT_PATH) === realpathSync(path.resolve(process.argv[1]))
 if (isEntrypoint) {
-  main().catch((error) => fail(error instanceof Error ? error.message : String(error)))
+  process.once('exit', code => updateDiagnostic('updater.exit', { code }))
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    updateDiagnostic('updater.failed', { error: message })
+    fail(message)
+  })
 }

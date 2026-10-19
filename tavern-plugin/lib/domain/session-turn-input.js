@@ -1,4 +1,5 @@
 import { sessionEvents } from './session-events.js'
+import { isPluginSource, sourceProducerName } from './message-source.js'
 
 // The one place that decides which message is a turn's input. Readers that
 // guessed this separately drifted apart, and one of them took a template edit
@@ -6,13 +7,18 @@ import { sessionEvents } from './session-events.js'
 
 function str(value) { return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value)) }
 
+/** A turn that ended without a committed reply: an error, a stop, or a crash the
+ * host closed on recovery ('interrupted'). Its input and partial reply are residue. */
+export function isFailedTurnEnd(kind) { return kind === 'error' || kind === 'aborted' || kind === 'interrupted' }
+
 /** Who sent an input: the player, a regenerate attempt, a legacy failed-turn replay, or nobody. */
 export function inputKind(message) {
   const source = message && message.source
   if (!source) return null
   if (source.kind === 'user') return 'player'
-  if (source.kind !== 'plugin') return null
-  return source.plugin === 'dsh-tavern-regen' ? 'regenerate' : source.plugin === 'dsh-tavern-replay' ? 'replay' : null
+  if (!isPluginSource(source)) return null
+  const producer = sourceProducerName(source)
+  return producer === 'dsh-tavern-regen' ? 'regenerate' : producer === 'dsh-tavern-replay' ? 'replay' : null
 }
 
 export function isTurnInput(message) { return inputKind(message) !== null }
@@ -75,7 +81,7 @@ export function requestIdForTurn(session, turn) {
 /** Player inputs that are still story: those of a failed or rejected turn are
  * residue the failed-turn cleanup removes, and never block recovery. */
 export function storyPlayerInputs(events, from = 0) {
-  const failed = new Set(events.filter(event => event?.type === 'turn/end' && ['error', 'aborted'].includes(event.data?.reason?.kind)).map(event => Number(event.data.turn)))
+  const failed = new Set(events.filter(event => event?.type === 'turn/end' && isFailedTurnEnd(event.data?.reason?.kind)).map(event => Number(event.data.turn)))
   const found = []
   let turn = 0
   for (const event of events) {

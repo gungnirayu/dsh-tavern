@@ -20,7 +20,8 @@ test('installed DSH accepts helper assistant histories and propagates cancellati
       for (const message of options.messages) {
         assert.equal(typeof message.id, 'string')
         assert.ok(message.id)
-        assert.equal(message.source.kind, 'plugin')
+        // DSH 0.2 (session v4): the producer owns its source kind.
+        assert.equal(message.source.kind, 'plugin:dsh-tavern')
       }
       if (hold) {
         started()

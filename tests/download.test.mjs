@@ -169,3 +169,34 @@ test('downloads honour proxy variables through NODE_USE_ENV_PROXY', { skip: node
   assert.equal(await readFile(path.join(directory, 'out'), 'utf8'), 'via proxy')
   assert.ok(seen.some(entry => entry.includes('unreachable.test')), seen.join('\n'))
 })
+
+test('jsDelivr 运行清单：各节点取最新的发布序号；都比安装器旧时明确提示稍后重试；指定清单时只用它', async () => {
+  const { readManifest, manifestCandidates } = require('../bin/download.cjs')
+  const manifest = (version, releaseSequence) => ({ schemaVersion: 2, revision: String(releaseSequence).padStart(40, 'a'), releaseSequence, version,
+    files: [{ path: 'package.json', sha256: 'b'.repeat(64), size: 1 }] })
+  const url = 'https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json'
+  const serveNodes = nodes => async request => {
+    const body = nodes[new URL(String(request.url || request)).hostname]
+    return body ? new Response(JSON.stringify(body)) : new Response('missing', { status: 404 })
+  }
+  assert.deepEqual(manifestCandidates(url).map(each => new URL(each).hostname), ['cdn.jsdelivr.net', 'fastly.jsdelivr.net', 'gcore.jsdelivr.net'])
+  assert.deepEqual(manifestCandidates(url, true), [url])
+  assert.deepEqual(manifestCandidates('http://127.0.0.1:1/repo@main/dsh-tavern-runtime.json'), ['http://127.0.0.1:1/repo@main/dsh-tavern-runtime.json'])
+
+  const status = []
+  const newest = await readManifest({ metadataUrl: url, minVersion: '3.0.0', stallMs: 1000, attempts: 1, status: m => status.push(m),
+    fetch: serveNodes({ 'cdn.jsdelivr.net': manifest('2.7.0', 90), 'fastly.jsdelivr.net': manifest('3.0.0', 120), 'gcore.jsdelivr.net': manifest('3.0.0', 110) }) })
+  assert.equal(newest.releaseSequence, 120, '同一版本里也取发布序号最大的')
+  assert.match(status.join('\n'), /fastly\.jsdelivr\.net/)
+
+  await assert.rejects(readManifest({ metadataUrl: url, minVersion: '3.0.0', stallMs: 1000, attempts: 1,
+    fetch: serveNodes({ 'cdn.jsdelivr.net': manifest('2.7.0', 90), 'fastly.jsdelivr.net': manifest('2.7.0', 91) }) }),
+  error => error.code === 'DSH_TAVERN_CDN_STALE' && /还没更新到 v3\.0\.0，当前只有 v2\.7\.0.*稍后|重试/.test(error.message))
+
+  const pinned = 'https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@7f7372c2/dsh-tavern-runtime.json'
+  const asked = []
+  const exact = await readManifest({ metadataUrl: pinned, exact: true, minVersion: '3.0.0', stallMs: 1000, attempts: 1,
+    fetch: async request => { asked.push(String(request.url || request)); return new Response(JSON.stringify(manifest('3.0.0', 100))) } })
+  assert.equal(exact.version, '3.0.0')
+  assert.deepEqual(asked, [pinned], '指定的清单不换节点')
+})

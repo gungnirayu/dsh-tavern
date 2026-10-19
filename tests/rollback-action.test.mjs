@@ -52,7 +52,7 @@ function harness() {
     buttons() {
       cursor = 0
       return actions.CandidateAction({ sessionId: 'session', messageId: 'reply',
-        useSession: select => select({ running }), useChat: select => select({})
+        useSession: select => select({ running }), useChat: select => select({}), useInput: select => select({ draft: '' })
       }).children.filter(Boolean)
     },
     button() {

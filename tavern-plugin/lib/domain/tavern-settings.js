@@ -10,11 +10,147 @@ function promptOverride(document, name) {
   return typeof value === 'string' && (value.trim() !== '' || name === 'system-append') ? value : null
 }
 
+// System prompt sets: the active set's content stays in the top-level
+// promptOverrides/systemAppendEnabled fields (what every reader uses, and what
+// older versions read); promptSets only stores names plus inactive sets' content.
+const DEFAULT_PROMPT_SET = Object.freeze({ id: 'default', name: '默认方案' })
+
+function promptSetName(value) {
+  const name = typeof value === 'string' ? value.trim() : ''
+  if (name === '' || name.length > 80) throw new Error('方案名称需为 1–80 字')
+  return name
+}
+
+export const DEFAULT_RENDER_DEPTH = 3
+function renderDepthOf(value) { return Number.isSafeInteger(value) && value >= 0 && value <= 100 ? value : DEFAULT_RENDER_DEPTH }
+
+// Header shortcuts: { display, items }. The items are page ids — a Tavern tab
+// (dsh-tavern:*), a plugin tab (tavern-plugin:*), the export menu (header:export)
+// or any other id the right sidebar registers.
+const HEADER_ITEM_LIMIT = 24
+const HEADER_ITEM_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/
+const HEADER_DISPLAYS = ['icon', 'icon-text']
+export const DEFAULT_HEADER_ITEMS = Object.freeze({ display: 'icon-text', items: Object.freeze(['dsh-tavern:status', 'header:export']) })
+
+export function headerItems(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的顶栏设置')
+  const display = value.display === undefined ? DEFAULT_HEADER_ITEMS.display : value.display
+  if (!HEADER_DISPLAYS.includes(display)) throw new Error('无效的顶栏设置')
+  const source = value.items === undefined ? [] : value.items
+  if (!Array.isArray(source)) throw new Error('无效的顶栏设置')
+  const items = []
+  for (const item of source) {
+    if (typeof item !== 'string' || !HEADER_ITEM_PATTERN.test(item)) throw new Error('无效的顶栏设置')
+    if (!items.includes(item)) items.push(item)
+  }
+  return { display, items: items.slice(0, HEADER_ITEM_LIMIT) }
+}
+
+// Stored documents are read leniently: an older or hand-edited value falls back
+// to the default instead of breaking every settings read.
+export function readHeaderItems(value) {
+  if (value === null || value === undefined) return { display: DEFAULT_HEADER_ITEMS.display, items: [...DEFAULT_HEADER_ITEMS.items] }
+  try {
+    return headerItems(value)
+  } catch (_) {
+    return { display: DEFAULT_HEADER_ITEMS.display, items: [...DEFAULT_HEADER_ITEMS.items] }
+  }
+}
+
+export function uniqueName(names, base) {
+  const taken = new Set(names)
+  if (!taken.has(base)) return base
+  for (let index = 2; ; index += 1) if (!taken.has(base + ' (' + index + ')')) return base + ' (' + index + ')'
+}
+
+export function promptSetLibrary(document) {
+  const source = Array.isArray(object(document).promptSets) ? document.promptSets : []
+  const sets = []
+  for (const item of source) {
+    const entry = object(item)
+    if (typeof entry.id !== 'string' || entry.id === '' || typeof entry.name !== 'string' || sets.some(set => set.id === entry.id)) continue
+    sets.push(entry)
+  }
+  if (sets.length === 0) sets.push({ ...DEFAULT_PROMPT_SET })
+  const activeId = sets.some(set => set.id === object(document).activePromptSetId) ? document.activePromptSetId : sets[0].id
+  return { activeId, sets }
+}
+
+function storedPromptSetContent(value) {
+  const overrides = {}
+  for (const [name, text] of Object.entries(object(value))) if (typeof text === 'string' && text.length <= 100000) overrides[name] = text.trim()
+  return overrides
+}
+
+function writeActivePromptContent(next, overrides, systemAppendEnabled) {
+  if (Object.keys(overrides).length === 0) delete next.promptOverrides
+  else next.promptOverrides = overrides
+  next.systemAppendEnabled = systemAppendEnabled !== false
+}
+
+function applyPromptSetChange(next, change) {
+  const { activeId, sets } = promptSetLibrary(next)
+  const action = change.action
+  const nameOf = id => sets.find(set => set.id === id)
+  const names = sets.map(set => set.name)
+  const newId = () => 'set-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+  // Snapshot the live content into its entry before any switch.
+  const stash = list => list.map(set => set.id === activeId ? { id: set.id, name: set.name, promptOverrides: storedPromptSetContent(next.promptOverrides), systemAppendEnabled: next.systemAppendEnabled !== false } : set)
+  const activate = (list, id) => {
+    const target = list.find(set => set.id === id)
+    writeActivePromptContent(next, storedPromptSetContent(target.promptOverrides), target.systemAppendEnabled)
+    next.promptSets = list.map(set => set.id === id ? { id: set.id, name: set.name } : set)
+    next.activePromptSetId = id
+  }
+  if (action === 'select') {
+    if (!nameOf(change.id)) throw new Error('系统提示词方案不存在')
+    if (change.id !== activeId) activate(stash(sets), change.id)
+    return
+  }
+  if (action === 'rename') {
+    if (!nameOf(change.id)) throw new Error('系统提示词方案不存在')
+    const name = uniqueName(names.filter((value, index) => sets[index].id !== change.id), promptSetName(change.name))
+    next.promptSets = sets.map(set => set.id === change.id ? { ...set, name } : set)
+    next.activePromptSetId = activeId
+    return
+  }
+  if (action === 'delete') {
+    if (!nameOf(change.id)) throw new Error('系统提示词方案不存在')
+    if (sets.length === 1) throw new Error('至少保留一个方案')
+    if (change.id === activeId) {
+      // Deleting the set in use switches to the next remaining one first.
+      const index = sets.findIndex(set => set.id === activeId)
+      const fallback = sets[index + 1] || sets[index - 1]
+      activate(stash(sets).filter(set => set.id !== activeId), fallback.id)
+      return
+    }
+    next.promptSets = sets.filter(set => set.id !== change.id)
+    next.activePromptSetId = activeId
+    return
+  }
+  if (action === 'create' || action === 'duplicate' || action === 'add') {
+    const id = newId()
+    const name = uniqueName(names, promptSetName(change.name))
+    let content
+    if (action === 'duplicate') content = { promptOverrides: storedPromptSetContent(next.promptOverrides), systemAppendEnabled: next.systemAppendEnabled !== false }
+    else if (action === 'add') content = { promptOverrides: storedPromptSetContent(change.promptOverrides), systemAppendEnabled: change.systemAppendEnabled !== false }
+    else content = { promptOverrides: {}, systemAppendEnabled: true }
+    activate([...stash(sets), { id, name, ...content }], id)
+    return
+  }
+  throw new Error('未知的系统提示词方案操作')
+}
+
+export function presentPromptSets(document) {
+  const { activeId, sets } = promptSetLibrary(document)
+  return { activeId, sets: sets.map(set => ({ id: set.id, name: set.name, active: set.id === activeId })) }
+}
+
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  // variableFeedback: hand the last round's changed variables back to the foreground.
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, variableFeedback: tasks.variableFeedback !== false }
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false }
 }
+
 
 export function normalizePlayDefaults(value) {
   const input = object(value)
@@ -32,7 +168,7 @@ export function applyTavernSettingsPatch(current, patch) {
     for (const key of ['webSearchEnabled', 'sceneImagesEnabled']) if (Object.hasOwn(patch, key) && typeof patch[key] !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['variables', 'posture', 'variableFeedback']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['variables', 'posture']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -56,6 +192,29 @@ export function applyTavernSettingsPatch(current, patch) {
     if (!['after-fill', 'after-send'].includes(input.candidateDismissMode)) throw new Error('无效的候选项收起方式')
     next.candidateDismissMode = input.candidateDismissMode
   }
+  if (Object.hasOwn(input, 'storyToolCall')) {
+    if (typeof input.storyToolCall !== 'boolean') throw new Error('正文走工具调用设置必须是布尔值')
+    next.storyToolCall = input.storyToolCall
+    // History replay used to be a switch of its own; it now follows this one.
+    delete next.storyHistoryToolCall
+  }
+  if (Object.hasOwn(input, 'autoOpenStatusPanel')) {
+    if (typeof input.autoOpenStatusPanel !== 'boolean') throw new Error('自动打开酒馆状态面板设置必须是布尔值')
+    next.autoOpenStatusPanel = input.autoOpenStatusPanel
+  }
+  if (Object.hasOwn(input, 'renderDepth')) {
+    if (!Number.isSafeInteger(input.renderDepth) || input.renderDepth < 0 || input.renderDepth > 100) throw new Error('渲染深度必须是 0 到 100 的整数')
+    next.renderDepth = input.renderDepth
+  }
+  if (Object.hasOwn(input, 'headerItems')) {
+    // null restores the shipped top bar.
+    if (input.headerItems === null) delete next.headerItems
+    else next.headerItems = headerItems(input.headerItems)
+  }
+  if (Object.hasOwn(input, 'castPresentation')) {
+    if (typeof input.castPresentation !== 'boolean') throw new Error('对话头像设置必须是布尔值')
+    next.castPresentation = input.castPresentation
+  }
   if (Object.hasOwn(input, 'contextCompaction')) next.contextCompaction = { ...compactionPolicy(input.contextCompaction), revision: Date.now() }
   if (Object.prototype.hasOwnProperty.call(input, 'backgroundTasks')) {
     next.backgroundTasks = normalizeBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
@@ -63,6 +222,7 @@ export function applyTavernSettingsPatch(current, patch) {
   if (input.sillyModeEnabled === true || input.compatibilityMode === true) throw new Error('silly 模式已停用')
   if (Object.prototype.hasOwnProperty.call(input, 'sillyModeEnabled')) next.sillyModeEnabled = false
   if (Object.prototype.hasOwnProperty.call(input, 'compatibilityMode')) next.compatibilityMode = input.compatibilityMode === true
+  if (Object.hasOwn(input, 'promptSet')) applyPromptSetChange(next, object(input.promptSet))
   if (Object.hasOwn(input, 'systemAppendEnabled')) next.systemAppendEnabled = input.systemAppendEnabled === true
   if (Object.prototype.hasOwnProperty.call(input, 'webSearchEnabled')) next.webSearchEnabled = input.webSearchEnabled === true
   if (Object.prototype.hasOwnProperty.call(input, 'backgroundModel')) {
@@ -125,7 +285,15 @@ export function presentTavernSettings(document, defaults) {
     defaultImageModel: normalizeBackgroundModel(object(document).defaultImageModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
     hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
+    headerItems: readHeaderItems(object(document).headerItems),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
+    // One switch for both: new bodies submitted as tool calls, history replayed as
+    // them. A save that turned on either of the two former switches keeps it on.
+    storyToolCall: object(document).storyToolCall === true || object(document).storyHistoryToolCall === true,
+    castPresentation: object(document).castPresentation === true,
+    // Only the latest floors run a card's HTML interface; 0 renders every floor.
+    renderDepth: renderDepthOf(object(document).renderDepth),
+    autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     compatibilityMode: false,
     sillyModeEnabled: false,
     webSearchEnabled: object(document).webSearchEnabled === true,
@@ -135,6 +303,7 @@ export function presentTavernSettings(document, defaults) {
     // Card rendering uses a fixed trusted policy; legacy preferences are no longer applied.
     trustedCardMode: true,
     systemPrompts: prompts,
+    promptSets: presentPromptSets(object(document)),
     storyPrompt: story.text,
     storyPromptCustomized: story.customized
   }

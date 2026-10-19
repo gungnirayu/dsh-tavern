@@ -13,7 +13,8 @@ function statDataOf(message) {
 
 // Objects are walked; a list or scalar is one variable, reported with its whole latest value.
 function changedPaths(before, after, path = '', out = []) {
-  for (const key of Object.keys(after)) {
+  // A key only in before was deleted this round; it is reported, not skipped.
+  for (const key of new Set([...Object.keys(before || {}), ...Object.keys(after)])) {
     if (key.startsWith('$') || key.startsWith('__')) continue
     const next = after[key], previous = before?.[key], pointer = path + '/' + escapeKey(key)
     if (isObject(next) && isObject(previous)) changedPaths(previous, next, pointer, out)

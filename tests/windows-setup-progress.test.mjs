@@ -11,11 +11,11 @@ import path from 'node:path'
 test('Setup streams installer progress before exit, preserves logs and reports failure', {skip: process.platform === 'win32'}, async t => {
   const root=await mkdtemp(path.join(tmpdir(),'setup-progress-'))
   t.after(()=>rm(root,{recursive:true,force:true}))
-  await mkdir(path.join(root,'app/lib'),{recursive:true})
   await copyFile(new URL('../packaging/windows/setup-upgrade.mjs',import.meta.url),path.join(root,'setup-upgrade.mjs'))
   // The Setup writes bin/download.cjs beside setup-upgrade.mjs in the runtime resources.
   await copyFile(new URL('../bin/download.cjs',import.meta.url),path.join(root,'download.cjs'))
-  await writeFile(path.join(root,'app/lib/desktop-runtime-environment.js'),`exports.installDesktopDshRuntime=()=>{};exports.installDesktopPnpmRuntime=()=>({nodeBinDir:${JSON.stringify(root)}})`)
+  // Setup copies bin/official-desktop-runtime.cjs beside it too; the stub stands in for a real Desktop.
+  await writeFile(path.join(root,'official-desktop-runtime.cjs'),'exports.prepare=()=>({})')
   await writeFile(path.join(root,'powershell.exe'),`#!${process.execPath}
 process.stdout.write('DSH_STATUS 正在下载运行文件：2/8\\n');
 process.stdout.write('Progress: resolved 12, reused 8, downloaded 3, added 4\\n');
@@ -38,13 +38,12 @@ setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(path.join(root
   assert.match(log,/resolved 12/)
 })
 
-async function runSetup(t, {installer, pnpmRuntime}) {
+async function runSetup(t, {installer, prepare}) {
   const root=await mkdtemp(path.join(tmpdir(),'setup-failure-'))
   t.after(()=>rm(root,{recursive:true,force:true}))
-  await mkdir(path.join(root,'app/lib'),{recursive:true})
   await copyFile(new URL('../packaging/windows/setup-upgrade.mjs',import.meta.url),path.join(root,'setup-upgrade.mjs'))
   await copyFile(new URL('../bin/download.cjs',import.meta.url),path.join(root,'download.cjs'))
-  await writeFile(path.join(root,'app/lib/desktop-runtime-environment.js'),`exports.installDesktopDshRuntime=()=>{};exports.installDesktopPnpmRuntime=${pnpmRuntime||`()=>({nodeBinDir:${JSON.stringify(root)}})`}`)
+  await writeFile(path.join(root,'official-desktop-runtime.cjs'),`exports.prepare=${prepare||'()=>({})'}`)
   await writeFile(path.join(root,'powershell.exe'),`#!${process.execPath}\n${installer||'process.exit(0)'}\n`,{mode:0o755})
   const child=spawn(process.execPath,[path.join(root,'setup-upgrade.mjs'),path.join(root,'data')],{env:{...process.env,PATH:root+path.delimiter+process.env.PATH},stdio:['ignore','pipe','pipe']})
   let err=''
@@ -64,8 +63,8 @@ test('Setup failure names the installer step, keeps its reason and hides proxy c
 })
 
 test('Setup translates raw errors and logs the cause chain', {skip: process.platform === 'win32'}, async t => {
-  const raw=await runSetup(t,{pnpmRuntime:`()=>{throw new DOMException('The operation was aborted due to timeout','TimeoutError')}`})
-  assert.match(raw.err,/^准备 pnpm 运行环境失败：请求超时/)
-  const nested=await runSetup(t,{pnpmRuntime:`()=>{throw new Error('outer',{cause:new DOMException('The operation was aborted due to timeout','TimeoutError')})}`})
-  assert.match(nested.log,/\[准备 pnpm 运行环境\][\s\S]*Caused by: TimeoutError/)
+  const raw=await runSetup(t,{prepare:`()=>{throw new DOMException('The operation was aborted due to timeout','TimeoutError')}`})
+  assert.match(raw.err,/^配置 DSH 运行环境失败：请求超时/)
+  const nested=await runSetup(t,{prepare:`()=>{throw new Error('outer',{cause:new DOMException('The operation was aborted due to timeout','TimeoutError')})}`})
+  assert.match(nested.log,/\[配置 DSH 运行环境\][\s\S]*Caused by: TimeoutError/)
 })

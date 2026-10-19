@@ -97,7 +97,7 @@ export function registerWorldbookTools({
 
   tools.register(defineTool({
     name: 'tavern_update_worldbook',
-    description: '仅在用户明确确认后，对世界书提交条目级最小修改。支持独立世界书和人物卡内置世界书；省略 path 时修改当前人物卡绑定的世界书。不要重写整本世界书。修改人物卡内置世界书时结果附带整卡格式校验，无需再调用 tavern_validate_card。',
+    description: '按用户要求，对世界书提交条目级最小修改。支持独立世界书和人物卡内置世界书；省略 path 时修改当前人物卡绑定的世界书。不要重写整本世界书。修改人物卡内置世界书时结果附带整卡格式校验，无需再调用 tavern_validate_card。',
     parameters: {
       path: { type: 'string', description: '可选的世界书路径；省略时使用当前人物卡，或填写 worldbooks/...、cards/...' },
       name: { type: 'string', description: '可选的新世界书名称' },

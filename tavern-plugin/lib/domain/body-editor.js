@@ -1,3 +1,4 @@
+import { upgradeReferences } from './session-upgrade-references.js'
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { editableReplyParts } from './reply-presentation.js'
@@ -20,12 +21,14 @@ function token(chat, message) {
 
 /** Reconcile a durable Chat edit to native Surface; retries never duplicate history. */
 export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
+  const references = upgradeReferences(sessionEvents(session))
   const recorded = new Set(sessionEvents(session).filter(event => event.type === 'assistant/message').map(event => event.data?.message?.id))
   const cleared = []
   let sessionDirty = false
   for (const message of chat.messages || []) {
     if (!message?.bodyEdit) continue
-    const { id, seq, turn } = message.bodyEdit
+    const { id, turn } = message.bodyEdit
+    const seq = references.sequence(message.bodyEdit.seq, message.bodyEdit.formatVersion)
     if (recorded.has(id)) continue
     let targetSeq = session.surface?.nodes.includes(seq) ? seq : null
     // Migration renumbers seqs and may fold the body-edit injection onto its
@@ -41,7 +44,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
       delete message.bodyEdit
       continue
     }
-    if (targetSeq !== seq) message.bodyEdit = { id, seq: targetSeq, turn }
+    if (targetSeq !== seq) message.bodyEdit = { id, seq: targetSeq, turn, formatVersion: 4 }
     replaceSessionSurface(session, 'assistant/message', {
       turn, step: 1,
       message: { id, role: 'assistant', content: [{ type: 'text', text: message.text }], source: { kind: 'model', provider: 'dsh-tavern', model: 'body-edit' } }
@@ -57,7 +60,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
 }
 
 /** Edit prose only; do not replay macros, scripts or settlement. */
-export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch }) {
+export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative }) {
   const pending = new Set()
   function refuseClosedPatch() {
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
@@ -67,7 +70,7 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
   }
   async function context(sessionId) {
     refuseClosedPatch()
-    const chat = await chats.forSession(sessionId)
+    let chat = await chats.forSession(sessionId)
     if (!chat) throw new Error('会话不存在')
     const agent = sessions.get(sessionId)
     if (!agent?.session) throw new Error('无法访问原生会话')
@@ -85,9 +88,19 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
         return changed ? current : undefined
       }, { source: 'body-edit.stale-clear' })
     })
-    const message = latest(chat)
-    const target = locateRegenerationSurface({ events: sessionEvents(agent.session), nodes: agent.session.surface?.nodes, turn: message.turn })
-    if (!target) throw new Error('最后一轮正文已不在当前上下文中，无法编辑')
+    let message = latest(chat)
+    const locate = () => locateRegenerationSurface({ events: sessionEvents(agent.session), nodes: agent.session.surface?.nodes, turn: message.turn })
+    let target = locate()
+    // The save is the truth: bring the native tail back to it, then edit; if the
+    // round is still not there, edit the save and let repair carry the text over.
+    if (!target && typeof repairNative === 'function') {
+      await repairNative(sessionId, agent.session)
+      chat = await chats.forSession(sessionId)
+      idle(chat, agent)
+      message = latest(chat)
+      target = locate()
+    }
+    if (!target && typeof repairNative !== 'function') throw new Error('最后一轮正文已不在当前上下文中，无法编辑')
     const parts = editableReplyParts(source(message))
     if (!parts.some(part => part.kind === 'text' && part.text.trim())) throw new Error('这轮只有 HTML，没有可编辑文本')
     return { chat, agent, message, target, parts }
@@ -95,7 +108,7 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
   // A bounded history edits only its last floor: apply the same timeline intent to
   // the header and that floor, then patch them on the read revision. A moved
   // revision returns undefined so the complete path re-validates the edit token.
-  async function saveLatestFloor(chat, message, patch, target, agent) {
+  async function saveLatestFloor(sessionId, chat, message, patch, target, agent) {
     if (!isScopedMessages(chat.messages) || typeof chats.patch !== 'function') return undefined
     const index = chat.messages.length - 1
     const { messages: _rows, ...header } = chat
@@ -104,10 +117,11 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     const changes = diffJson({ ...header, messages: [] }, { ...head, messages: [] }).filter(change => !['_storageRevision', 'updatedAt'].includes(change.path[0]))
     for (const change of diffJson(message, row)) changes.push({ ...change, path: ['messages', index, ...change.path] })
     const saved = await chats.patch(chat.id, chat._storageRevision, changes, { source: 'foreground.body-edit', assertCurrent() {
-      if (!agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
+      if (target && !agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
     } })
     if (!saved) return undefined
-    await synchronizeBodyEdits(agent.session, { messages: [row] }, sessions.flush)
+    if (target) await synchronizeBodyEdits(agent.session, { messages: [row] }, sessions.flush)
+    else await repairNative(sessionId, agent.session)
     return present(saved)
   }
   async function read(sessionId) {
@@ -134,7 +148,7 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       const patch = {
         sourceText: text, projectionText: text, text: reply.sessionText,
         displayText: reply.displayText, displayMode: reply.displayMode,
-        bodyEdit: { id: 'tavern-body-edit:' + randomUUID(), seq: target.assistantSeq, turn: target.turn }
+        ...(target ? { bodyEdit: { formatVersion: 4, id: 'tavern-body-edit:' + randomUUID(), seq: target.assistantSeq, turn: target.turn } } : {})
       }
       if (Array.isArray(message.swipes)) {
         patch.swipes = structuredClone(message.swipes)
@@ -145,17 +159,20 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       // A rejected host event must never publish an edit that future requests
       // will keep trying (and failing) to synchronize. Accepted writes retain
       // the existing journal-first recovery path for disk/flush failures.
-      const preview = agent.session.constructor.fromRestore(agent.session.id, structuredClone(sessionEvents(agent.session)), structuredClone(agent.session.header), agent.session.inheritedEventCount, 'detached')
-      await synchronizeBodyEdits(preview, { messages: [{ ...message, ...patch }] }, async () => {})
-      const patched = await saveLatestFloor(chat, message, patch, target, agent)
+      if (target) {
+        const preview = agent.session.constructor.fromRestore(agent.session.id, structuredClone(sessionEvents(agent.session)), structuredClone(agent.session.header), agent.session.inheritedEventCount, 'detached')
+        await synchronizeBodyEdits(preview, { messages: [{ ...message, ...patch }] }, async () => {})
+      }
+      const patched = await saveLatestFloor(sessionId, chat, message, patch, target, agent)
       if (patched) return patched
       const saved = await chats.update(chat.id, current => {
         idle(current, agent)
         if (token(current, latest(current)) !== input.token) throw new Error('正文或会话已变化，请重新打开编辑')
-        if (!agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
+        if (target && !agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
         return timeline.apply({ chat: current, intent: { kind: 'body.edit', turn: message.turn, patch } }).chat
       }, { source: 'foreground.body-edit' })
-      await synchronizeBodyEdits(agent.session, saved, sessions.flush)
+      if (target) await synchronizeBodyEdits(agent.session, saved, sessions.flush)
+      else await repairNative(sessionId, agent.session)
       return present(saved)
     } finally { pending.delete(sessionId) }
   }

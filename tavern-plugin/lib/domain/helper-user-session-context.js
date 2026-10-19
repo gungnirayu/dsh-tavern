@@ -1,4 +1,5 @@
 import { sessionEvents } from './session-events.js'
+import { producerSource } from './message-source.js'
 
 /** Publish script-created user text without starting a turn or rewriting history. */
 export function appendHelperUserSessionContext(session, chat, targets) {
@@ -12,7 +13,7 @@ export function appendHelperUserSessionContext(session, chat, targets) {
     if (existing.has(id)) continue
     session.append('user/message', {
       id, role: 'user', content: [{ type: 'text', text: String(message.sourceText || message.text || '') }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern-helper', chatId: chat.id, messageId: target.messageId }
+      source: producerSource('dsh-tavern-helper', { chatId: chat.id, messageId: target.messageId })
     }, { surfaceOp: 'append' })
     existing.add(id)
     appended += 1

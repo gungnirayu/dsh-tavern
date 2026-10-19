@@ -1,3 +1,4 @@
+import { createLedgerItem } from './background-pipeline.js'
 import { LEDGER_RULES, LEDGER_SUBMIT_TOOL, createLedgerSubmission, ledgerContext, readLedger } from './story-ledger.js'
 
 // One request reads at most this much story text; longer backlogs continue on the next click.
@@ -40,6 +41,7 @@ export function ledgerBacklog(chat, limit = LEDGER_BATCH_CHARS) {
 
 // The retired per-round rules assumed a settlement that also submits posture/variables.
 const MANUAL_RULES = LEDGER_RULES.replace('先完成台账，再提交姿势或变量；不要创建其他 Agent。', '不要创建其他 Agent。')
+const LEDGER_ITEM = createLedgerItem({ rules: MANUAL_RULES })
 
 /**
  * Player-triggered ledger consolidation. The ledger is a memo for the player; after
@@ -92,10 +94,10 @@ export function createManualLedger({ store, runAgent, selection, beginTask, ensu
         task: 'ledger', persistent: true,
         persistentSessionId: taskRun.participantRequest.sessionId,
         rewindTo: taskRun.participantRequest.rewindTo,
+        rewindFormatVersion: taskRun.participantRequest.formatVersion,
         onPersistentSessionReady: id => taskRun.bindSession(id), sessionId, chatId: chat.id, selection: model,
         backgroundTasks: { variables: false, posture: false, characterDesign: false },
-        system: '本次执行玩家手动发起的台账整理。台账是给玩家查阅的备忘录，整理后下一轮正文会参考一次。阅读给出的剧情（第 '
-          + (backlog.from + 1) + '–' + backlog.through + ' 轮），对照当前台账，调用一次 ledger_submit 提交这些剧情带来的增量；没有变化也提交 {}。不得改写正文、变量或姿势。\n\n' + MANUAL_RULES,
+        system: LEDGER_ITEM.system({ from: backlog.from + 1, through: backlog.through }),
         messages: [{ role: 'user', content: [{ type: 'text', text: ledgerContext(chat.ledger) + '\n\n【待整理剧情】\n' + backlog.text }] }],
         tools: [LEDGER_SUBMIT_TOOL],
         maxToolCalls: 4,

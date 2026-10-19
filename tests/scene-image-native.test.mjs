@@ -1,5 +1,7 @@
 import { zipText } from './fixtures/zip-text.mjs'
-import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
+import { sessionEvents as allSessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
+// Background workers are recorded on the parent as subagent/catalog (DSH 0.2); the counts below are about the story itself.
+const sessionEvents = session => allSessionEvents(session).filter(event => event.type !== 'subagent/catalog')
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createSceneImageNativeRuntime } from './fixtures/scene-image-native-runtime.mjs'

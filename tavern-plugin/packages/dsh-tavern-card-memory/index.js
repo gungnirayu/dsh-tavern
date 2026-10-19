@@ -7,6 +7,12 @@ import { createDocumentsMemorySource } from 'dsh-mnemon-source-documents'
 export const CARD_MEMORY_TOOLS = ['tavern_memory_search', 'tavern_memory_preference', 'tavern_memory_experience']
 const digest = value => createHash('sha256').update(value).digest('hex')
 const text = (value, maximum) => String(value ?? '').trim().slice(0, maximum)
+// DSH 0.2.0（session format v4）用生产者自有 kind（plugin:<name>）替代了裸
+// kind:'plugin' + plugin；迁移前的旧行仍要识别。
+function isPluginMessageSource(source) {
+  const kind = source && typeof source === 'object' ? source.kind : undefined
+  return typeof kind === 'string' && (kind === 'plugin' || kind.startsWith('plugin:'))
+}
 function requireCard(chat) {
   if (!chat || chat.mode !== 'card') throw new Error('记忆仅限卡片模式')
 }
@@ -127,7 +133,7 @@ export function createCardMemory({ dataRoot }) {
   async function appendRecall({ chat, payload, decision }) {
     if (chat?.mode !== 'card' || decision.kind !== 'enter' || Number(payload.step) !== 1) return decision
     if (decision.messages.some(message => message.source?.form === 'card-memory')) return decision
-    const direct = (payload.messages || []).filter(message => message.role === 'user' && message.source?.kind !== 'plugin')
+    const direct = (payload.messages || []).filter(message => message.role === 'user' && !isPluginMessageSource(message.source))
     if (!direct.length) return decision
     const query = direct.flatMap(message => (message.content || []).filter(block => block.type === 'text').map(block => block.text)).join('\n')
     const recalled = await search(chat, query)
@@ -150,7 +156,7 @@ export function createCardMemory({ dataRoot }) {
       '用户可要求查看、纠正、移除记忆。下列偏好是当前完整列表，以它替代旧列表；经验仅为本次检索命中。',
       JSON.stringify(recalled)
     ].join('\n')
-    return { ...decision, messages: [...decision.messages, { id: randomUUID(), role: 'user', content: [{ type: 'text', text: notice }], source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'card-memory' } }] }
+    return { ...decision, messages: [...decision.messages, { id: randomUUID(), role: 'user', content: [{ type: 'text', text: notice }], source: { kind: 'plugin:dsh-tavern', form: 'card-memory' } }] }
   }
   return { search, preference, experience, recordValidation, appendRecall }
 }

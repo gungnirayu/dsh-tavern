@@ -1,3 +1,15 @@
+        // Offline estimate for comparing sections, not a tokenizer or a bill: a CJK character
+        // is about 1.5 tokens, a Latin word piece of 4 letters or 3 digits about 1.
+        function estimateTavernTokens(text) {
+            let halfTokens = 0;
+            for (const piece of String(text ?? "").match(/[A-Za-z]+|[0-9]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|\r?\n|[^\p{L}\p{N}\s]+|[^\s]/gu) || []) {
+                if (/^[A-Za-z]+$/.test(piece)) halfTokens += 2 * Math.ceil(piece.length / 4);
+                else if (/^[0-9]+$/.test(piece)) halfTokens += 2 * Math.ceil(piece.length / 3);
+                else if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(piece)) halfTokens += 3;
+                else halfTokens += 2 * Math.ceil([...piece].length / 2);
+            }
+            return Math.ceil(halfTokens / 2);
+        }
         function requestContextSections(request) {
             if (!request) return [];
             const sections = [];
@@ -114,7 +126,7 @@
             }, [props.contextSessionId, refresh]);
 			const request = record && record.request;
             const text = React.useMemo(() => request ? JSON.stringify(request, null, 2) : "", [request]);
-            const sections = React.useMemo(() => requestContextSections(request).map(section => ({ ...section, searchText: (section.title + section.text).toLowerCase() })), [request]);
+            const sections = React.useMemo(() => requestContextSections(request).map(section => ({ ...section, tokens: estimateTavernTokens(section.text), searchText: (section.title + section.text).toLowerCase() })), [request]);
             // Contexts reach 100k+ characters; filter off the typing path.
             const deferredQuery = React.useDeferredValue(query.toLowerCase());
             function downloadJson() {
@@ -144,7 +156,7 @@
                         defaultOpen: !!deferredQuery && sectionIndex < 20,
                         summary: h("summary", null, h("span", { className: "dsh-context-chevron", "aria-hidden": true }, "›"),
                             h("span", { className: "dsh-context-section-title" }, section.title),
-                            h("span", { className: "dsh-context-count" }, (section.count ?? section.text.length).toLocaleString() + " 字符")),
+                            h("span", { className: "dsh-context-count" }, (section.count ?? section.text.length).toLocaleString() +  " 字符 · 约 " + section.tokens.toLocaleString() + " tokens")),
                         render: () => h(React.Fragment, null, ...(section.displayParts || [{ text: section.text }]).filter(part => part.text.trim()).map((part, index) => part.catalog
                             ? h("details", { key: index, className: "dsh-context-source" },
                                 h("summary", null, h("span", { className: "dsh-context-chevron", "aria-hidden": true }, "›"), part.label),

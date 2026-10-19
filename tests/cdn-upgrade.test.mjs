@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, link, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -10,7 +11,7 @@ import test from 'node:test'
 import { parse } from 'yaml'
 import { adaptedDshVersion } from '../bin/dsh-compatibility.mjs'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const { runtimeFiles } = createRequire(import.meta.url)('../bin/download.cjs')
 
@@ -42,11 +43,11 @@ test('旧版 Desktop 经最新安装脚本走 CDN 覆盖升级：运行文件落
     // Stub DSH boot; pnpm comes from the mock PATH. Download, hashing and overwrite are real.
     ['bin/dsh-tavern.mjs', Buffer.from("import fs from 'node:fs'; fs.writeFileSync(new URL('../installed.txt', import.meta.url), process.argv.slice(2).join(' '));\n")],
   ])
-  for (const file of [...patches, 'bin/dsh-compatibility.mjs', 'config/dsh-compatibility.json']) {
+  for (const file of [...patches, 'bin/dsh-compatibility.mjs', 'tavern-plugin/lib/domain/host-compatibility.js', 'config/dsh-compatibility.json']) {
     files.set(file, await readFile(new URL('../' + file, import.meta.url)))
   }
   const revision = 'b'.repeat(40)
-  const manifest = { schemaVersion: 2, revision, releaseSequence: 42, version: '1.1.1', files: [...files].map(([file, bytes]) => ({ path: file, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })) }
+  const manifest = { schemaVersion: 2, revision, releaseSequence: 42, version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, files: [...files].map(([file, bytes]) => ({ path: file, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })) }
   manifest.files.push({ path: 'docs/do-not-download.txt', size: 0, sha256: 'a'.repeat(64) })
   manifest.files.push({ path: 'patches/../escape.txt', size: 0, sha256: 'a'.repeat(64) })
   const requests = []
@@ -84,12 +85,25 @@ test('旧版 Desktop 经最新安装脚本走 CDN 覆盖升级：运行文件落
   await writeFile(bootstrap, (isWindows ? '\uFEFF' : '') + downloaded)
   const verifyPatch = path.join(mocks, 'verify-patches.cjs')
   await writeFile(verifyPatch, `const fs=require('node:fs'), path=require('node:path'); const app=process.argv[process.argv.indexOf('--dir')+1]; for(const file of ${JSON.stringify(patches)}) fs.readFileSync(path.join(app,file)); if(process.env.DSH_TEST_DEPENDENCY_EXIT) process.exit(Number(process.env.DSH_TEST_DEPENDENCY_EXIT));`)
-  for (const [name, body] of [
-    ['git', isWindows ? '@exit /b 1\r\n' : '#!/bin/sh\nexit 1\n'],
-    ['dsh', isWindows ? `@echo ${adaptedDshVersion}\r\n@exit /b 0\r\n` : `#!/bin/sh\necho '${adaptedDshVersion}'\nexit 0\n`],
-    ['pnpm', isWindows ? `@"${process.execPath}" "${verifyPatch}" %*\r\n@exit /b %errorlevel%\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${verifyPatch}" "$@"\n`],
-  ]) await writeFile(path.join(mocks, name + (isWindows ? '.cmd' : '')), body, { mode: 0o755 })
-  const env = { ...process.env, DSH_HOME: root, DSH_TAVERN_HOST: 'desktop', DSH_TAVERN_APP_DIR: app,
+  await writeFile(path.join(mocks, 'git' + (isWindows ? '.cmd' : '')), isWindows ? '@exit /b 1\r\n' : '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  // The installer requires an official Desktop and runs dsh/pnpm from its bundle (bin/official-desktop-runtime.cjs layout):
+  // Node stands in for its Electron, a stub DSH reports the adapted version, and its pnpm checks the patches.
+  const desktop = path.join(root, 'DeepSeek Harness')
+  const executable = process.platform === 'darwin' ? path.join(desktop, 'Contents/MacOS/DeepSeek Harness') : path.join(desktop, isWindows ? 'DeepSeek Harness.exe' : 'deepseek-harness')
+  const resources = process.platform === 'darwin' ? path.join(desktop, 'Contents/Resources') : path.join(desktop, 'resources')
+  await mkdir(path.dirname(executable), { recursive: true })
+  if (isWindows) await link(process.execPath, executable).catch(() => copyFile(process.execPath, executable))
+  else await writeFile(executable, `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 })
+  for (const [file, body] of [
+    ['app/package.json', '{"name":"@deepseek-ai/dsh-desktop"}'],
+    ['app/dsh/package.json', '{}'],
+    ['app/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js', `console.log(${JSON.stringify(adaptedDshVersion)})\n`],
+    ['runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs', `await import(${JSON.stringify(pathToFileURL(verifyPatch).href)})\n`],
+  ]) {
+    await mkdir(path.dirname(path.join(resources, file)), { recursive: true })
+    await writeFile(path.join(resources, file), body)
+  }
+  const env = { ...process.env, DSH_HOME: root, DSH_TAVERN_HOST: 'desktop', DSH_TAVERN_APP_DIR: app, DSH_DESKTOP_APP_EXECUTABLE: executable,
     DSH_TAVERN_CDN_METADATA_URL: `${base}/manifest`, DSH_TAVERN_CDN_ROOT_URL: `${base}/source`,
     DSH_TAVERN_ARCHIVE_URL: `${base}/forbidden-archive`, DSH_TAVERN_TARGET_COMMIT: revision,
   }

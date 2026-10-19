@@ -11,7 +11,12 @@ const sleep = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(
 export function copyTreeSync(from, to, { dereference = false } = {}) {
   const stat = dereference ? statSync(from) : lstatSync(from)
   if (stat.isSymbolicLink()) {
-    symlinkSync(readlinkSync(from), to, process.platform === 'win32' && statSync(from, { throwIfNoEntry: false })?.isDirectory() ? 'dir' : undefined)
+    const target = readlinkSync(from)
+    // Windows directory links are recreated as junctions: a directory symlink needs
+    // admin or Developer Mode (EPERM for normal accounts). Junctions take absolute
+    // targets only, so a relative link keeps pointing at the same place in the copy.
+    if (process.platform === 'win32' && statSync(from, { throwIfNoEntry: false })?.isDirectory()) symlinkSync(path.resolve(path.dirname(to), target), to, 'junction')
+    else symlinkSync(target, to)
   } else if (stat.isDirectory()) {
     mkdirSync(to, { recursive: true })
     for (const name of readdirSync(from)) copyTreeSync(path.join(from, name), path.join(to, name), { dereference })

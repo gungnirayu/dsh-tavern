@@ -79,7 +79,9 @@ function splitHtmlBoundaries(source, editing = false) {
     if (isNarrativeTag(tag, token[0])) {
       if (start < 0) {
         append('text', source.slice(cursor, token.index))
-        append('marker', token[0])
+        // Editing shows the card's protocol tags inline; splitting at each one
+        // scattered one reply over many boxes (<now_plot>, <LiveRoom>, <pic>…).
+        append(editing ? 'text' : 'marker', token[0])
         cursor = tokens.lastIndex
       }
       continue

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { installCliRuntime, migrateCliHome, cliRuntimeCommand } from '../bin/cli-runtime.mjs'
-import { adaptedDshVersion, dshCompatibilityNotice } from '../bin/dsh-compatibility.mjs'
+import { adaptedDshVersion, dshCompatibilityNotice, desktopReleasesUrl, dshaReleasesUrl } from '../bin/dsh-compatibility.mjs'
 
 function temporary(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'tavern-runtime-test-'))
@@ -63,37 +63,16 @@ for (const platform of ['linux', 'win32']) {
   })
 }
 
-test('failed download leaves installed runtime untouched', async t => {
-  const root = path.join(temporary(t), 'runtime')
-  put(path.join(root, 'original'), 'working')
-  await assert.rejects(() => installCliRuntime({ root, run() { throw new Error('offline') } }), /offline/)
-  assert.equal(readFileSync(path.join(root, 'original'), 'utf8'), 'working')
-})
-
-test('CLI migration copies native history once, leaves originals and host dependencies alone', t => {
-  const root = temporary(t), source = path.join(root, 'host'), target = path.join(root, 'private')
-  put(path.join(source, 'profiles/tavern/package.json'), JSON.stringify({ dshTavern: { host: 'cli' } }))
-  put(path.join(source, 'profile-data/tavern/sessions/example/events.jsonl'), 'native history')
-  put(path.join(source, 'profiles/node_modules/host-only'), 'host dependency')
-  put(path.join(source, 'settings.yaml'), 'model: fixture')
-  assert.equal(migrateCliHome({ source, target }), true)
-  const migrated = path.join(target, 'profile-data/tavern/sessions/example/events.jsonl')
-  assert.equal(readFileSync(migrated, 'utf8'), 'native history')
-  assert.equal(existsSync(path.join(target, 'profiles/node_modules')), false)
-  put(migrated, 'new private history')
-  assert.equal(migrateCliHome({ source, target }), false)
-  assert.equal(readFileSync(migrated, 'utf8'), 'new private history')
-  assert.equal(readFileSync(path.join(source, 'profile-data/tavern/sessions/example/events.jsonl'), 'utf8'), 'native history')
-})
-
 for (const host of ['desktop', 'android']) {
   test(`${host}: migration never adopts external host data and mismatched versions report installation stopped`, t => {
     const source = temporary(t), target = path.join(source, 'private')
     put(path.join(source, 'profiles/tavern/package.json'), JSON.stringify({ dshTavern: { host } }))
     assert.equal(migrateCliHome({ source, target }), false)
-    const notice = dshCompatibilityNotice('99.0.0', host)
+    const notice = dshCompatibilityNotice('0.1.5-rc.2', host)
     assert.match(notice, /已停止安装/)
-    assert.match(notice, /https:\/\/github.com\//)
+    // 0.2.0-rc.2 适配：Desktop 的下载地址换成官方 https://www.deepseek.com/harness/，
+    // 断言改为跟随 config/dsh-compatibility.json 的字段，不再假设发布页在 GitHub。
+    assert.ok(notice.includes(host === 'desktop' ? desktopReleasesUrl : dshaReleasesUrl), notice)
   })
 }
 

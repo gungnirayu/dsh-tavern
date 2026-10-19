@@ -103,11 +103,14 @@ export function createPluginData({ store, now = Date.now }) {
   }
 
   /** The player's per-game choices: plugins switched off, which plugin replaces a stage,
-   * settlement tasks switched off and the player's task order ('plugin:task' keys). */
+   * settlement tasks switched off, the player's task order ('plugin:task' keys), and the
+   * values of each plugin's own game settings ({ plugin: { key: value } }). */
   const strings = list => Array.isArray(list) ? list.filter(item => typeof item === 'string') : []
+  const objects = value => Object.fromEntries(Object.entries(value && typeof value === 'object' && !Array.isArray(value) ? value : {})
+    .filter(([, item]) => item && typeof item === 'object' && !Array.isArray(item)).map(([owner, item]) => [owner, { ...item }]))
   const settingsOf = value => ({ disabled: strings(value.settings?.disabled),
     replacements: value.settings?.replacements && typeof value.settings.replacements === 'object' ? { ...value.settings.replacements } : {},
-    disabledTasks: strings(value.settings?.disabledTasks), taskOrder: strings(value.settings?.taskOrder) })
+    disabledTasks: strings(value.settings?.disabledTasks), taskOrder: strings(value.settings?.taskOrder), values: objects(value.settings?.values) })
   async function readSettings(chatId) { return settingsOf(await read(chatId)) }
   async function updateSettings(chatId, change) {
     return update(chatId, value => { const next = settingsOf(value); change(next); value.settings = next; return settingsOf(value) })

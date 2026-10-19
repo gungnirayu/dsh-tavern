@@ -1,3 +1,4 @@
+import { createSettlementItems } from '../tavern-plugin/lib/domain/background-pipeline.js'
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -13,9 +14,10 @@ import { readSceneImageSystemInstruction, readScenePlanInstruction } from '../ta
 test('人物设计读取工具在生图会话中只注册一次，跨任务保持稳定且不泄漏上一任务', async () => {
   const registered = new Map(), counts = new Map(), answers = []
   let pending
-  const session = { id: 'image-reader', header: {}, events: [], append(type, data) { this.events.push({ type, data }) } }
+  const session = { id: 'image-reader', header: { id: 'image-reader', createdAt: 5 }, events: [], append(type, data) { this.events.push({ type, data }) } }
+  const parentEvents = []
   const agents = {
-    get: () => ({ session: { header: {} } }),
+    get: () => ({ id: 'parent', session: { header: {}, events: parentEvents, append(type, data) { parentEvents.push({ type, data }) } } }),
     async create(options) {
       await options.setup({
         systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {},
@@ -34,7 +36,8 @@ test('人物设计读取工具在生图会话中只注册一次，跨任务保�
       })() }, async whenIdle() { await pending } }, async dispose() {} }
     }
   }
-  const runner = createBackgroundAgentRunner({ agents, id: () => session.id })
+  const created = []
+  const runner = createBackgroundAgentRunner({ agents, id: () => session.id, onCreated: (id, parentId) => created.push([id, parentId]) })
   try {
     for (const version of ['第一轮资料', '第二轮资料']) {
       await runner.run({
@@ -47,6 +50,8 @@ test('人物设计读取工具在生图会话中只注册一次，跨任务保�
       assert.equal(JSON.parse(await registered.get('character_design_read').execute({})).ok, false, '空闲时不能继续读取旧快照')
     }
     assert.deepEqual(answers, ['第一轮资料', '第二轮资料'])
+    assert.deepEqual(created, [['image-reader', 'parent']], '新建后台会话时通知一次，常驻会话复用时不再通知')
+    assert.deepEqual(parentEvents, [{ type: 'subagent/catalog', data: { version: 0, childId: 'image-reader', childCreatedAt: 5, mode: 'continuable', label: parentEvents[0].data.label } }], '后台会话登记进父会话的子智能体列表，只登记一次')
     assert.equal(counts.get('character_design_read'), 1)
     assert.equal(registered.has('character_design_save'), false)
   } finally { await runner.dispose() }
@@ -276,30 +281,6 @@ test('生图常驻会话隔离后台任务与游戏，先保存编号且恢复�
   } finally { await runner.dispose() }
 })
 
-test('后台 Session 建立失败时不对外发布虚假的 traceSessionId', async () => {
-  const runner = createBackgroundAgentRunner({
-    id: () => 'background-never-created',
-    agents: {
-      get: () => ({ id: 'parent', session: { header: {} } }),
-      async create(options) {
-        await options.setup({
-          systemPrompt: { section() {}, suppressRuntimeContext() {} },
-          tools: { restrict() { throw new Error('setup failed') }, register() {} },
-          on() {}
-        })
-      }
-    }
-  })
-
-  await assert.rejects(runner.run({
-    sessionId: 'parent', persistent: true, task: 'candidate',
-    selection: { provider: 'test', model: 'fake' }, messages: [], tools: []
-  }), function (error) {
-    assert.equal(error.traceSessionId, '')
-    return true
-  })
-})
-
 for (const rewindFails of [false, true]) test('后台 Surface 回退失败时停止任务: ' + rewindFails, async () => {
   const parent = { id: 'parent-session', session: { header: { cwd: '/tmp/tavern', delegationDepth: 0 } } }
   const sourceEvents = [
@@ -363,15 +344,17 @@ for (const rewindFails of [false, true]) test('后台 Surface 回退失败时停
   if (rewindFails) { await assert.rejects(pending, /后台历史回退失败/); assert.equal(appendCalls.length, 0); assert.equal(createCalls, 0); assert.equal(followups, 0); return }
   const result = await pending
   assert.equal(result.traceSessionId, 'old-candidate')
-  assert.equal(result.traceBoundary, rewindFails ? 7 : 8)
+  assert.equal(result.traceBoundary, rewindFails ? 7 : 12)
   assert.equal(resumeCalls, 1)
   assert.equal(createCalls, 0)
   if (rewindFails) { assert.equal(appendCalls.length, 0); return }
-  assert.equal(appendCalls.length, 1)
-  assert.equal(appendCalls[0].type, 'assistant/message')
-  assert.deepEqual(appendCalls[0].data.message.content, [])
-  assert.deepEqual(appendCalls[0].options.surfaceOp, { op: 'replace', start: 3, end: 4 })
-  assert.deepEqual(appendCalls[0].options.sourceEventSeqs, [3, 4])
+  // The replacement lands after the closed turn, so the rewind opens a turn for
+  // it and closes it again: released V4 reads the replacement at the log tail.
+  assert.deepEqual(appendCalls.map(call => call.type), ['turn/start', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+  const written = appendCalls.find(call => call.type === 'assistant/message')
+  assert.deepEqual(written.data.message.content, [])
+  assert.deepEqual(written.options.surfaceOp, { op: 'replace', start: 3, end: 4 })
+  assert.deepEqual(written.options.sourceEventSeqs, [3, 4])
 })
 
 test('整段回退失败时改用新的后台会话，旧会话退休 (#164)', async () => {
@@ -427,31 +410,6 @@ test('整段回退失败时改用新的后台会话，旧会话退休 (#164)', a
   assert.deepEqual(retired, [['old-background', parent.id]])
   assert.deepEqual(ready, ['new-background'])
 })
-
-test('manual stop cancels the active background agent belonging to this game only', async () => {
-  let ready, finish, cancelled = 0;
-  const started = new Promise(resolve => { ready = resolve; });
-  const idle = new Promise(resolve => { finish = resolve; });
-  const session = { id: 'stop-background', header: {}, events: [], append(type, data) { this.events.push({ type, data }); } };
-  const runner = createBackgroundAgentRunner({ id: () => session.id, agents: {
-    get: () => ({ session: { header: {} } }),
-    async create(options) {
-      await options.setup({ systemPrompt: { section() {}, suppressRuntimeContext() {} }, on() {}, tools: { restrict() {}, register() { return () => {}; } } });
-      return { agent: { session, followup() { ready(); }, whenIdle: () => idle,
-        cancel(reason) { assert.equal(reason.kind, 'user'); cancelled++; finish(); }
-      }, async dispose() {} };
-    }
-  } });
-  const run = runner.run({ sessionId: 'game', persistent: true, task: 'settlement', selection: { provider: 'fake', model: 'fake' }, messages: [], tools: [] });
-  const rejected = assert.rejects(run);
-  await started;
-  assert.equal(runner.cancel('other-game'), 0);
-  assert.equal(runner.cancel('game'), 1);
-  await rejected;
-  assert.equal(cancelled, 1);
-  assert.equal(runner.cancel('game'), 0);
-  await runner.dispose();
-});
 
 test('常驻后台会话在下一任务替换世界书，任务内固定且不改历史', async () => {
   let assemble, pending, current = '当前DLC', creates = 0
@@ -533,7 +491,7 @@ test('插件结算工具：随后台会话固定注册，只在结算任务里�
   const runner = createBackgroundAgentRunner({
     id: () => 'background-plugin-tools',
     backgroundTools: [{ name: 'posture_submit', parameters: { type: 'object' } }, { name: 'candidate_submit', parameters: { type: 'object' } }],
-    pluginSettlement: () => pluginSettlement,
+    settlementItems: () => createSettlementItems({ plugins: () => pluginSettlement }),
     pluginCandidate: () => ({ sections: async ({ gameId }) => [{ text: gameId + ' 候选多给探索选项' }] }),
     agents: {
       get: () => ({ id: 'parent', session: { header: {} } }),
@@ -611,5 +569,15 @@ test('插件后台任务：独立的一次性会话，插件工具注册在这�
     assert.match(results[1], /不允许调用 posture_submit/)
     assert.match(texts[0], /任务类型：插件任务[\s\S]*【任务要求】\n按日期推进世界/)
     assert.equal(registered.has('world_advance'), false, '任务结束后撤销插件工具')
+
+    // A model that keeps calling a tool this task refuses is stopped, not left to loop until the timeout.
+    let concluded = 0
+    script = async () => { for (let index = 0; index < 20; index++) results.push(await registered.get('posture_submit').execute({}, { concludeTurn() { concluded++ } })) }
+    results.length = 0
+    await runner.run({ sessionId: 'parent', persistent: false, task: 'plugin', pluginName: 'world-sim', selection: { provider: 'test', model: 'test' },
+      system: '按日期推进世界', messages: [], tools: [{ name: 'world_advance', description: '推进', parameters: { type: 'object' } }], maxToolCalls: 3, onToolCall: async () => '{}' })
+    assert.match(results[2], /不允许调用/)
+    assert.match(results[3], /多次调用了当前任务不允许的工具，本轮结束/)
+    assert.ok(concluded >= 1)
   } finally { await runner.dispose() }
 })

@@ -13,3 +13,12 @@ test('rollback, regeneration and missing sessions never reuse another turn or ba
   assert.equal(foregroundWorldbookReads({ messages: [{ role: 'assistant', turn: 1 }] }, session), '')
   assert.equal(foregroundWorldbookReads({ messages: [{ role: 'assistant', turn: 2 }] }, undefined), '')
 })
+
+test('DSH 0.2 tool messages (session v4) carry the read the same way as the 0.1.5 tool-result blocks', () => {
+  const id = 'v4-read'
+  const session = { events: [
+    { type: 'assistant/message', data: { turn: 3, message: { content: [{ type: 'tool-call', name: 'worldbook_search', id, arguments: JSON.stringify({ refs: ['62'] }) }] } } },
+    { type: 'tool/result', data: { turn: 3, message: { role: 'tool', toolCallId: id, isError: false, content: [{ type: 'text', text: JSON.stringify({ mode: 'read', entries: [entry('62', '钟楼的来历')] }) }] } } }
+  ] }
+  assert.match(foregroundWorldbookReads({ messages: [{ role: 'assistant', turn: 3 }] }, session), /钟楼的来历/)
+})

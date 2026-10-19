@@ -58,8 +58,17 @@ export function createTavernSkillModule(options = {}) {
   const files = options.files || createDurableFilePromotion(options.filePromotion)
   if (str(options.directory) === '' || str(options.builtInDirectory) === '') throw new Error('Tavern Skill Module 缺少目录')
 
+  // Searched in order, the first match wins: Tavern's own, then plugins' (read-only), then the player's.
   const roots = [{ kind: 'builtin', path: builtInDirectory, role: 'card' }, ...(options.backgroundDirectory ? [{ kind: 'builtin', path: path.resolve(options.backgroundDirectory), role: 'background' }] : []), { kind: 'user', path: directory, role: 'card' }]
   const listeners = new Set()
+  function changed() { for (const listener of listeners) listener() }
+  /** A plugin's skills directory, after Tavern's own and before the player's; returns its removal. */
+  function addRoot({ path: root, role = 'card', owner = '' }) {
+    const entry = { kind: 'plugin', path: path.resolve(str(root)), role: role === 'background' ? 'background' : 'card', owner: str(owner) }
+    roots.splice(roots.findIndex(item => item.kind === 'user'), 0, entry)
+    changed()
+    return () => { const at = roots.indexOf(entry); if (at >= 0) { roots.splice(at, 1); changed() } }
+  }
   const configPath = path.join(directory, '.assignments.json')
   let pending = Promise.resolve()
   function mutate(operation) {
@@ -69,7 +78,7 @@ export function createTavernSkillModule(options = {}) {
   }
   async function assignments() {
     try {
-      const current = JSON.parse(await readFile(configPath, 'utf8'))
+      const current = JSON.parse((await files.read(configPath))?.toString('utf8') || '{}')
       for (const [name, value] of Object.entries(current)) {
         const canonical = canonicalTavernSkillName(name)
         if (canonical !== name && !Object.hasOwn(current, canonical)) current[canonical] = value
@@ -84,7 +93,7 @@ export function createTavernSkillModule(options = {}) {
 
   const editPath = name => path.join(directory, '.edits', normalizeTavernSkillName(name) + '.json')
   async function override(name) {
-    try { return JSON.parse(await readFile(editPath(name), 'utf8')) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+    try { return JSON.parse((await files.read(editPath(name)))?.toString('utf8') || 'null') } catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
   async function edit(input) {
     const skill = await read(input.name)
@@ -130,7 +139,9 @@ export function createTavernSkillModule(options = {}) {
 
   async function write(input = {}) {
     const name = normalizeTavernSkillName(canonicalTavernSkillName(input.name))
-    if (await Promise.all(roots.filter(root => root.kind === 'builtin').map(root => exists(target(root.path, name)))).then(values => values.some(Boolean))) throw new Error('内置 Skill 不可覆盖: ' + name)
+    for (const root of roots.filter(item => item.kind !== 'user')) {
+      if (await exists(target(root.path, name))) throw new Error((root.kind === 'plugin' ? '插件自带的' : '内置') + ' Skill 不可覆盖: ' + name)
+    }
     const destination = target(directory, name)
     const present = await exists(destination)
     if (present && input.overwrite !== true) throw new Error('Skill 已存在；确认修改后请明确覆盖: ' + name)
@@ -169,7 +180,7 @@ export function createTavernSkillModule(options = {}) {
     if (moved) await rm(backup, { recursive: true, force: true })
     if (agents !== undefined) await files.update(configPath, raw => JSON.stringify({ ...(raw ? JSON.parse(raw) : {}), [name]: agents }))
 
-    await rm(editPath(name), { force: true })
+    await files.remove(editPath(name))
     return { name, source: 'user', path: destination, content, chars: content.length, overwritten: present }
   }
 
@@ -256,13 +267,13 @@ export function createTavernSkillModule(options = {}) {
   async function remove(name) {
     const skill = await read(name)
     if (!skill) throw new Error('Skill 不存在')
-    if (skill.source === 'builtin') {
+    if (skill.source === 'builtin' || skill.source === 'plugin') {
       await files.update(configPath, raw => JSON.stringify({ ...(raw ? JSON.parse(raw) : {}), [skill.name]: null }))
       return
     }
-    await rm(editPath(skill.name), { force: true })
+    await files.remove(editPath(skill.name))
     await rm(path.dirname(skill.path), { recursive: true })
     await files.update(configPath, raw => { const data = raw ? JSON.parse(raw) : {}; delete data[skill.name]; return JSON.stringify(data) })
   }
-  return Object.freeze({ edit: input => mutate(() => edit(input)), read, list, readReference, referenceFiles, write: input => mutate(() => write(input)), importBundle: input => mutate(() => importBundle(input)), assign: (name, agents) => mutate(() => assign(name, agents)), remove: name => mutate(() => remove(name)), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) } })
+  return Object.freeze({ addRoot, edit: input => mutate(() => edit(input)), read, list, readReference, referenceFiles, write: input => mutate(() => write(input)), importBundle: input => mutate(() => importBundle(input)), assign: (name, agents) => mutate(() => assign(name, agents)), remove: name => mutate(() => remove(name)), subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) } })
 }

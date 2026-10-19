@@ -4,7 +4,7 @@
 
 本版 CLI 固定安装 DSH 0.1.2-rc.1。Desktop 推荐 2.0.5（发布说明对应 DSH 0.1.2-rc.1），DSHA 推荐 1.2.0-rc1.4（预览版，发布说明对应相同 DSH 版本）；两个宿主均只提示、不阻止其他版本，也不自动更换宿主。
 
-Desktop 下载：https://github.com/anywhere-labs/dsh-desktop/releases 。找到 v2.0.5，展开 Assets，选择平台安装包。
+Desktop 下载：https://www.deepseek.com/harness/ 。选择对应平台的安装包。
 
 DSHA 下载：https://github.com/DSH-APP/DSHA/releases 。找到 v1.2.0-rc1.4，展开 Assets，选择 APK。
 

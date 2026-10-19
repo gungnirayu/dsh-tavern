@@ -138,8 +138,15 @@ test('原生 DSH 筛选工具、结算与重启恢复使用同一后台 Session 
   console.log('script-window task bytes:', Buffer.byteLength(currentText(scriptFirst)), Buffer.byteLength(currentText(scriptSecond)))
   for (const task of ['settlement', 'candidate', 'character-design', 'worldbook-filter']) {
     searchPhase = 0
+    // The filter task submits through its own tools; mirror createWorldbookFilter so the run can finish.
+    const filterRun = { selected: undefined }
+    const filterTask = task === 'worldbook-filter'
     await runner.run({ sessionId: 'parent', task, persistent: true, selection, persistentSessionId: first.traceSessionId,
-      messages: [{ role: 'user', content: [{ type: 'text', text: '读取少林资料' }] }], tools: [] })
+      messages: [{ role: 'user', content: [{ type: 'text', text: '读取少林资料' }] }],
+      tools: filterTask ? WORLD_BOOK_FILTER_TOOLS : [],
+      stopToolsWhen: filterTask ? () => filterRun.selected !== undefined : undefined,
+      acceptWithoutText: filterTask ? () => filterRun.selected !== undefined : undefined,
+      onToolCall: filterTask ? async () => { filterRun.selected = ['entry:0']; return JSON.stringify({ ok: true, selected: filterRun.selected }) } : undefined })
     assert.ok(searchPhase >= 3)
     assert.match(JSON.stringify(requests.at(-1).messages), /少林门规原文/)
   }

@@ -1,8 +1,10 @@
-		const tavernSessionModes = { values: {}, listeners: new Set() };
+		// `loaded` tells "not a Tavern session" apart from "the list has not arrived".
+		const tavernSessionModes = { values: {}, listeners: new Set(), loaded: false };
 		function publishSessionModes(items) {
 			const next = {};
 			(items || []).forEach(function (item) { next[item.sessionId] = item.mode || "story"; });
 			tavernSessionModes.values = next;
+			tavernSessionModes.loaded = true;
 			tavernSessionModes.listeners.forEach(function (listener) { listener(next); });
 		}
 		function publishSessionMode(sessionId, mode) {
@@ -12,8 +14,23 @@
 		}
 		function useTavernSessionMode(sessionId) {
 			const [values, setValues] = React.useState(tavernSessionModes.values);
-			React.useEffect(function () { tavernSessionModes.listeners.add(setValues); return function () { tavernSessionModes.listeners.delete(setValues); }; }, []);
+			React.useEffect(function () {
+				// The left panel publishes the modes, but on mobile it stays unmounted
+				// until the drawer opens; fetch once here so header controls do not
+				// wait for it. An unknown session still renders nothing.
+				ensureTavernSessionModes();
+				tavernSessionModes.listeners.add(setValues);
+				return function () { tavernSessionModes.listeners.delete(setValues); };
+			}, []);
 			return values[sessionId] || "";
+		}
+		let tavernSessionModeRequest = null;
+		function ensureTavernSessionModes() {
+			if (tavernSessionModeRequest || tavernSessionModes.loaded) return;
+			tavernSessionModeRequest = Promise.resolve()
+				.then(function () { return rpc("listSessions"); })
+				.then(function (result) { publishSessionModes(result && result.sessions); }, function () {})
+				.then(function () { tavernSessionModeRequest = null; });
 		}
 		function escapeOpeningPreviewText(value) {
 			return String(value || "")
@@ -56,7 +73,7 @@
         // @include modules/remote-document-loader.js
 
 		function tavernStaticAssetShim() {
-			return '<script data-dsh-tavern-static-cache>(function(){function proxy(value){var source=String(value||"");return /^https:\\/\\//i.test(source)?"/api/dsh-tavern/static-assets?url="+encodeURIComponent(source)+(/\\.[cm]?js(?:[?#]|$)/i.test(source)?"&host=2":""):source;}function css(value){return String(value||"").replace(/url\\(\\s*(?:(["\\\'])(https:\\/\\/[^"\\\']+)\\1|(https:\\/\\/[^"\\\')\\s]+))\\s*\\)/gi,function(_,quote,quoted,bare){quote=quote||"";return "url("+quote+proxy(quoted||bare)+quote+")";});}window.__dshTavernStaticAssetUrl=proxy;var nativeSet=Element.prototype.setAttribute;Element.prototype.setAttribute=function(name,value){var key=String(name||"").toLowerCase(),tag=String(this.tagName||"").toLowerCase();if(!(key==="src"&&/^(video|audio|source|iframe|frame)$/.test(tag))&&(key==="src"||key==="poster"||(key==="href"&&tag==="link"))&&/^https:\\/\\//i.test(String(value||"")))value=proxy(value);else if(key==="style")value=css(value);return nativeSet.call(this,name,value);};[["HTMLImageElement","src"],["HTMLScriptElement","src"],["HTMLVideoElement","poster"],["HTMLLinkElement","href"]].forEach(function(row){var Type=window[row[0]],descriptor=Type&&Object.getOwnPropertyDescriptor(Type.prototype,row[1]);if(!descriptor||!descriptor.set||!descriptor.get)return;try{Object.defineProperty(Type.prototype,row[1],{configurable:descriptor.configurable,enumerable:descriptor.enumerable,get:descriptor.get,set:function(value){return descriptor.set.call(this,proxy(value));}});}catch(e){}});if(window.CSSStyleDeclaration&&CSSStyleDeclaration.prototype.setProperty){var nativeProperty=CSSStyleDeclaration.prototype.setProperty;CSSStyleDeclaration.prototype.setProperty=function(name,value,priority){return nativeProperty.call(this,name,css(value),priority);};}new MutationObserver(function(records){records.forEach(function(record){var node=record.target;if(!node||node.nodeType!==1)return;["src","poster"].forEach(function(name){if(name==="src"&&/^(video|audio|source|iframe|frame)$/i.test(node.tagName))return;var value=node.getAttribute&&node.getAttribute(name);if(/^https:\\/\\//i.test(String(value||"")))nativeSet.call(node,name,proxy(value));});if(String(node.tagName||"").toLowerCase()==="link"){var href=node.getAttribute("href");if(/^https:\\/\\//i.test(String(href||"")))nativeSet.call(node,"href",proxy(href));}var style=node.getAttribute&&node.getAttribute("style");if(style&&/https:\\/\\//i.test(style)){var next=css(style);if(next!==style)nativeSet.call(node,"style",next);}});}).observe(document.documentElement,{subtree:true,attributes:true,attributeFilter:["src","href","poster","style"]});})();<\/script>';
+			return '<script data-dsh-tavern-static-cache>(function(){function proxy(value){var source=String(value||"");return /^https:\\/\\//i.test(source)?"/api/dsh-tavern/static-assets?url="+encodeURIComponent(source)+(/\\.[cm]?js(?:[?#]|$)/i.test(source)?"&host=2":""):source;}function css(value){return String(value||"").replace(/url\\(\\s*(?:(["\\\'])(https:\\/\\/[^"\\\']+)\\1|(https:\\/\\/[^"\\\')\\s]+))\\s*\\)/gi,function(_,quote,quoted,bare){quote=quote||"";return "url("+quote+proxy(quoted||bare)+quote+")";});}window.__dshTavernStaticAssetUrl=proxy;var nativeSet=Element.prototype.setAttribute;Element.prototype.setAttribute=function(name,value){var key=String(name||"").toLowerCase(),tag=String(this.tagName||"").toLowerCase();if(!(key==="src"&&/^(video|audio|source|iframe|frame)$/.test(tag))&&(key==="src"||key==="poster"||(key==="href"&&tag==="link"))&&/^https:\\/\\//i.test(String(value||"")))value=proxy(value);else if(key==="style")value=css(value);return nativeSet.call(this,name,value);};var nativeGet=Element.prototype.getAttribute,PROXY="/api/dsh-tavern/static-assets?url=";Element.prototype.getAttribute=function(name){var value=nativeGet.call(this,name);if(typeof value!=="string"||value.indexOf(PROXY)!==0)return value;var key=String(name||"").toLowerCase();if(key!=="src"&&key!=="poster"&&key!=="href")return value;var raw=value.slice(PROXY.length),amp=raw.indexOf("&");if(amp>=0)raw=raw.slice(0,amp);try{return decodeURIComponent(raw);}catch(e){return value;}};[["HTMLImageElement","src"],["HTMLScriptElement","src"],["HTMLVideoElement","poster"],["HTMLLinkElement","href"]].forEach(function(row){var Type=window[row[0]],descriptor=Type&&Object.getOwnPropertyDescriptor(Type.prototype,row[1]);if(!descriptor||!descriptor.set||!descriptor.get)return;try{Object.defineProperty(Type.prototype,row[1],{configurable:descriptor.configurable,enumerable:descriptor.enumerable,get:descriptor.get,set:function(value){return descriptor.set.call(this,proxy(value));}});}catch(e){}});if(window.CSSStyleDeclaration&&CSSStyleDeclaration.prototype.setProperty){var nativeProperty=CSSStyleDeclaration.prototype.setProperty;CSSStyleDeclaration.prototype.setProperty=function(name,value,priority){return nativeProperty.call(this,name,css(value),priority);};}new MutationObserver(function(records){records.forEach(function(record){var node=record.target;if(!node||node.nodeType!==1)return;["src","poster"].forEach(function(name){if(name==="src"&&/^(video|audio|source|iframe|frame)$/i.test(node.tagName))return;var value=node.getAttribute&&nativeGet.call(node,name);if(/^https:\\/\\//i.test(String(value||"")))nativeSet.call(node,name,proxy(value));});if(String(node.tagName||"").toLowerCase()==="link"){var href=nativeGet.call(node,"href");if(/^https:\\/\\//i.test(String(href||"")))nativeSet.call(node,"href",proxy(href));}var style=node.getAttribute&&nativeGet.call(node,"style");if(style&&/https:\\/\\//i.test(style)){var next=css(style);if(next!==style)nativeSet.call(node,"style",next);}});}).observe(document.documentElement,{subtree:true,attributes:true,attributeFilter:["src","href","poster","style"]});})();<\/script>';
 		}
 
 		function tavernIconDependencies() {

@@ -24,7 +24,7 @@ export async function createSceneImageNativeRuntime(bootPath, { unifiedPlugin = 
   const { LlmAdapter } = await import(new URL('../../dsh-llm/lib/index.js', bootUrl))
   const root = await mkdtemp(join(tmpdir(), 'tavern-scene-native-'))
   const config = join(root, 'host.yml')
-  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-session-query', 'dsh-subagent', 'dsh-session-persistence-jsonl', 'dsh-token-meter', 'dsh-agent-loop', 'dsh-attachment-local']
+  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-session-query', 'dsh-subagent', 'dsh-session-persistence-jsonl', 'dsh-token-meter', 'dsh-agent-loop', 'dsh-attachment-local', 'dsh-fs-local', 'dsh-working-directory']
   await writeFile(config, packages.map(name => '- id: ' + name + '\n  name: ' + new URL('../../' + name + '/lib/index.js', bootUrl).href + (name === 'dsh-attachment-local' ? '\n  config:\n    dshHome: ' + root : name === 'dsh-session-persistence-jsonl' ? '\n  config:\n    root: ' + join(root, 'sessions') + '\n    compression: none' : '') + '\n').join(''))
   const ctx = await boot('scene-image-native-test', config)
   ctx.baseUrl = bootUrl.href
@@ -47,8 +47,9 @@ export async function createSceneImageNativeRuntime(bootPath, { unifiedPlugin = 
       await beforeModelRequest?.(input)
       requests.push(structuredClone({ model: input.model, reasoningEffort: input.reasoningEffort, maxTokens: input.maxTokens, system: input.messages.filter(message => message.role === 'system').flatMap(message => message.content).map(block => block.text || '').join('\n\n'), messages: input.messages, tools: input.tools }))
       for (const tool of input.tools || []) assertImageToolSchema(tool)
-      const currentMessages = input.messages.slice(Math.max(0, input.messages.findLastIndex(message => message.source?.kind === 'plugin')))
-      const referenceResult = currentMessages.flatMap(message => message.content || []).find(block => block.type === 'tool-result' && block.toolCallId === 'reference-call')
+      // DSH 0.2: producer-owned source kinds ('plugin:dsh-tavern') and tool results as role: 'tool' messages.
+      const currentMessages = input.messages.slice(Math.max(0, input.messages.findLastIndex(message => message.source?.kind?.startsWith('plugin'))))
+      const referenceResult = currentMessages.filter(message => message.role === 'tool').find(message => message.toolCallId === 'reference-call')
       const referenceTool = !referenceResult && (characterQuery
         ? input.tools?.find(item => item.name === 'character_design_read')
         : referenceQuery && input.tools?.find(item => item.name === 'read_scene_reference'))
@@ -95,7 +96,7 @@ export async function createSceneImageNativeRuntime(bootPath, { unifiedPlugin = 
       let args = referenceTool ? (characterQuery ? { name: characterQuery } : { query: referenceQuery }) : { update }
       let callId = referenceTool ? 'reference-call' : 'image-call'
       if (tool?.name === 'submit_scene_plan') {
-        const done = new Set(currentMessages.flatMap(message => message.content || []).filter(block => block.type === 'tool-result').map(block => block.toolCallId))
+        const done = new Set(currentMessages.filter(message => message.role === 'tool').map(message => message.toolCallId))
         const index = plan.characters.findIndex((_person, index) => !done.has('image-character-' + index))
         if (index >= 0) {
           tool = input.tools.find(tool => tool.name === 'submit_scene_character')
@@ -194,7 +195,7 @@ export async function createSceneImageNativeRuntime(bootPath, { unifiedPlugin = 
   const endpoint = 'http://127.0.0.1:' + imageServer.address().port + '/v1'
   await service.configure({ model: 'fixture-image', baseURL: endpoint, apiKey: keys.get(IMAGE_CREDENTIAL) })
   await service.configure({ enabled: true })
-  return { backgroundChildren: async () => (await ctx.get('subagents').remoteExportList('scene-parent')).entries, reapBackground: () => runner.reapIdle(), backgroundLoaded: id => ({ agent: !!ctx.agents.get(id), session: !!ctx.sessions.get(id) }), runBackground: input => runner.run(input), get service() { return service }, get agentRunning() { return agentRuns > 0 }, chat, before, requests, imageRequests, parent, endpoint,
+  return { backgroundChildren: async () => await ctx.get('subagents').listChildren('scene-parent'), reapBackground: () => runner.reapIdle(), backgroundLoaded: id => ({ agent: !!ctx.agents.get(id), session: !!ctx.sessions.get(id) }), runBackground: input => runner.run(input), get service() { return service }, get agentRunning() { return agentRuns > 0 }, chat, before, requests, imageRequests, parent, endpoint,
     traceEvents(sessionId) { return structuredClone(sessionEvents(ctx.sessions.get(sessionId))) },
     failNext(status = 503, message = 'test failure') { failNext = { status, message } },
     failNextSave() { failSave = true },

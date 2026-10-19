@@ -1,5 +1,5 @@
-import { createImportContextPreparation, needsImportContextPreparation } from '../domain/import-context-preparation.js'
-import { createStoryCompactionRequest, nativelyRetainedRounds, retainRecentStoryRounds, usesStoryCompaction } from '../domain/story-compaction.js'
+import { createImportContextPreparation } from '../domain/import-context-preparation.js'
+import { createStoryCompactionRequest, nativelyRetainedRounds, retainRecentStoryRounds, storyVolumeMerge, storyVolumePlan, usesStoryCompaction } from '../domain/story-compaction.js'
 import { installCompactionRequestProjection } from '../domain/compaction-request.js'
 import { installWorkspaceInstructionPresentation } from '../domain/workspace-instruction-presentation.js'
 import { presentModelError } from '../domain/model-error-presentation.js'
@@ -51,15 +51,43 @@ export function registerModelStreamHooks({
     // verbatim after the summary; other sessions keep DSH's prompt.
     const chat = await chatForSession(str(request.sessionId))
     if (!usesStoryCompaction(chat)) return { request }
-    if (needsImportContextPreparation(chat)) throw new Error('导入对话尚未完成首次上下文容量检查，暂不调用摘要模型')
+    // An imported game compacts right away: an oversized history is summarized in segments
+    // (bounded-compaction.js), so the first-play capacity check is not a precondition.
     // Seam to the plugin layer: plugins may add what the summary must keep.
     const notes = pluginCompactionNotes ? await pluginCompactionNotes({ gameId: str(request.sessionId) }).catch(() => []) : []
-    const instruction = [runtimePrompt('story-compaction'), ...(notes.length ? ['【插件附加的摘要要求】', ...notes.map(note => note.text)] : [])].join('\n\n')
+    const session = sessionStore.get(request.sessionId) || agentRegistry.get(request.sessionId)?.session
+    const retention = await storyRetention(request)
+    const natively = nativelyRetainedRounds(session, request)
+    // Which story turns this compaction folds: everything but the rounds kept verbatim.
+    const kept = retainRecentStoryRounds(request, retention.rounds - natively, retention).kept || 0
+    const turns = (chat.messages || []).filter(message => message?.role === 'assistant' && Number(message.turn) > 0).map(message => Number(message.turn))
+    const volumes = storyVolumePlan(request, { through: turns[turns.length - 1 - kept - natively], budget: retention.volumeBudget, estimate: retention.estimate })
+    const instruction = [runtimePrompt('story-compaction'), volumes.instruction, ...(notes.length ? ['【插件附加的摘要要求】', ...notes.map(note => note.text)] : [])].join('\n\n')
     const story = createStoryCompactionRequest(request, instruction)
-    const session = sessionStore.get(story.sessionId) || agentRegistry.get(story.sessionId)?.session
-    const retention = await storyRetention(story)
-    return retainRecentStoryRounds(story, retention.rounds - nativelyRetainedRounds(session, story), retention)
+    let prefix = volumes.prefix
+    if (volumes.merge) {
+      // Only the oldest volumes are rewritten, in their own call; a failed merge keeps them all.
+      try { prefix = [prefix[0], await mergeStoryVolumes(volumes.merge, request), ...prefix.slice(1)] }
+      catch (error) {
+        console.warn('dsh-tavern: 合并旧卷失败，本次原样保留全部旧卷：', error?.message || error)
+        prefix = [prefix[0], ...volumes.merge.volumes.map(volume => volume.text), ...prefix.slice(1)]
+      }
+    }
+    return { ...retainRecentStoryRounds(story, retention.rounds - natively, retention), prefix }
   })
+  async function mergeStoryVolumes(merge, request) {
+    const { header, prompt } = storyVolumeMerge(merge)
+    let text = ''
+    for await (const event of ctx.llm.stream({ provider: request.provider, model: request.model, purpose: 'compaction', signal: request.signal,
+      ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+      messages: [{ id: 'tavern-story-volume-merge', role: 'user', content: [{ type: 'text', text: prompt }] }] })) {
+      if (event?.type === 'block-end' && event.block?.type === 'text') text += event.block.text
+      if (event?.type === 'finish' && event.reason?.kind !== 'stop') throw new Error('合并未完成：' + (event.reason?.failure?.message || event.reason?.kind))
+    }
+    text = text.trim()
+    if (!text) throw new Error('合并没有返回文字')
+    return text.startsWith('【前情总览') ? text : header + '\n' + text
+  }
 
   async function gameChildSession(sessionId) {
     const parentSessionId = str((sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session)?.header?.parentSession)

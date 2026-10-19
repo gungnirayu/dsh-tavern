@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs'
 import { FULL_PROMPT_TEMPLATE_ASSET_PREFIX, readFullPromptTemplateAsset } from '../domain/full-prompt-template-assets.js'
 import { OFFICIAL_MVU_VERSION, readOfficialMvuBundle } from '../domain/official-mvu-assets.js'
 import { TAVERN_CLIENT_ASSET_PREFIX, readTavernClientAsset } from '../domain/tavern-client-assets.js'
@@ -25,6 +26,11 @@ export function registerTavernHttpRoutes({
   str,
   tavernRemoteAssets,
   tavernStaticResources,
+  castAssets,
+  speech,
+  exportCardCharx,
+  assetPacks,
+  uploads,
   exposeHandler,
 }) {
   const webServer = ctx.get('webServer')
@@ -181,6 +187,59 @@ export function registerTavernHttpRoutes({
           }
           const readiness = await runtimeReadiness
           if (!readiness.ok) throw readiness.error
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/cast-asset') {
+            const query = new URL(req.url, 'http://x').searchParams
+            const image = castAssets ? await castAssets.readImage(query.get('card'), query.get('file')) : undefined
+            if (image === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
+            // Content-addressed file names: a URL never changes what it serves.
+            res.writeHead(200, { 'Content-Type': image.mediaType, 'Content-Length': image.bytes.byteLength, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
+            res.end(image.bytes)
+            return
+          }
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/speech-audio') {
+            const audio = speech ? await speech.readAudio(new URL(req.url, 'http://x').searchParams.get('id')) : undefined
+            if (audio === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
+            res.writeHead(200, { 'Content-Type': audio.mediaType, 'Content-Length': audio.bytes.byteLength, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
+            res.end(audio.bytes)
+            return
+          }
+          // Big files (DSH cards) arrive as a raw body and wait on disk for the call that uses them.
+          if (req.method === 'POST' && pathname === '/api/dsh-tavern/card-upload') {
+            let reply
+            try { const upload = await uploads.receive(req); reply = { ok: true, uploadId: upload.id, size: upload.size } }
+            catch (error) { reply = { ok: false, error: String(error?.message || error) } }
+            res.writeHead(reply.ok ? 200 : 413, { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' })
+            res.end(JSON.stringify(reply))
+            return
+          }
+          if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/dsh-tavern/pack-file') {
+            const query = new URL(req.url, 'http://x').searchParams
+            const found = assetPacks ? await assetPacks.file(query.get('pack'), query.get('v'), query.get('path')) : undefined
+            if (found === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
+            // Files are addressed by content; anything not on the inline list is an inert download.
+            const headers = { 'Content-Type': found.mediaType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff',
+              ...(found.inline ? {} : { 'Content-Disposition': 'attachment', 'Content-Security-Policy': "sandbox; default-src 'none'" }) }
+            const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''))
+            let start = 0, end = found.size - 1
+            if (range && (range[1] || range[2])) {
+              if (range[1]) { start = Number(range[1]); if (range[2]) end = Math.min(end, Number(range[2])) } else start = Math.max(0, found.size - Number(range[2]))
+              if (start > end || start >= found.size) { res.writeHead(416, { 'Content-Range': 'bytes */' + found.size }); res.end(); return }
+              res.writeHead(206, { ...headers, 'Content-Range': 'bytes ' + start + '-' + end + '/' + found.size, 'Content-Length': end - start + 1 })
+            } else res.writeHead(200, { ...headers, 'Content-Length': found.size })
+            if (req.method === 'HEAD' || found.size === 0) { res.end(); return }
+            createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
+            return
+          }
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-charx') {
+            let file
+            try { file = await exportCardCharx(new URL(req.url, 'http://x').searchParams.get('path')) }
+            catch (error) { res.writeHead(error?.code === 'TAVERN_NOT_FOUND' || /路径|不存在/.test(String(error?.message)) ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }); res.end(String(error?.message || error)); return }
+            const name = file.name.replace(/[\\/:*?"<>|\r\n]/g, '_') + '.charx'
+            res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': file.bytes.byteLength, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+              'Content-Disposition': "attachment; filename=\"card.charx\"; filename*=UTF-8''" + encodeURIComponent(name) })
+            res.end(file.bytes)
+            return
+          }
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-image') {
             const query = new URL(req.url, 'http://x').searchParams
             const image = await fileResources.cardImagePreview(query.get('path'))

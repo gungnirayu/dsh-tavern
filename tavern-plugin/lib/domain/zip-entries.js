@@ -9,6 +9,7 @@ const crc32 = typeof zlib.crc32 === 'function' ? data => zlib.crc32(data) : data
 const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 const MAX_EXPANDED_BYTES = 150 * 1024 * 1024
 const MAX_ENTRIES = 10000
+const mb = bytes => Math.round(bytes / 1048576) + ' MB'
 
 function findEndOfCentralDirectory(buffer, fail, label) {
   const minimum = Math.max(0, buffer.length - 65557)
@@ -19,10 +20,11 @@ function findEndOfCentralDirectory(buffer, fail, label) {
 }
 
 /** Read a plain ZIP into path → bytes. Caller-provided fail() owns the error wording. */
-export function readZipEntries(input, { label = 'ZIP', fail = message => { throw new Error(label + ' 解析失败：' + message) } } = {}) {
+export function readZipEntries(input, { label = 'ZIP', fail = message => { throw new Error(label + ' 解析失败：' + message) },
+  maxArchiveBytes = MAX_ARCHIVE_BYTES, maxExpandedBytes = MAX_EXPANDED_BYTES } = {}) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input)
   if (buffer.length === 0) fail('文件为空')
-  if (buffer.length > MAX_ARCHIVE_BYTES) fail('文件超过 50 MB')
+  if (buffer.length > maxArchiveBytes) fail('文件超过 ' + mb(maxArchiveBytes))
   const eocd = findEndOfCentralDirectory(buffer, fail, label)
   const entryCount = buffer.readUInt16LE(eocd + 10)
   const centralSize = buffer.readUInt32LE(eocd + 12)
@@ -51,7 +53,7 @@ export function readZipEntries(input, { label = 'ZIP', fail = message => { throw
     if ((flags & 1) !== 0) fail(label + ' 包含加密文件')
     if (method !== 0 && method !== 8) fail('包含不支持的压缩格式')
     expanded += uncompressedSize
-    if (expanded > MAX_EXPANDED_BYTES) fail('解压后内容超过 150 MB')
+    if (expanded > maxExpandedBytes) fail('解压后内容超过 ' + mb(maxExpandedBytes))
     if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) fail('本地文件头损坏')
     const localNameLength = buffer.readUInt16LE(localOffset + 26)
     const localExtraLength = buffer.readUInt16LE(localOffset + 28)
@@ -67,7 +69,11 @@ export function readZipEntries(input, { label = 'ZIP', fail = message => { throw
 }
 
 /** Write a plain ZIP (deflate when it helps). Entries: { path, content: string | Buffer }. */
-export function writeZipEntries(entries) {
+export function writeZipEntries(entries, { readable = false, label = 'ZIP', maxArchiveBytes = MAX_ARCHIVE_BYTES, maxExpandedBytes = MAX_EXPANDED_BYTES, oversized } = {}) {
+  if (readable && entries.length > MAX_ENTRIES) throw new Error(label + '文件数量过多，无法生成可导入的压缩包')
+  if (readable && entries.reduce((size, entry) => size + (Buffer.isBuffer(entry.content) ? entry.content.length : Buffer.byteLength(String(entry.content))), 0) > maxExpandedBytes) {
+    throw new Error(label + '解压后内容超过 ' + mb(maxExpandedBytes) + (oversized ? oversized() : '，请减少附件或历史后重试'))
+  }
   const local = [], central = []
   let offset = 0
   for (const entry of entries) {
@@ -88,5 +94,7 @@ export function writeZipEntries(entries) {
   const directory = Buffer.concat(central), end = Buffer.alloc(22)
   end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
   end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16)
+  const size = offset + directory.length + end.length
+  if (readable && size > maxArchiveBytes) throw new Error(label + '超过 ' + mb(maxArchiveBytes) + (oversized ? oversized() : '，请关闭图片导出或减少附件后重试'))
   return Buffer.concat([...local, directory, end])
 }

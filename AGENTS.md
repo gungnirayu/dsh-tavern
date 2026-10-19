@@ -6,22 +6,30 @@
 
 ## 推送
 
-GitHub Actions 会频繁向 `origin/main` 推送 `chore: publish runtime manifest [skip ci]`（只改 `dsh-tavern-runtime.json`），导致本地推送被拒。推送流程：
+## 分支
+
+- `main`：当前版本，适配 DSH 0.2.1。日常开发在这里。
+- `stable`：稳定版，适配 DSH 0.1.5，只修严重问题（先在 main 修好，再 cherry-pick 到 stable）。两条分支的安装脚本与应用内更新各自跟随自己的分支，不要互相合并。
+
+GitHub Actions 会频繁向 `origin/main`（以及 `origin/stable`）推送 `chore: publish runtime manifest [skip ci]`（只改 `dsh-tavern-runtime.json`），导致本地推送被拒。推送流程：
 
 1. `git fetch origin`
 2. `git log --oneline HEAD..origin/main`，确认远程只多了 manifest 提交；有其他提交先告知用户
 3. `git rebase origin/main`
 4. `git push origin main`
 
+推送 `stable` 时同样操作，把 `main` 换成 `stable`。
+
 ### CDN 缓存
 
-安装入口从 jsDelivr 的 `@main` 读取 `install.ps1` / `install.sh` / `dsh-tavern-runtime.json`（最长缓存 12 小时），代码文件却按清单里的提交号下载；旧安装脚本配新代码会报“安装文件不完整，缺少……”。
+安装入口从 jsDelivr 的 `@main` / `@stable` 读取 `install.ps1` / `install.sh` / `dsh-tavern-runtime.json`（最长缓存 12 小时），代码文件却按清单里的提交号下载；旧安装脚本配新代码会报“安装文件不完整，缺少……”。
 
 每次推送后，Publish runtime manifest 工作流会在发布新清单后自动刷新这三个文件的缓存，并等到 CDN 返回新清单。工作流出现 “jsDelivr still serves a stale manifest” 警告时，手动刷新：
 
 ```sh
-for f in install.ps1 install.sh dsh-tavern-runtime.json; do curl -s "https://purge.jsdelivr.net/gh/flizzywine/dsh-tavern@main/$f" >/dev/null; done
-curl -s https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json | grep revision
+b=main  # 或 stable
+for f in install.ps1 install.sh dsh-tavern-runtime.json; do curl -s "https://purge.jsdelivr.net/gh/flizzywine/dsh-tavern@$b/$f" >/dev/null; done
+curl -s https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@$b/dsh-tavern-runtime.json | grep revision
 ```
 
 ## 测试

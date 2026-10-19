@@ -67,7 +67,10 @@ export function registerTurnLifecycleHooks({
       assistantText: assistant === null ? '' : assistant.text,
       nativeAnchor: roundAnchor(payload.turn, inputEventForTurn(session, payload.turn), assistant.event)
     })
-    if (saved.reply) replaceAssistantReply(session, assistant, saved.reply.sessionText)
+    // A submit_story call and its receipt both carry the body; fold them into one
+    // plain reply so context, regeneration and rollback see an ordinary round.
+    if (assistant.storyToolSubmission) replaceAssistantReply(session, assistant, saved.reply ? saved.reply.sessionText : assistant.content)
+    else if (saved.reply) replaceAssistantReply(session, assistant, saved.reply.sessionText)
   })
 
   ctx.on('agent/error', function (payload) {

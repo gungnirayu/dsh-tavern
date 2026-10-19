@@ -11,15 +11,17 @@
 			const [selected, setSelected] = React.useState("");
 			const [refreshes, setRefreshes] = React.useState({});
 			const view = props.view;
-			const statuses = view && isPlayMode(view.mode) ? (view.tavernStatusViews || []) : [];
-			const manual = entries.filter(function (entry) { return entry.sessionId === props.sessionId && entry.pinned; });
+			// "pinned": only panels pinned from messages (status bar shown in the story body);
+			// "status": only the card's status views (that body copy). Default: both.
+			const statuses = view && isPlayMode(view.mode) && props.panels !== "pinned" ? (view.tavernStatusViews || []) : [];
+			const manual = props.panels === "status" ? [] : entries.filter(function (entry) { return entry.sessionId === props.sessionId && entry.pinned; });
 			const newest = manual.reduce(function (latest, entry) { return !latest || entry.activation > latest.activation ? entry : latest; }, null);
 			React.useEffect(function () { if (newest) setSelected(newest.id); }, [props.sessionId, newest && newest.activation]);
 			const ids = statuses.map(function (panel) { return panel.viewId; }).concat(manual.map(function (entry) { return entry.id; }));
 			const active = ids.includes(selected) ? selected : ids[0];
 			if (!view || !view.tavernHelper || !ids.length) return null;
 			const h = React.createElement;
-			return h("section", { className: "dsh-tavern-status-runtime" + (ids.length === 1 ? " single-panel" : "") },
+			const runtime = h("section", { className: "dsh-tavern-status-runtime" + (ids.length === 1 ? " single-panel" : "") },
 				h("div", { className: "dsh-tavern-panel-toolbar" }, ids.length > 1 ? h("div", { className: "dsh-tavern-panel-tabs", role: "tablist", "aria-label": "人物卡面板" },
 					statuses.concat(manual.map(function (entry) { return { viewId: entry.id, title: entry.title }; })).map(function (panel) {
 						return h("button", { key: panel.viewId, role: "tab", type: "button", "aria-selected": active === panel.viewId,
@@ -43,6 +45,7 @@
 					h("button", { type: "button", className: "dsh-tavern-btn", onClick: function () { tavernPanelRegistry.pin(entry.id, false); } }, "返回正文栏"),
 					h(TavernDockedPanel, { id: entry.id })); })
 			);
+			return props.section ? h("section", { className: "dsh-tavern-status-section" }, runtime) : runtime;
 		}
 
 		function latestTavernAssistantMessageId(snapshot) {
@@ -243,6 +246,27 @@
 				} else hideTurnTailWithUser(tail);
 			}
 		}
+		// 重生成期间的那一楼：只藏会被替代的旧正文（和它的尾行），玩家输入留着。
+		// 整轮隐掉输入会让页面看起来像"我刚发的那条被删了"，这是他自己的话。
+		function hideReplacingReply(tail, turn) {
+			hideRow(tail);
+			const rows = turnRowsBefore(tail, turn);
+			for (let i = 0; i < rows.length; i++) {
+				if (rows[i].getAttribute("data-chat-flow-kind") === "user") continue;
+				hideRow(rows[i]);
+			}
+		}
+		function applyReplacingDshTurns(turns) {
+			const set = new Set((Array.isArray(turns) ? turns : []).map(String));
+			if (set.size === 0) return;
+			const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
+			for (let i = 0; i < tails.length; i++) {
+				const tail = tails[i];
+				const turn = tailTurnOf(tail);
+				if (!set.has(turn)) continue;
+				hideReplacingReply(tail, turn);
+			}
+		}
 		function applyRegeneratedDshTurns(regeneratedDshTurns) {
 			const mappings = regeneratedDshTurns && typeof regeneratedDshTurns === "object" ? regeneratedDshTurns : {};
 			const hiddenStoryTurns = new Set(Object.keys(mappings).map(String));
@@ -253,23 +277,45 @@
 				if (hiddenStoryTurns.has(tailTurnOf(tail))) hideTurnTail(tail);
 			}
 		}
-			function apply(sessionId, turns, regeneratedDshTurns) {
+		// 被替换掉的正文不会自己消失：宿主已经为那个原生回合画好了行，即使节点早已
+		// 从消息面移除，重渲染也会把它再画出来。replacingDshTurns 只管生成那一刻，
+		// regeneratedDshTurns 的键是剧情轮次、宿主行上是原生轮次，两边对不上。
+		// 这里按服务端从日志里算出的「曾被替换的正文所在原生回合」隐藏，只藏回复，
+		// 玩家输入永远留着。刷新后照样生效，因为它来自日志而不是内存标记。
+		function applySupersededDshTurns(turns) {
+			const set = new Set((Array.isArray(turns) ? turns : []).map(String));
+			if (set.size === 0) return;
+			const rows = root().querySelectorAll('[data-chat-turn]');
+			for (let i = 0; i < rows.length; i++) {
+				const row = rows[i];
+				if (!set.has(row.getAttribute("data-chat-turn"))) continue;
+				if (row.getAttribute("data-chat-flow-kind") === "user") continue;
+				hideRow(row);
+			}
+		}
+			function apply(sessionId, turns, regeneratedDshTurns, replacingTurns, supersededTurns) {
                 // Reconcile both directions: an older observer may have hidden a
                 // restored turn after the action's immediate DOM update.
                 restoreHiddenRows();
 				applySuppressedDshTurns(turns, regeneratedDshTurns);
+				applyReplacingDshTurns(replacingTurns);
 				applyRegeneratedDshTurns(regeneratedDshTurns);
+				applySupersededDshTurns(supersededTurns);
                 // Native rows can mount without their turn tail. Explicit ownership
                 // must remain authoritative during streaming and partial hydration.
                 const suppressed = new Set((Array.isArray(turns) ? turns : []).map(String));
+                const replacing = new Set((Array.isArray(replacingTurns) ? replacingTurns : []).map(String));
                 const mappings = regeneratedDshTurns || {};
                 const replacements = new Set(Object.values(mappings).map(String));
                 for (const row of root().querySelectorAll('[data-chat-turn]')) {
                     const turn = row.getAttribute("data-chat-turn");
                     const kind = row.getAttribute("data-chat-flow-kind");
                     if (!kind) continue;
+                    // 正在被替换的那一楼只藏回复，玩家的输入永远留着。
+                    if (replacing.has(turn) && kind === "user") continue;
                     if (suppressed.has(turn) && (!replacements.has(turn) || kind === "user")) hideRow(row);
-                    if (Object.prototype.hasOwnProperty.call(mappings, turn) && kind !== "user") hideRow(row);
+                    // mappings 的键是剧情轮次，宿主行上是原生轮次；用键去匹配这里的
+                    // turn 只会在两个编号碰巧相等时误藏，真正的替换由 superseded 负责。
                 }
 				applyHiddenTurns(sessionId);
 				applyRolledBackTurns(sessionId);
@@ -283,7 +329,7 @@
 				const adopted = view && view.adopted;
 				if (adopted && Number(adopted.hiddenTurn) > 0) forgetHiddenTurn(HIDDEN_TURNS_KEY, sessionId, Number(adopted.hiddenTurn));
 				if (adopted && Number(adopted.syntheticTurn) > 0) forgetHiddenTurn(HIDDEN_REGEN_USER_TURNS_KEY, sessionId, Number(adopted.syntheticTurn));
-				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns);
+				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
 			}
             function restored(sessionId, view) {
                 const turn = Number(view && view.undoneRollback && view.undoneRollback.turn);
@@ -298,10 +344,10 @@
                     tail.style.display = "";
                     turnRowsBefore(tail, tail.getAttribute("data-chat-turn")).forEach(function (row) { row.style.display = ""; });
                 }
-                apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns);
+                apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
             }
 			function rolledBack(sessionId, view) {
-				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns);
+				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
 			}
 			return Object.freeze({ apply: apply, regenerated: regenerated, rolledBack: rolledBack, restored: restored });
 		}

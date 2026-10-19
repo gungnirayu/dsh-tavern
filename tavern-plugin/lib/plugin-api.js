@@ -1,9 +1,12 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
+import { normalizeGameSettings, coerceSetting, settingValues } from './domain/plugin-game-settings.js'
 
 // The public `tavern` service for third-party DSH plugins (docs/plugin-api.md).
 // Only additive changes are allowed here: published plugins depend on every
 // name and field. Internals are reached through `deps`, never exposed.
-export const TAVERN_PLUGIN_API_VERSION = 2
+export const TAVERN_PLUGIN_API_VERSION = 3
 const TRACKER = Symbol.for('cordis.tracker')
 const SECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const MAX_SECTION_TEXT = 8000
@@ -16,6 +19,7 @@ const MAX_TOOL_CALLS_PER_SETTLEMENT = 8
 const MAX_WORLDBOOK_ENTRIES = 20
 const MAX_WORLDBOOK_ENTRY = 4000
 const MAX_POOL_ENTRIES = 200
+const MAX_CAST_SOURCE_CHARACTERS = 50
 // Read on every send, settlement and world book search: a slow plugin must not hold the game up.
 const POOL_TIMEOUT_MS = 5000
 const POOL_ENTRY_ID = /^[A-Za-z0-9._-]{1,64}$/
@@ -33,8 +37,18 @@ const SETTLEMENT_TASK_TIMEOUT_MS = 300000
 const MANUAL_TASK_TIMEOUT_MS = 600000
 const MAX_TASK_TITLE = 40
 const MAX_TASK_DESCRIPTION = 500
+const MAX_CARD_OPERATIONS = 200
+const MAX_CARD_VALUE = 2 * 1024 * 1024
+const TOOL_MODES = ['play', 'card']
 const MAX_TASK_INPUT = 4000
-const TASK_PHASES = Object.freeze({ before: '结算前', after: '结算后' })
+const TASK_PHASES = Object.freeze({ before: '结算前', parallel: '与结算同时', after: '结算后' })
+const MAX_VERSION_WATCHES = 2000
+const MAX_PUBLISHED_STATE = 256 * 1024
+const MAX_PUBLISHED_ENTRIES = 2000
+const MAX_PACK_FILES = 5000
+// Card files Tavern reads itself; a plugin importer never takes these.
+const NATIVE_CARD_EXTENSIONS = new Set(['.png', '.json', '.charx', '.dshcard'])
+const CARD_EXTENSION = /^\.[a-z0-9][a-z0-9._-]{0,19}$/
 // Stages a plugin may replace, and what a replacement must hand back (docs/plugin-design.md).
 const REPLACEABLE_STAGES = Object.freeze({ settlement: '结算' })
 
@@ -99,26 +113,65 @@ export function createTavernPluginApi(deps) {
   const settledHandlers = new Set()
   const removedHandlers = new Set()
   const timelineHandlers = new Set()
+  const castHandlers = new Set()
+  const cardHandlers = new Set()
+  const cardImporters = new Map()
+  // Each plugin's own game settings (one declaration per plugin) and who listens for changes.
+  const gameSettingDefs = new Map()
+  const settingHandlers = new Set()
+  const speechProviders = new Map()
   const sections = new Map()
   const turnSections = new Map()
   const settlementSections = new Map()
   const settlementTools = new Map()
   const worldbookSources = new Map()
   const worldbookPools = new Map()
+  const castSources = new Map()
   const handlers = new Map()
   const candidateSections = new Map()
   const compactionSections = new Map()
   const replacements = { settlement: new Map() }
   const settlementTasks = new Map()
   const manualTasks = new Map()
+  const toolScopes = new Map()
   // The plugin task running in each game (one at a time), and settlement phases already run per text version.
   const taskRuns = new Map()
+  const taskContext = new AsyncLocalStorage()
   const phasesRan = new Set()
   const attachedOwners = new Set()
   const errors = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
   const notified = new Set()
+  // Signals handed out by versionSignal: aborted once their text version stops being shown.
+  const versionWatches = new Set()
+  // The latest state each plugin published for its page side, per game and name (memory only).
+  const publishedStates = new Map()
   const log = deps.logger || console
+
+  function staleVersion() { return Object.assign(new Error('这一轮的正文版本已不是当前显示的版本'), { code: 'TAVERN_PLUGIN_STALE_VERSION' }) }
+
+  /** A watch on (game, turn, textVersion): its controller aborts when that version is no longer current. */
+  function watchVersion(gameId, turn, textVersion, owner) {
+    const watch = { gameId, turn, textVersion, owner, controller: new AbortController() }
+    versionWatches.add(watch)
+    watch.controller.signal.addEventListener('abort', () => versionWatches.delete(watch), { once: true })
+    if (versionWatches.size > MAX_VERSION_WATCHES) versionWatches.delete(versionWatches.values().next().value)
+    return watch
+  }
+
+  /** Abort the watches of a game whose text version is no longer the shown one (or all of them). */
+  async function checkVersions(gameId, { all = false } = {}) {
+    const watches = Array.from(versionWatches).filter(watch => watch.gameId === gameId)
+    const keys = new Map()
+    for (const watch of watches) {
+      if (!all) {
+        if (!keys.has(watch.turn)) keys.set(watch.turn, await deps.currentKey(gameId, watch.turn).catch(() => undefined))
+        const key = keys.get(watch.turn)
+        if (key === undefined || key === watch.textVersion) continue
+      }
+      watch.controller.abort(staleVersion())
+    }
+  }
 
   /** Remember a plugin failure for the game's plugin panel, newest last. */
   function recordError(gameId, owner, stage, error) {
@@ -135,8 +188,33 @@ export function createTavernPluginApi(deps) {
   async function choicesFor(gameId) {
     const game = gameId ? await deps.resolveGame(String(gameId)).catch(() => null) : null
     const settings = game && deps.data?.readSettings ? await deps.data.readSettings(game.chatId).catch(() => null) : null
-    return { game, disabled: new Set(settings?.disabled || []), replacements: settings?.replacements || {},
-      disabledTasks: new Set(settings?.disabledTasks || []), taskOrder: settings?.taskOrder || [] }
+    // A card's own plugins exist only in that card's games, and there they are part of the
+    // game: always on, not listed among the plugins the player switches per game.
+    const { elsewhere, own } = await cardPluginsFor(game)
+    const disabled = new Set((settings?.disabled || []).filter(name => !own.has(name)))
+    for (const name of elsewhere) disabled.add(name)
+    return { game, disabled, elsewhere, own, replacements: settings?.replacements || {},
+      disabledTasks: new Set((settings?.disabledTasks || []).filter(key => !own.has(String(key).split(':')[0]))), taskOrder: settings?.taskOrder || [] }
+  }
+
+  /** Card plugins (card-plugins.js): those of another card than this game's, and this card's own. */
+  async function cardPluginsFor(game) {
+    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
+    if (!scopes?.size) return { elsewhere: new Set(), own: new Set() }
+    const cardPath = game && deps.cardPathOf ? await deps.cardPathOf(game.sessionId).catch(() => null) : null
+    const elsewhere = new Set(), own = new Set()
+    for (const [name, scope] of scopes) (scope.cards.includes(cardPath) ? own : elsewhere).add(name)
+    return { elsewhere, own }
+  }
+
+  /** A card plugin's calls reach only its own card and that card's games. */
+  async function guardScope(owner, input) {
+    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
+    const scope = scopes?.get(owner)
+    if (!scope) return
+    const refuse = () => { throw Object.assign(new Error('卡内插件 ' + owner + ' 只能用于它所在的人物卡'), { code: 'TAVERN_PLUGIN_SCOPE' }) }
+    if (input.card !== undefined && !scope.cards.includes(String(input.card))) refuse()
+    if (input.gameId !== undefined && (typeof input.gameId !== 'string' || !scope.cards.includes(await deps.cardPathOf?.(input.gameId).catch(() => null)))) refuse()
   }
 
   function dispatch(handlers, payload, label, disabled) {
@@ -183,6 +261,11 @@ export function createTavernPluginApi(deps) {
       generating, settling, busy: generating || settling,
       settled: !!latest && !!settled && settled.turn === latest.turn && settled.key === latest.key
     }
+  }
+
+  function cardIdOf(card) {
+    if (typeof card !== 'string' || !card.trim()) throw new TypeError('需要人物卡 id（listCards 返回的 id）')
+    return card.trim()
   }
 
   async function requireGame(gameId) {
@@ -246,6 +329,70 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => { timelineHandlers.add(entry); return () => timelineHandlers.delete(entry) }, 'tavern.onTimelineChanged()')
     },
 
+    // Who says each quoted line and how they feel (docs/design/cast-presentation.md), annotated by settlement.
+    onCastAnnotated(handler) {
+      if (typeof handler !== 'function') throw new TypeError('onCastAnnotated 需要一个函数')
+      const entry = { owner: ownerOf(this), handler }
+      return owned(this, () => { castHandlers.add(entry); return () => castHandlers.delete(entry) }, 'tavern.onCastAnnotated()')
+    },
+
+    async getCast({ gameId, turn } = {}) {
+      const game = await requireGame(gameId)
+      return (await deps.readCast?.(game.sessionId, positiveTurn(turn))) ?? null
+    },
+
+    // The card's characters with their avatar and expression sprites, as URLs a page can show.
+    async getCastAssets({ gameId } = {}) {
+      const game = await requireGame(gameId)
+      return (await deps.readCastAssets?.(game.sessionId)) ?? null
+    },
+
+    // Characters a plugin offers to this game's cast: avatars and expression sprites it keeps itself
+    // (a DSH card's packs, say). The player's own assets win; what the player lacks is filled from these.
+    castAssetSource({ name, characters } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      if (typeof characters !== 'function') throw new TypeError('characters 必须是函数')
+      return register.call(this, castSources, owner + '\u0000' + name, { owner, name, characters }, 'tavern.castAssetSource()', '角色素材来源 ' + name + ' 已注册')
+    },
+
+    // The asset packs this game's card carries (DSH cards): opaque data the plugin reading their
+    // `format` interprets. Files are read by path, or loaded in the page from `baseUrl + path`.
+    async listCardPacks({ gameId } = {}) {
+      const game = await requireGame(gameId)
+      return structuredClone((await deps.listCardPacks?.(game.sessionId)) || [])
+    },
+
+    async readCardPackFile({ gameId, pack, path } = {}) {
+      const game = await requireGame(gameId)
+      if (typeof pack !== 'string' || typeof path !== 'string' || !path) throw new TypeError('readCardPackFile 需要 pack 和 path')
+      if (!deps.readCardPackFile) throw Object.assign(new Error('当前版本不支持素材包'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      return await deps.readCardPackFile(game.sessionId, pack, path)
+    },
+
+    // A speech channel of the plugin's own; players pick it in Tavern's voicing settings.
+    speechProvider({ id, label, description = '', voices = [], defaultVoice = '', version = '', synthesize } = {}) {
+      const owner = ownerOf(this)
+      sectionName(id)
+      if (typeof label !== 'string' || !label.trim() || label.trim().length > 30) throw new Error('label 必须是 1–30 字')
+      if (typeof synthesize !== 'function') throw new TypeError('speechProvider 需要 synthesize 函数')
+      if (!Array.isArray(voices) || voices.some(voice => typeof voice !== 'string')) throw new TypeError('voices 必须是文本数组')
+      if (typeof version !== 'string' || version.length > 40) throw new TypeError('version 必须是不超过 40 字的字符串')
+      const key = owner + '/' + id
+      const entry = { id: key, owner, label: label.trim(), description: String(description).slice(0, 300), voices: voices.slice(0, 200), defaultVoice: String(defaultVoice || ''), version,
+        synthesize: input => bounded(synthesize(input), '配音渠道 ' + key, REPLACEMENT_TIMEOUT_MS).catch(error => { recordError(null, owner, '配音', error); throw error }) }
+      return register.call(this, speechProviders, key, entry, 'tavern.speechProvider()', '配音渠道 ' + id + ' 已注册')
+    },
+
+    // Say a line in a character's voice on the channel the player chose: { url, mediaType }, or
+    // null when voicing is off, the channel is the browser's own, or narration is set silent.
+    async synthesizeSpeech({ gameId, speaker, text, emotion, narration } = {}) {
+      const game = await requireGame(gameId)
+      if (typeof text !== 'string' || !text.trim()) throw new TypeError('text 必须是非空字符串')
+      const result = await deps.synthesizeSpeech?.(game.sessionId, { speaker: typeof speaker === 'string' ? speaker : '', text, emotion: typeof emotion === 'string' ? emotion : 'neutral', narration: narration === true })
+      return result && result.url ? { url: result.url, mediaType: result.mediaType } : null
+    },
+
     async saveTurnData({ gameId, turn, textVersion, data } = {}) {
       const owner = ownerOf(this)
       const game = await requireGame(gameId)
@@ -283,6 +430,29 @@ export function createTavernPluginApi(deps) {
       return game ? deps.data.readGame({ chatId: game.chatId, owner }) : null
     },
 
+    // Options of this plugin in each game's settings: Tavern draws them in 本局设置 and keeps the values with the game.
+    gameSettings(input) {
+      const owner = ownerOf(this)
+      const entry = { owner, ...normalizeGameSettings(input) }
+      return register.call(this, gameSettingDefs, owner, entry, 'tavern.gameSettings()', '插件 ' + owner + ' 已声明过本局配置项')
+    },
+
+    // The values in effect in one game: what the player chose, the declared default elsewhere.
+    async getGameSettings({ gameId } = {}) {
+      const owner = ownerOf(this)
+      const entry = gameSettingDefs.get(owner)
+      if (!entry) return {}
+      const game = await requireGame(gameId)
+      return settingValues(entry, (await deps.data.readSettings(game.chatId)).values[owner])
+    },
+
+    // Called with { gameId, values } after the player changes this plugin's settings in a game.
+    onGameSettingsChanged(handler) {
+      if (typeof handler !== 'function') throw new TypeError('onGameSettingsChanged 需要一个函数')
+      const entry = { owner: ownerOf(this), handler }
+      return owned(this, () => { settingHandlers.add(entry); return () => settingHandlers.delete(entry) }, 'tavern.onGameSettingsChanged()')
+    },
+
     async getTurn({ gameId, turn } = {}) {
       const material = await deps.readTurn(gameIdOf(gameId), positiveTurn(turn))
       if (!material) return null
@@ -294,8 +464,43 @@ export function createTavernPluginApi(deps) {
       return await turnState(gameId)
     },
 
+    // The plugin's latest state for its own page side (tavernUi.watchState): kept in memory, replaced on each call.
+    async publishState({ gameId, name, data } = {}) {
+      const owner = ownerOf(this)
+      const game = await requireGame(gameId)
+      sectionName(name)
+      if ((await choicesFor(game.sessionId)).disabled.has(owner)) throw new Error('玩家在本局关闭了插件 ' + owner)
+      const json = data === undefined ? 'null' : JSON.stringify(data)
+      if (json === undefined || json.length > MAX_PUBLISHED_STATE) throw new Error('data 必须是不超过 256 KB 的 JSON 值')
+      const key = game.sessionId + '\u0000' + owner + '\u0000' + name
+      publishedStates.delete(key)
+      publishedStates.set(key, JSON.parse(json))
+      if (publishedStates.size > MAX_PUBLISHED_ENTRIES) publishedStates.delete(publishedStates.keys().next().value)
+      try { deps.publishState?.(game.sessionId, owner, name) } catch {}
+    },
+
+    // An AbortSignal that aborts once this turn's textVersion is no longer the shown one
+    // (rollback, regenerate, edit, the game removed). Already aborted when it is not current now.
+    async versionSignal({ gameId, turn, textVersion } = {}) {
+      const owner = ownerOf(this)
+      const game = await requireGame(gameId)
+      const at = positiveTurn(turn)
+      if (typeof textVersion !== 'string' || !textVersion) throw new TypeError('textVersion 必须是 onTurnSettled 或 getTurn 给出的值')
+      if (await deps.currentKey(game.sessionId, at) !== textVersion) return AbortSignal.abort(staleVersion())
+      const watch = watchVersion(game.sessionId, at, textVersion, owner)
+      // A plugin that unloads lets go of its watches.
+      owned(this, () => () => versionWatches.delete(watch), 'tavern.versionSignal()')
+      return watch.controller.signal
+    },
+
     async getCardContext({ gameId, turn } = {}) {
       return await deps.readCardContext(await requireTurn(gameId, turn))
+    },
+
+    // The context Tavern's own story request used for this turn: the player input and each section, read-only.
+    async getRequestContext({ gameId, turn } = {}) {
+      const game = await requireGame(gameId)
+      return structuredClone((await deps.readRequestContext?.(game.sessionId, positiveTurn(turn))) ?? null)
     },
 
     // The game's character card as Tavern plays it, read-only.
@@ -313,6 +518,183 @@ export function createTavernPluginApi(deps) {
       return (await deps.readCardImage?.(game.sessionId)) ?? null
     },
 
+    // This game's character design archive (人物设计档案): the one text and pictures share.
+    async getCharacterDesigns({ gameId } = {}) {
+      const game = await requireGame(gameId)
+      return structuredClone(await deps.readCharacterDesigns(game.sessionId))
+    },
+
+    // Create or update one person in the archive, as the settlement's own design tool does:
+    // all five fields are required, and the game's worldbook entry for them follows.
+    async saveCharacterDesign({ gameId, name, aliases, identity, personality, appearance, speechStyle, narrativeRole } = {}) {
+      const owner = ownerOf(this)
+      const game = await requireGame(gameId)
+      if ((await choicesFor(game.sessionId)).disabled.has(owner)) throw new Error('玩家在本局关闭了插件 ' + owner)
+      if (aliases !== undefined && (!Array.isArray(aliases) || aliases.some(alias => typeof alias !== 'string'))) throw new TypeError('aliases 必须是文本数组')
+      const result = await deps.saveCharacterDesign(game.sessionId, { name, ...(aliases ? { aliases } : {}), identity, personality, appearance, speechStyle, narrativeRole })
+      if (result?.ok !== true) throw new Error(String(result?.error || '人物设计保存失败'))
+      return { name: result.name }
+    },
+
+    // Every character card in the library, read-only. `id` is what card-taking methods accept.
+    async listCards() {
+      const scope = deps.cardScope ? (await deps.cardScope().catch(() => null))?.get(ownerOf(this)) : null
+      return (await deps.listCards()).filter(card => !scope || scope.cards.includes(card.path)).map(card => ({
+        id: card.path, name: card.name, fileName: String(card.path).split('/').pop(),
+        imageUrl: card.hasImage ? '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) : '',
+        script: card.script ? { title: card.script.title } : null,
+        group: card.group || '', starred: Boolean(card.starred), error: card.readError || ''
+      }))
+    },
+
+    // A card's full JSON as Tavern plays it (its working copy), read-only.
+    async readCardRaw({ card } = {}) {
+      const raw = await deps.readCardRaw(cardIdOf(card))
+      if (!raw) throw Object.assign(new Error('人物卡不存在：' + card), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      return structuredClone(raw)
+    },
+
+    // Change a card's working copy with JSON Pointer set/delete. The imported original is kept,
+    // so the player can still restore it in Tavern.
+    async updateCardRaw({ card, operations, expectedRevision } = {}) {
+      const owner = ownerOf(this)
+      const id = cardIdOf(card)
+      if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new TypeError('expectedRevision 必须是 cardRevision 返回的数字')
+      if (!Array.isArray(operations) || !operations.length || operations.length > MAX_CARD_OPERATIONS) throw new TypeError('operations 需要 1–' + MAX_CARD_OPERATIONS + ' 项')
+      const plain = operations.map((operation, index) => {
+        const label = 'operations[' + index + ']'
+        if (!operation || typeof operation !== 'object' || !['set', 'delete'].includes(operation.op)) throw new TypeError(label + '.op 必须是 set 或 delete')
+        if (typeof operation.path !== 'string' || !operation.path.startsWith('/')) throw new TypeError(label + '.path 必须是以 / 开头的 JSON Pointer')
+        if (operation.op === 'delete') return { op: 'delete', path: operation.path }
+        if (operation.value === undefined) throw new TypeError(label + '.value 不能省略')
+        const json = JSON.stringify(operation.value)
+        if (json === undefined || json.length > MAX_CARD_VALUE) throw new TypeError(label + '.value 必须是不超过 2 MB 的 JSON 值')
+        return { op: 'set', path: operation.path, value: JSON.parse(json) }
+      })
+      try {
+        const result = await deps.updateCardRaw(id, plain, owner, expectedRevision === undefined ? {} : { expectedRevision })
+        return typeof result === 'object' && result ? { changed: result.changed === true, revision: result.revision } : { changed: result === true }
+      } catch (error) {
+        if (error?.code === 'REVISION_CONFLICT') error.code = 'TAVERN_PLUGIN_REVISION_CONFLICT'
+        throw error
+      }
+    },
+
+    // The card's working-copy revision: a number that grows with every change (0 before the first).
+    async cardRevision({ card } = {}) {
+      return await deps.cardRevision(cardIdOf(card))
+    },
+
+    // Called with { card, revision } after a card's working copy changed (an edit, a restore, a plugin).
+    onCardChanged(handler) {
+      if (typeof handler !== 'function') throw new TypeError('onCardChanged 需要一个函数')
+      const entry = { owner: ownerOf(this), handler }
+      return owned(this, () => { cardHandlers.add(entry); return () => cardHandlers.delete(entry) }, 'tavern.onCardChanged()')
+    },
+
+    // A card's cast (avatars, expression sprites, voices), written as the player's stage page does.
+    async setCastImage({ card, name, slot, data } = {}) {
+      if (!(data instanceof Uint8Array)) throw new TypeError('data 必须是 Uint8Array 或 Buffer')
+      await deps.editCast(cardIdOf(card), (cast, cardPath) => cast.setImage({ cardPath, name, slot, bytes: Buffer.from(data) }))
+    },
+
+    async removeCastImage({ card, name, slot } = {}) {
+      await deps.editCast(cardIdOf(card), (cast, cardPath) => cast.removeImage({ cardPath, name, slot }))
+    },
+
+    async setCastCharacter({ card, name, rename, aliases } = {}) {
+      await deps.editCast(cardIdOf(card), (cast, cardPath) => cast.setCharacter({ cardPath, name, rename, aliases }))
+    },
+
+    async setCastVoice({ card, name, provider, voice } = {}) {
+      await deps.editCast(cardIdOf(card), (cast, cardPath) => cast.setVoice({ cardPath, name, provider, voice }))
+    },
+
+    async removeCastCharacter({ card, name } = {}) {
+      await deps.editCast(cardIdOf(card), (cast, cardPath) => cast.removeCharacter({ cardPath, name }))
+    },
+
+    // Store an asset pack (files by path) and attach it to the card, replacing a pack with the same id.
+    async saveCardPack({ card, id, format = '', title = '', files } = {}) {
+      const id_ = cardIdOf(card)
+      if (!Array.isArray(files) || !files.length || files.length > MAX_PACK_FILES) throw new TypeError('files 需要 1–' + MAX_PACK_FILES + ' 个 { path, data }')
+      if (typeof format !== 'string' || typeof title !== 'string') throw new TypeError('format、title 必须是字符串')
+      return await deps.saveCardPack(id_, { id, format, title, files: files.map(file => ({ path: file?.path, data: file?.data })) })
+    },
+
+    async removeCardPack({ card, id } = {}) {
+      return await deps.removeCardPack(cardIdOf(card), String(id || ''))
+    },
+
+    // Import card files of a format Tavern does not read: convert hands back the card (and its files).
+    cardImporter({ id, label, extensions, convert, imported } = {}) {
+      const owner = ownerOf(this)
+      sectionName(id)
+      if (typeof label !== 'string' || !label.trim() || label.trim().length > 30) throw new Error('label 必须是 1–30 字')
+      if (!Array.isArray(extensions) || !extensions.length || extensions.length > 10) throw new TypeError('extensions 需要 1–10 个扩展名')
+      const list = extensions.map(item => String(item || '').toLowerCase())
+      for (const item of list) {
+        if (!CARD_EXTENSION.test(item)) throw new Error('扩展名要写成 .xxx 的形式：' + item)
+        if (NATIVE_CARD_EXTENSIONS.has(item)) throw new Error(item + ' 由 Tavern 自己导入，插件不能接管')
+        const taken = Array.from(cardImporters.values()).find(entry => entry.extensions.includes(item))
+        if (taken) throw new Error(item + ' 已由插件 ' + taken.owner + ' 导入')
+      }
+      if (typeof convert !== 'function') throw new TypeError('cardImporter 需要 convert 函数')
+      if (imported !== undefined && typeof imported !== 'function') throw new TypeError('imported 必须是函数')
+      const entry = { owner, id, label: label.trim(), extensions: [...new Set(list)], convert, imported }
+      return register.call(this, cardImporters, owner + '/' + id, entry, 'tavern.cardImporter()', '导入器 ' + id + ' 已注册')
+    },
+
+    // Where a tool this plugin registered with DSH shows: in play, in the card workbench, or both.
+    // Tavern's own tools are not affected.
+    toolModes({ name, modes } = {}) {
+      if (typeof name !== 'string' || !name || (deps.isControlledTool && deps.isControlledTool(name))) throw new TypeError('toolModes 只能设置插件自己注册的工具')
+      if (!Array.isArray(modes) || !modes.length || modes.some(mode => !TOOL_MODES.includes(mode))) throw new TypeError('modes 只能是 play、card 中的一项或两项')
+      return register.call(this, toolScopes, name, { owner: ownerOf(this), modes: [...new Set(modes)] }, 'tavern.toolModes()', '工具 ' + name + ' 的可见范围已被设置')
+    },
+
+    // A directory of the plugin's own skills (<dir>/<name>/SKILL.md), read-only, after Tavern's built-in ones.
+    skillSource({ dir, role = 'card' } = {}) {
+      const owner = ownerOf(this)
+      if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new TypeError('dir 必须是绝对路径（例如 fileURLToPath(new URL(\'./skills\', import.meta.url))）')
+      if (!['card', 'background'].includes(role)) throw new Error("role 只能是 'card' 或 'background'")
+      if (typeof deps.addSkillRoot !== 'function') throw new Error('当前版本不支持插件 Skill')
+      return owned(this, () => {
+        let dispose = deps.addSkillRoot({ owner, dir: path.resolve(dir), role })
+        // A card's own plugin lives in that card's games: its skills would reach every game, so they are not added.
+        void (deps.cardScope ? deps.cardScope() : Promise.resolve(null)).then(scopes => {
+          if (scopes?.has(owner)) { dispose(); dispose = () => {}; recordError(null, owner, 'Skill 来源', new Error('卡内插件不能添加 Skill')) }
+        }, () => {})
+        return () => dispose()
+      }, 'tavern.skillSource()')
+    },
+
+    // Skills: Tavern's built-in ones read-only, the player's own ones writable.
+    async listSkills() {
+      return (await deps.skills.list()).map(skill => ({ name: skill.name, source: skill.source, description: skill.description || '' }))
+    },
+
+    async readSkill({ name } = {}) {
+      const skill = await deps.skills.read(name)
+      if (!skill) return null
+      return { name: skill.name, source: skill.source, description: skill.description || '', content: skill.content, references: await deps.skills.referenceFiles(skill.name) }
+    },
+
+    // Create or replace one of the player's skills; references are the complete references/*.md set.
+    async saveSkill({ name, description, body, references, overwrite = false } = {}) {
+      for (const [key, value] of [['name', name], ['description', description], ['body', body]]) if (typeof value !== 'string' || !value.trim()) throw new TypeError('saveSkill 需要 ' + key)
+      if (references !== undefined && !Array.isArray(references)) throw new TypeError('references 必须是数组')
+      const saved = await deps.skills.write({ name, description, body, ...(references ? { references: references.map(ref => ({ path: ref?.path, content: ref?.content })) } : {}), overwrite: overwrite === true })
+      return { name: saved.name, overwritten: saved.overwritten }
+    },
+
+    async removeSkill({ name } = {}) {
+      const skill = await deps.skills.read(name)
+      if (!skill) throw Object.assign(new Error('Skill 不存在：' + name), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      if (skill.source !== 'user') throw new Error(skill.source === 'plugin' ? '只能删除玩家自己的 Skill，插件自带的 Skill 不能删除' : '只能删除玩家自己的 Skill，内置 Skill 不能删除')
+      await deps.skills.remove(skill.name)
+    },
+
     // Settled turns from..to (at most 50), each with the player's input and the shown text.
     async getHistory({ gameId, from, to } = {}) {
       const game = await requireGame(gameId)
@@ -328,7 +710,19 @@ export function createTavernPluginApi(deps) {
       if (variables === null || typeof variables !== 'object' || Array.isArray(variables)) throw new TypeError('variables 必须是对象')
       const json = JSON.stringify(variables)
       if (json.length > MAX_VARIABLES) throw new Error('variables 不能超过 1 MB')
-      await deps.writeVariables(material, JSON.parse(json))
+      const task = taskContext.getStore()
+      // Captured async context is not authority: stopped/finished callbacks must
+      // not regain write access once the game becomes idle or a new task starts.
+      const taskOperation = () => {
+        if (!task) return null
+        if (task.owner !== owner || task.gameId !== material.sessionId || task.textVersion !== material.key
+          || task.phase !== 'after' && task.phase !== undefined || task.signal.aborted || taskRuns.get(task.gameId) !== task.run || !task.operationId) {
+          throw Object.assign(new Error('插件任务已结束或不属于这一轮'), { code: 'TAVERN_PLUGIN_STALE_VERSION' })
+        }
+        return task.operationId
+      }
+      taskOperation()
+      await deps.writeVariables(material, JSON.parse(json), { taskOperation })
       await changed(material.sessionId)
       return { turn: material.turn, textVersion: material.key }
     },
@@ -353,7 +747,7 @@ export function createTavernPluginApi(deps) {
     settlementTask({ name, title, phase = 'after', run } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
-      if (!Object.hasOwn(TASK_PHASES, phase)) throw new Error("phase 只能是 'before' 或 'after'")
+      if (!Object.hasOwn(TASK_PHASES, phase)) throw new Error("phase 只能是 'before'、'parallel' 或 'after'")
       if (typeof run !== 'function') throw new TypeError('run 必须是函数')
       const entry = { owner, name, title: taskTitle(title, name), phase, run }
       return register.call(this, settlementTasks, taskKey(owner, name), entry, 'tavern.settlementTask()', '结算任务 ' + name + ' 已注册')
@@ -496,6 +890,16 @@ export function createTavernPluginApi(deps) {
       return register.call(this, worldbookPools, owner + '\u0000' + name, { owner, name, entries }, 'tavern.worldbookEntries()', '世界书条目来源 ' + name + ' 已注册')
     }
   }
+  // Every call naming a game or a card passes the card-plugin scope check first.
+  for (const key of Object.keys(service)) {
+    const method = service[key]
+    if (typeof method !== 'function' || method.constructor.name !== 'AsyncFunction') continue
+    service[key] = async function (...args) {
+      const input = args[0]
+      if (input && typeof input === 'object' && (input.gameId !== undefined || input.card !== undefined)) await guardScope(ownerOf(this), input)
+      return await method.apply(this, args)
+    }
+  }
   Object.defineProperty(service, TRACKER, { value: { associate: 'tavern', property: 'ctx' } })
 
   // A one-off task in a fresh background session of this game: same background model,
@@ -540,9 +944,11 @@ export function createTavernPluginApi(deps) {
   }
 
   /** One plugin task under Tavern's watch: bounded, stoppable, its failure recorded for the panel. */
-  async function executeTask(entry, kind, context, signal, onStart) {
+  async function executeTask(entry, kind, context, signal, onStart, operationId) {
     const controller = new AbortController()
-    const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
+    // A settlement task also stops once its text version is replaced (rollback, regenerate, edit).
+    const version = kind === 'settlement' && context.textVersion ? watchVersion(context.gameId, context.turn, context.textVersion, entry.owner) : null
+    const combined = AbortSignal.any([controller.signal, ...(signal ? [signal] : []), ...(version ? [version.controller.signal] : [])])
     const run = { plugin: entry.owner, task: entry.name, title: entry.title, kind, startedAt: Date.now(), controller }
     taskRuns.set(context.gameId, run)
     const finish = onStart?.(entry.owner + ' · ' + entry.title)
@@ -550,7 +956,9 @@ export function createTavernPluginApi(deps) {
     const runAgent = (input = {}) => runTaskAs(entry.owner, { ...input, gameId: context.gameId, signal: combined })
     try {
       combined.throwIfAborted()
-      await bounded(untilAborted(entry.run({ ...structuredClone(context), signal: combined, runAgent }), combined), stage,
+      const scope = { owner: entry.owner, gameId: context.gameId, textVersion: context.textVersion, phase: context.phase, run, signal: combined, operationId }
+      const work = taskContext.run(scope, () => entry.run({ ...structuredClone(context), signal: combined, runAgent }))
+      await bounded(untilAborted(work, combined), stage,
         kind === 'manual' ? MANUAL_TASK_TIMEOUT_MS : SETTLEMENT_TASK_TIMEOUT_MS)
       return true
     } catch (error) {
@@ -559,6 +967,7 @@ export function createTavernPluginApi(deps) {
     } finally {
       // A finished, failed or stopped task: whatever it left running is stopped too.
       controller.abort()
+      if (version) versionWatches.delete(version)
       if (taskRuns.get(context.gameId) === run) taskRuns.delete(context.gameId)
       finish?.()
     }
@@ -579,22 +988,30 @@ export function createTavernPluginApi(deps) {
     const choices = await choicesFor(gameId)
     const tasks = orderedTasks(phase, choices).filter(entry => !choices.disabledTasks.has(taskKey(entry.owner, entry.name)))
     if (!tasks.length) return
-    const material = phase === 'before' ? await deps.readPendingTurn(gameId) : await deps.readLatestSettledTurn(gameId)
+    // Before and alongside Tavern's settlement the turn is still pending; after it, settled.
+    const read = () => phase === 'after' ? deps.readLatestSettledTurn(gameId) : deps.readPendingTurn(gameId)
+    const material = await read()
     if (!material || material.greeting) return
     const id = phase + '\u0000' + material.chatId + '\u0000' + material.key
     if (phasesRan.has(id)) return
     phasesRan.add(id)
     if (phasesRan.size > 2000) phasesRan.delete(phasesRan.values().next().value)
-    const work = async () => {
+    let started = false
+    const work = async operationId => {
+      started = true
       for (const entry of tasks) {
         if (signal?.aborted) return
         // Read again for each task: an earlier one may have changed the variables.
-        const current = phase === 'before' ? await deps.readPendingTurn(gameId) : await deps.readLatestSettledTurn(gameId)
+        const current = await read()
         if (!current || current.key !== material.key) return
-        await executeTask(entry, 'settlement', { ...(await snapshotOf(current)), phase }, signal, onStart)
+        await executeTask(entry, 'settlement', { ...(await snapshotOf(current)), phase }, signal, onStart, operationId)
       }
     }
-    await (around ? around(work) : work())
+    try { await (around ? around(work) : work()) }
+    catch (error) {
+      if (!started) phasesRan.delete(id)
+      throw error
+    }
   }
 
   /** The manual task `key` as the player may start it in this game; throws when it can't run. */
@@ -609,11 +1026,11 @@ export function createTavernPluginApi(deps) {
   }
 
   /** Seam: run a manual task Tavern has admitted (see manualTaskFor); resolves true when it succeeded. */
-  async function runManualTask({ gameId, key, input, signal, onStart }) {
+  async function runManualTask({ gameId, key, input, signal, onStart, operationId }) {
     const entry = await manualTaskFor(gameId, key, input)
     const material = await deps.readLatestSettledTurn(gameId)
     const context = material ? await snapshotOf(material) : { gameId, turn: null, textVersion: null, text: '', rawText: '', card: null, variables: null }
-    return executeTask(entry, 'manual', { ...context, input: typeof input === 'string' ? input.trim() : '' }, signal, onStart)
+    return executeTask(entry, 'manual', { ...context, input: typeof input === 'string' ? input.trim() : '' }, signal, onStart, operationId)
   }
 
   function stopTasks(gameId) {
@@ -657,16 +1074,82 @@ export function createTavernPluginApi(deps) {
     dispatch(settledHandlers, { ...(await snapshotOf(material)), settledAt: Date.now() }, 'onTurnSettled', (await choicesFor(material.sessionId)).disabled)
   }
 
+  /** Called by Tavern after settlement saved a turn's dialogue annotation. */
+  function castAnnotated(gameId, annotation) {
+    if (!gameId || castHandlers.size === 0) return
+    void choicesFor(gameId).then(({ disabled }) => dispatch(castHandlers, { gameId, ...annotation }, 'onCastAnnotated', disabled))
+  }
+
+  /** Seam: the state a plugin last published for a game (null when none, or the plugin is off there). */
+  async function pluginState(gameId, owner, name) {
+    const key = String(gameId) + '\u0000' + String(owner) + '\u0000' + String(name)
+    if (!publishedStates.has(key) || (await choicesFor(gameId)).disabled.has(String(owner))) return null
+    return structuredClone(publishedStates.get(key))
+  }
+
+  /** Called by Tavern after a card's working copy changed; a card plugin hears only about its own card. */
+  async function cardChanged(cardPath, revision) {
+    if (cardHandlers.size === 0) return
+    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
+    const elsewhere = new Set(Array.from(scopes || []).filter(([, scope]) => !scope.cards.includes(cardPath)).map(([name]) => name))
+    dispatch(cardHandlers, { card: cardPath, revision }, 'onCardChanged', elsewhere)
+  }
+
+  /** Seam: the importer for a file name, by extension; a card's own plugins never import other cards. */
+  async function cardImporterFor(name) {
+    const extension = (/\.[^./\\]+$/.exec(String(name || '').toLowerCase()) || [''])[0]
+    if (!extension || NATIVE_CARD_EXTENSIONS.has(extension)) return null
+    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
+    const entry = Array.from(cardImporters.values()).find(item => item.extensions.includes(extension) && !scopes?.has(item.owner))
+    return entry ? { owner: entry.owner, id: entry.id, label: entry.label } : null
+  }
+
+  /** Seam: run the importer for `name` on the file's bytes; the card and its files, checked. */
+  async function convertCard(name, data) {
+    const found = await cardImporterFor(name)
+    const entry = found && cardImporters.get(found.owner + '/' + found.id)
+    if (!entry) throw Object.assign(new Error('没有能导入这种文件的插件'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+    let value
+    try { value = await bounded(entry.convert({ name: String(name), data }), '导入器 ' + entry.label, REPLACEMENT_TIMEOUT_MS) }
+    catch (error) { recordError(null, entry.owner, '导入人物卡', error); throw new Error('插件「' + entry.label + '」没能导入这个文件：' + String(error?.message || error)) }
+    const fail = message => { throw new Error('插件「' + entry.label + '」交回的人物卡不合格：' + message) }
+    if (!value || typeof value !== 'object' || !value.card || typeof value.card !== 'object' || Array.isArray(value.card)) fail('card 必须是人物卡 JSON 对象')
+    const files = new Map()
+    for (const [path, bytes] of Object.entries(value.files && typeof value.files === 'object' ? value.files : {})) {
+      if (!(bytes instanceof Uint8Array)) fail('files 里的 ' + path + ' 必须是 Uint8Array 或 Buffer')
+      files.set(path, Buffer.from(bytes))
+    }
+    const packs = value.packs === undefined ? [] : value.packs
+    if (!Array.isArray(packs) || packs.length > 20) fail('packs 最多 20 个')
+    return { owner: entry.owner, label: entry.label, card: structuredClone(value.card), files,
+      packs: packs.map(pack => ({ id: pack?.id, format: String(pack?.format || ''), title: String(pack?.title || ''), files: Array.isArray(pack?.files) ? pack.files.map(file => ({ path: file?.path, data: file?.data })) : [] })),
+      imported: entry.imported }
+  }
+
+  /** Seam: tell the importing plugin where its card went; its failure never undoes the import. */
+  async function cardImported(converted, card) {
+    if (typeof converted.imported !== 'function') return
+    try { await bounded(converted.imported({ card }), '导入器收尾') }
+    catch (error) { recordError(null, converted.owner, '导入人物卡收尾', error) }
+  }
+
   function gameRemoved(gameId) {
-    if (gameId) dispatch(removedHandlers, { gameId }, 'onGameRemoved')
+    if (!gameId) return
+    for (const key of Array.from(publishedStates.keys())) if (key.startsWith(gameId + '\u0000')) publishedStates.delete(key)
+    void checkVersions(gameId, { all: true })
+    dispatch(removedHandlers, { gameId }, 'onGameRemoved')
   }
 
   const TIMELINE_KINDS = new Set(['rollback', 'undo-rollback', 'regenerate', 'edit', 'fork'])
   /** Called by Tavern after the story line of a game changed; the change is informational. */
   function timelineChanged(gameId, change = {}) {
-    if (!gameId || !TIMELINE_KINDS.has(change.kind) || timelineHandlers.size === 0) return
+    if (!gameId || !TIMELINE_KINDS.has(change.kind)) return
+    if (change.kind !== 'fork') void checkVersions(gameId).catch(() => {})
+    if (timelineHandlers.size === 0) return
     const turn = Number(change.turn)
-    void choicesFor(gameId).then(({ disabled }) => dispatch(timelineHandlers, { gameId, kind: change.kind, ...(Number.isSafeInteger(turn) && turn > 0 ? { turn } : {}),
+    const known = Number.isSafeInteger(turn) && turn > 0
+    void Promise.all([choicesFor(gameId), known ? deps.currentKey(gameId, turn).catch(() => null) : null]).then(([{ disabled }, textVersion]) => dispatch(timelineHandlers, {
+      gameId, kind: change.kind, ...(known ? { turn } : {}), ...(textVersion ? { textVersion } : {}),
       ...(change.fromGameId ? { fromGameId: String(change.fromGameId) } : {}) }, 'onTimelineChanged', disabled))
   }
 
@@ -752,6 +1235,10 @@ export function createTavernPluginApi(deps) {
     for (const entry of settledHandlers) use(entry.owner, '生命周期', '观察')
     for (const entry of timelineHandlers) use(entry.owner, '生命周期', '观察')
     for (const entry of removedHandlers) use(entry.owner, '生命周期', '观察')
+    for (const entry of castHandlers) use(entry.owner, '演出', '观察')
+    for (const entry of cardHandlers) use(entry.owner, '人物卡', '观察')
+    for (const entry of castSources.values()) use(entry.owner, '演出', '添加')
+    for (const entry of speechProviders.values()) use(entry.owner, '配音', '添加')
     for (const entry of [...sections.values(), ...turnSections.values(), ...worldbookSources.values()]) use(entry.owner, '上下文', '添加')
     for (const entry of worldbookPools.values()) use(entry.owner, '世界书', '添加')
     for (const entry of [...settlementSections.values(), ...settlementTools.values()]) use(entry.owner, '结算', '添加')
@@ -769,20 +1256,36 @@ export function createTavernPluginApi(deps) {
       stages[stage] = { label: REPLACEABLE_STAGES[stage], candidates, chosen: Object.hasOwn(chosen, stage) ? chosen[stage] : null, active: active ? active.owner : '',
         conflict: !Object.hasOwn(chosen, stage) && candidates.filter(owner => !disabled.has(owner)).length > 1 }
     }
-    const plugins = Array.from(uses.keys()).sort().map(name => ({ name, enabled: !disabled.has(name), uses: uses.get(name) }))
     const tasks = {
-      settlement: Object.keys(TASK_PHASES).flatMap(phase => orderedTasks(phase, choices).map(entry => ({ key: taskKey(entry.owner, entry.name), plugin: entry.owner,
+      settlement: Object.keys(TASK_PHASES).flatMap(phase => orderedTasks(phase, choices).filter(entry => !choices.own.has(entry.owner)).map(entry => ({ key: taskKey(entry.owner, entry.name), plugin: entry.owner,
         title: entry.title, phase, phaseLabel: TASK_PHASES[phase], enabled: !choices.disabledTasks.has(taskKey(entry.owner, entry.name)) }))),
       manual: Array.from(manualTasks.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
         .map(entry => ({ key: taskKey(entry.owner, entry.name), plugin: entry.owner, title: entry.title, description: entry.description, input: entry.input })),
       running: runningTask(game.sessionId)
     }
-    return { plugins, replacements: stages, tasks, errors: [...(errors.get(game.sessionId) || [])].reverse() }
+    // Options plugins add to this game's settings: this card's own plugins and the plugins switched on here.
+    const stored = deps.data?.readSettings ? (await deps.data.readSettings(game.chatId).catch(() => null))?.values || {} : {}
+    const settings = Array.from(gameSettingDefs.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner))
+      .map(entry => ({ plugin: entry.owner, title: entry.title || entry.owner, card: choices.own.has(entry.owner), fields: structuredClone(entry.fields), values: settingValues(entry, stored[entry.owner]) }))
+    for (const entry of gameSettingDefs.values()) use(entry.owner, '本局设置', '添加')
+    return { plugins: Array.from(uses.keys()).filter(name => !choices.elsewhere.has(name) && !choices.own.has(name)).sort().map(name => ({ name, enabled: !disabled.has(name), uses: uses.get(name) })),
+      replacements: stages, tasks, settings, errors: [...(errors.get(game.sessionId) || [])].reverse() }
   }
 
-  async function setGamePlugin(gameId, { name, enabled, replace, task, taskOrder } = {}) {
-    const { game } = await choicesFor(gameId)
+  async function setGamePlugin(gameId, { name, enabled, replace, task, taskOrder, setting } = {}) {
+    const { game, own, disabled } = await choicesFor(gameId)
     if (!game) throw new Error('这一局不存在或不是游玩对话')
+    let changedValues = null
+    if (setting && typeof setting === 'object') {
+      const entry = gameSettingDefs.get(String(setting.plugin))
+      const field = entry?.fields.find(item => item.key === setting.key)
+      if (!entry || !field || disabled.has(entry.owner)) throw new Error('这一局没有这个插件配置项')
+      const value = coerceSetting(field, setting.value)
+      if (value === undefined) throw new Error('「' + field.label + '」的值不符合要求')
+      await deps.data.updateSettings(game.chatId, settings => { settings.values[entry.owner] = { ...settings.values[entry.owner], [field.key]: value } })
+      changedValues = { owner: entry.owner, values: settingValues(entry, (await deps.data.readSettings(game.chatId)).values[entry.owner]) }
+    }
+    if (typeof name === 'string' && own.has(name) || task && typeof task.key === 'string' && own.has(task.key.split(':')[0])) throw new Error('卡内插件是这张卡的一部分，不能在本局单独关闭')
     await deps.data.updateSettings(game.chatId, settings => {
       if (typeof name === 'string' && typeof enabled === 'boolean') {
         settings.disabled = settings.disabled.filter(item => item !== name)
@@ -799,7 +1302,20 @@ export function createTavernPluginApi(deps) {
         else settings.replacements[replace.stage] = String(replace.plugin)
       }
     })
+    if (changedValues) {
+      dispatch(Array.from(settingHandlers).filter(entry => entry.owner === changedValues.owner), { gameId: game.sessionId, values: changedValues.values }, '本局配置项', disabled)
+      deps.settingsChanged?.(game.sessionId, changedValues.owner)
+    }
     return gamePlugins(gameId)
+  }
+
+  /** One plugin's settings in a game, for its page side; null when it declared none. */
+  async function pluginGameSettings(gameId, owner) {
+    const entry = gameSettingDefs.get(String(owner))
+    if (!entry) return null
+    const { game, disabled } = await choicesFor(gameId)
+    if (!game || disabled.has(entry.owner)) return null
+    return settingValues(entry, (await deps.data.readSettings(game.chatId)).values[entry.owner])
   }
 
   /** Turns that hold plugin data or media, so a fork computes versions only for them. */
@@ -888,6 +1404,29 @@ export function createTavernPluginApi(deps) {
     return collectSections(compactionSections, { gameId }, '压缩说明段落', (await choicesFor(gameId)).disabled)
   }
 
+  /** Seam: the characters plugins offer to a game's cast, checked; a failing source is skipped. */
+  async function castAssetSources({ gameId }) {
+    const { disabled } = await choicesFor(gameId).catch(() => ({ disabled: new Set() }))
+    const url = value => typeof value === 'string' && value.length <= 4096 && /^(\/|https?:\/\/|data:image\/)/.test(value) ? value : ''
+    const text = (value, max) => typeof value === 'string' && value.trim() && value.trim().length <= max ? value.trim() : ''
+    const pictures = map => Object.fromEntries(Object.entries(map && typeof map === 'object' ? map : {}).slice(0, 64)
+      .map(([emotion, value]) => [text(emotion, 40), url(value)]).filter(([emotion, value]) => emotion && value))
+    const result = []
+    const entries = Array.from(castSources.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      let list
+      try { list = await bounded(entry.characters({ gameId }), '角色素材来源 ' + entry.name) }
+      catch (error) { recordError(gameId, entry.owner, '角色素材来源 ' + entry.name, error); continue }
+      for (const item of Array.isArray(list) ? list.slice(0, MAX_CAST_SOURCE_CHARACTERS) : []) {
+        const name = text(item?.name, 60)
+        if (!name) continue
+        result.push({ name, aliases: (Array.isArray(item.aliases) ? item.aliases : []).map(alias => text(alias, 60)).filter(Boolean).slice(0, 20),
+          avatarUrl: url(item.avatarUrl), avatars: pictures(item.avatars), sprites: pictures(item.sprites), plugin: entry.owner })
+      }
+    }
+    return result
+  }
+
   /** Seam: what the background settlement task offers the model on behalf of plugins. */
   const settlement = Object.freeze({
     /** Tool definitions, in a stable order: they sit in the cached request prefix. */
@@ -899,7 +1438,12 @@ export function createTavernPluginApi(deps) {
       const names = Array.from(settlementTools.values()).sort((a, b) => a.name.localeCompare(b.name))
       return { available: names.filter(entry => !disabled.has(entry.owner)).map(entry => entry.name), unavailable: names.filter(entry => disabled.has(entry.owner)).map(entry => entry.name) }
     },
-    async sections({ gameId, turn }) { return collectSections(settlementSections, { gameId, turn }, '结算说明段落', (await choicesFor(gameId)).disabled) },
+    // Sections see the turn being settled: its text is not readable through getTurn until settlement ends.
+    async sections({ gameId, turn }) {
+      const pending = deps.readPendingTurn ? await deps.readPendingTurn(gameId).catch(() => null) : null
+      const current = pending && pending.turn === turn ? { text: pending.text, textVersion: pending.key } : {}
+      return collectSections(settlementSections, { gameId, turn, ...current }, '结算说明段落', (await choicesFor(gameId)).disabled)
+    },
     /** One settlement run's dispatcher: bounded calls, errors returned to the model, never thrown. */
     calls({ gameId, turn }) {
       let count = 0
@@ -921,6 +1465,13 @@ export function createTavernPluginApi(deps) {
     }
   })
 
-  return Object.freeze({ service, callHandler, turnState, exportGame, importGame, turnSettled, gameRemoved, timelineChanged, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement,
-    runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, gamePlugins, setGamePlugin })
+  /** Seam: where a plugin-registered DSH tool may show; null when its plugin set nothing. */
+  function toolModesFor(name) {
+    const entry = toolScopes.get(name)
+    return entry ? entry.modes.slice() : null
+  }
+
+  return Object.freeze({ service, toolModesFor, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved,
+    speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement,
+    runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }

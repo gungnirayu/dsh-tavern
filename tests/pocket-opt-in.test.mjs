@@ -18,14 +18,19 @@ test('each host drops the patch of the mobile layout it does not install', async
   }
 })
 
-test('a user-installed Pocket keeps its patch only at the patched version', async () => {
-  const { prepareProfileWorkspace } = await import('../bin/profile-configuration.mjs')
+test('better-sidebar follows the host line: DSHA 0.2.0 gets 0.26 and its patch, 0.2.1 and unlisted lines keep 0.28', async () => {
+  const { prepareProfileWorkspace, mergeProfileManifest } = await import('../bin/profile-configuration.mjs')
   const { parse } = await import('yaml')
+  const { existsSync } = await import('node:fs')
   const { readFile } = await import('node:fs/promises')
   const workspace = await readFile(new URL('../pnpm-workspace.yaml', import.meta.url), 'utf8')
-  const key = Object.keys(parse(workspace).patchedDependencies).find(name => name.startsWith('dsh-pocket@'))
-  const version = key.slice('dsh-pocket@'.length)
-  const patchedWith = installed => Object.keys(parse(prepareProfileWorkspace(workspace, { dependencies: { 'dsh-pocket': installed } })).patchedDependencies || {})
-  assert.ok(patchedWith(version).includes(key))
-  assert.equal(patchedWith('9.9.9').includes(key), false)
+  const source = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  for (const [dshVersion, expected] of [['0.2.0-rc.2', '0.26.0'], ['0.2.1-rc.2', '0.28.0'], ['0.2.9', '0.28.0']]) {
+    const manifest = mergeProfileManifest({ source, pluginPath: '/x/tavern-plugin', dataRoot: '/x/data', host: 'android', dshVersion })
+    assert.equal(manifest.dependencies['dsh-better-sidebar'], expected, dshVersion)
+    const patched = parse(prepareProfileWorkspace(workspace, manifest)).patchedDependencies || {}
+    const sidebarPatches = Object.keys(patched).filter(key => key.startsWith('dsh-better-sidebar@'))
+    assert.deepEqual(sidebarPatches, [`dsh-better-sidebar@${expected}`], dshVersion)
+    assert.ok(existsSync(new URL(`../${patched[sidebarPatches[0]]}`, import.meta.url)), patched[sidebarPatches[0]])
+  }
 })

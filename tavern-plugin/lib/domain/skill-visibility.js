@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { canonicalTavernSkillName } from './tavern-skills.js'
+import { isProducerSource } from './message-source.js'
 
 function stateOf(message) {
   const source = message?.source
-  return source?.kind === 'plugin' && source.plugin === 'dsh-tavern' && source.form === 'writing-skill-state'
+  return isProducerSource(source, 'dsh-tavern') && source.form === 'writing-skill-state'
     ? source.disabledWritingSkills : undefined
 }
 
@@ -53,6 +54,6 @@ export function appendWritingSkillState(messages, mode, { session, disabledWriti
   ].join('\n')
   return [...messages, {
     id: randomUUID(), role: 'user', content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'writing-skill-state', disabledWritingSkills: disabled }
+    source: { kind: 'plugin:dsh-tavern', form: 'writing-skill-state', disabledWritingSkills: disabled }
   }]
 }

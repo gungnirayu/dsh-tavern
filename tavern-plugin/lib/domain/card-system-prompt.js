@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
 import { sessionStablePrefixSections } from './session-stable-prefix.js'
+import { isProducerSource } from './message-source.js'
 
 export const CARD_SYSTEM_PROMPT_SECTION = 'tavern:card-system-prompt'
 const MARKER = '【人物卡系统提示】'
@@ -20,7 +21,7 @@ export function cardSystemPromptSnapshot(session, text, pendingMessages = [], op
     .filter(event => event?.type === 'user/message').map(event => event.data).concat(pendingMessages)
   for (const message of messages) {
     const record = message?.source?.trace?.cardSystemPromptSnapshot
-    if (message?.source?.plugin !== 'dsh-tavern' || record?.schemaVersion !== 1) continue
+    if (!isProducerSource(message?.source, 'dsh-tavern') || record?.schemaVersion !== 1) continue
     const content = (message.content || []).filter(block => block.type === 'text').map(block => block.text).join('')
     if (typeof record.rendered === 'string' && content.includes(record.rendered)) previousText = record.text
   }

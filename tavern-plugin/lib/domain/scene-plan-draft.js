@@ -17,6 +17,7 @@ export const SCENE_LAYOUT_TOOL = {
     moment: { type: 'string', enum: ['end', 'earlier'] },
     orientation: { type: 'string', enum: ['portrait', 'landscape', 'square'] },
     negative: string(600), anchor: string(200),
+    views: { type: 'array', items: object({ id: string(100), angle: { type: 'string', enum: ['front', 'side', 'back'] }, appearance: string(1200) }, ['id', 'angle']), maxItems: 8 },
     style: object({ text: string(200), tags: string(400) }, ['text', 'tags'])
   }, ['description', 'subjects', 'continuity', 'scene'])
 }

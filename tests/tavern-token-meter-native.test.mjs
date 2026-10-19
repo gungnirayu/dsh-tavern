@@ -1,4 +1,4 @@
-import { appendSessionEvent } from '../tavern-plugin/lib/domain/session-events.js'
+import { appendSessionEvent, closeOpeningTurn } from '../tavern-plugin/lib/domain/session-events.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installTavernTokenMeter } from '../tavern-plugin/lib/domain/tavern-token-meter.js'
-import { ensureSessionSeedTrajectory } from '../tavern-plugin/lib/domain/session-seed-trajectory.js'
+import { sessionSeedTrajectoryMessages } from '../tavern-plugin/lib/domain/session-seed-trajectory.js'
 
 const native = { skip: !process.env.DSH_BOOT_MODULE }
 async function harness(t) {
@@ -33,7 +33,11 @@ function completed(session, usage) {
 test('原生 Token Meter 可统计既有无 step 的 Tavern 种子消息，且不改写历史', native, async t => {
   const { ctx, Session } = await harness(t)
   const session = Session.create('seed', [], { ...Session.create('seed').header, agentPreset: 'tavern' })
-  await ensureSessionSeedTrajectory(session)
+  // Pre-0.2 archives hold the reserved head and Tavern seeds without any
+  // opening turn. The meter patch must still measure them without rewriting.
+  appendSessionEvent(session, 'system/message', { turn: 1, step: 1, message: {
+    id: 'tavern-system-head:' + session.id, role: 'system', content: [], source: { kind: 'system-prompt' } } }, { surfaceOp: 'append' })
+  for (const stage of sessionSeedTrajectoryMessages(session.id)) appendSessionEvent(session, stage.type, stage.data, stage.intent)
   const before = JSON.stringify(session.snapshotEvents())
   assert.throws(() => ctx.tokenMeter.measure(session), /assistant\/message.*no matching step\/start/)
   const dispose = installTavernTokenMeter(ctx.tokenMeter)
@@ -79,11 +83,16 @@ test('前后台固定系统背景连续压缩三次仍不变，原事件和恢�
     session.append('request/header', { header: { config: { provider: 'fixture', model: 'summary' }, ...(session.header.version < 3 ? { system } : {}) }, reason: 'initial' })
     if (session.header.version >= 3) {
       const head = session.surface.nodes[0]
-      session.append('system/message', { message: { id: 'assembled', role: 'system', content: [{ type: 'text', text: system }], source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } } }, { surfaceOp: { op: 'replace', startSeq: head, endSeq: head }, sourceEventSeqs: [head] })
+      session.append('system/message', { message: { id: 'assembled', role: 'system', content: [{ type: 'text', text: system }], source: { kind: 'system-prompt' } } }, { surfaceOp: { op: 'replace', startSeq: head, endSeq: head }, sourceEventSeqs: [head] })
     }
+    closeOpeningTurn(session)
     for (let n = 0; n < 3; n++) {
+      session.append('turn/start', { turn: n + 2 })
+      session.append('step/start', { turn: n + 2, step: 1 })
       session.append('user/message', { id: 'history-' + n, role: 'user', content: [{ type: 'text', text: '剧情进展。'.repeat(500) }], source: { kind: 'user' } }, { surfaceOp: 'append' })
       session.append('user/message', { id: 'tail-' + n, role: 'user', content: [{ type: 'text', text: '最新剧情' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+      session.append('step/end', { turn: n + 2, step: 1 })
+      session.append('turn/end', { turn: n + 2, reason: { kind: 'completed' } })
       const original = session.snapshotEvents()
       const signal = new AbortController().signal
       assert.ok(await engine.compactNow({ session, options: {}, runMaintenance: fn => fn(signal) }, signal))
@@ -125,4 +134,20 @@ test('后续切换预设不改变旧替换的归属，伪造恢复内容仍被�
   session.append('agent-preset/selected', {agentPreset: 'tavern'})
   appendSessionEvent(session, 'assistant/message', {...original.data, message: {...original.data.message, content: [{type: 'text', text: '不是原文'}]}}, {surfaceOp: {op: 'replace', start: edit.seq, end: edit.seq}, sourceEventSeqs: [edit.seq, original.seq]})
   assert.throws(() => ctx.tokenMeter.measure(session), /no matching step\/start/)
+})
+
+test('正文走工具调用：回合结束后追加的正文投影也能计量，压缩不再卡住（#263）', native, async t => {
+  const { ctx, Session } = await harness(t)
+  const session = Session.create('story-tool', [], { ...Session.create('story-tool').header, agentPreset: 'tavern' })
+  completed(session, { inputTokens: 10, outputTokens: 10 })
+  const callSeq = session.surface.nodes.at(-1)
+  // The tool already concluded the turn: the projection is appended outside any step, then folded.
+  const owned = { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' }
+  const reply = { id: 'projected', role: 'assistant', content: [{ type: 'text', text: '提交的正文。'.repeat(200) }], source: owned }
+  const shown = appendSessionEvent(session, 'assistant/message', { turn: 1, step: 1, message: reply }, { surfaceOp: 'append', sourceEventSeqs: [] })
+  const shownSeq = typeof shown === 'number' ? shown : shown.seq
+  appendSessionEvent(session, 'assistant/message', { turn: 1, step: 1, message: reply }, { surfaceOp: { op: 'replace', start: callSeq, end: shownSeq }, sourceEventSeqs: [callSeq, shownSeq] })
+  assert.throws(() => ctx.tokenMeter.measure(session), /assistant\/message.*no matching step\/start/)
+  t.after(installTavernTokenMeter(ctx.tokenMeter))
+  assert.ok(ctx.tokenMeter.measure(session).totalTokens > 0)
 })

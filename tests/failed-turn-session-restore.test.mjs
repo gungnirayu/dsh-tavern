@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Session, adoptSessionEvent } from './fixtures/dsh-session-host.mjs'
 import { sessionEvents, appendSessionEvent } from '../tavern-plugin/lib/domain/session-events.js'
-import { rollbackAvailability, clearFailedTurnSurface, locateRegenerationSurface, locateRollbackSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { rollbackAvailability, clearFailedTurnSurface, locateRegenerationSurface, locateRollbackSurface, interruptedSurfaceTurns } from '../tavern-plugin/lib/domain/rollback-surface.js'
 
 function fixture() {
   const session = Session.create('failed-turn-restore')
@@ -55,4 +55,26 @@ test('新轮退役历史提示词后失败，清理及重载保留上一轮正�
       assert.equal(locateRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes, turn: 1 }).assistantSeq, 3)
     }
   }
+})
+
+test('服务中途停掉、从未结束的回合：下一轮开始时按失败回合清理，输入不会带进新请求', () => {
+  const session = Session.create('crashed-turn')
+  const source = { kind: 'model', provider: 'test', model: 'test' }
+  session.append('turn/start', { turn: 2 })
+  session.append('user/message', { id: 'ok', role: 'user', content: [{ type: 'text', text: '领取' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  appendSessionEvent(session, 'assistant/message', { turn: 2, step: 1, message: { id: 'body', role: 'assistant', content: [{ type: 'text', text: '正文' }], source } }, { surfaceOp: 'append' })
+  session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+  session.append('turn/start', { turn: 3 })
+  session.append('user/message', { id: 'crashed', role: 'user', content: [{ type: 'text', text: '崩溃时的输入' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  appendSessionEvent(session, 'assistant/message', { turn: 3, step: 1, message: { id: 'half', role: 'assistant', content: [{ type: 'text', text: '半截' }], source } }, { surfaceOp: 'append' })
+  // No turn/end: the server stopped. The next turn begins after restart.
+  session.append('turn/start', { turn: 4 })
+  // The new turn's input already stands after it: only the interrupted turn is found.
+  session.append('user/message', { id: 'next', role: 'user', content: [{ type: 'text', text: '新的输入' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  assert.deepEqual(interruptedSurfaceTurns({ events: sessionEvents(session), nodes: session.surface.nodes }), [3])
+  assert.ok(clearFailedTurnSurface({ session, turn: 3 }) > 0)
+  const texts = session.surface.nodes.map(seq => sessionEvents(session).find(event => event.seq === seq)).map(event => (event.data.message?.content || event.data.content || []).map(block => block.text).join(''))
+  assert.ok(!texts.includes('崩溃时的输入') && !texts.includes('半截'), JSON.stringify(texts))
+  assert.ok(texts.includes('正文') && texts.includes('新的输入'))
+  assert.deepEqual(interruptedSurfaceTurns({ events: sessionEvents(session), nodes: session.surface.nodes }), [])
 })

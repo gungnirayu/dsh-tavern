@@ -5,6 +5,7 @@
 - [领域契约](../CONTEXT.md)：Story Timeline、前后台轮次和持久化边界的当前定义。
 - [产品设计原则](product-design.md)：项目使命、核心体验，以及 Agent、上下文、生态组合、候选和剧本等产品取舍。
 - [软件不是代码的集合](software-is-experience.md)：AI 加速实现之后，真实体验、反复测试与产品打磨仍由人完成。
+- [插件生态](plugin-ecosystem.md)：开放插件接口，像市场汇总分散信息一样，把一个人想不到的巧思以插件形式吸收进来。
 - [架构与领域语言](architecture.md)：统一术语、DSH seam、领域模块、适配器和关键规则。
 - [TODO](todo.md)：当前优先级、后续功能与发布门槛。
 
@@ -18,7 +19,7 @@
 
 用户功能和演示见项目 [README](../README.md)；安装、更新、数据备份及排错见[安装说明](installation.md)。
 
-v2.7 发布说明见 [变更记录](releases/v2.7.md) 和 [完整提交清单](releases/v2.7-commits.md)。
+v3.0 发布说明见 [变更记录](releases/v3.0.md) 和 [完整提交清单](releases/v3.0-commits.md)。
 
 ## 查找资料
 

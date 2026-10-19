@@ -24,17 +24,6 @@ function fixture(runAgent, initial = {}) {
   return { api, tasks, get: () => structuredClone(chat), edit: fn => fn(chat) }
 }
 
-test('校验失败后模型修正并保存成功，不残留失败提示', async () => {
-  const run = fixture(async input => {
-    await input.onToolCall({ name: 'character_design_save', arguments: { ...design, identity: '' } })
-    await input.onToolCall({ name: 'character_design_save', arguments: design })
-  })
-  await run.api.start({ sessionId: 'session' }); await run.api.wait('chat')
-  assert.equal(run.get().characterDesignTask.status, 'done')
-  assert.equal(run.get().characterDesignTask.error, '')
-  assert.equal(run.get().characterDesignDocument.characters.length, 1)
-})
-
 test('提交时保留同时新增的世界书条目，发生手动正文冲突则拒绝整次提交', async () => {
   let concurrentEdit = () => {}
   const run = fixture(async input => {

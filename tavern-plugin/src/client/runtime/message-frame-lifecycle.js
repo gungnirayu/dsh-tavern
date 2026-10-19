@@ -596,7 +596,7 @@
 		// the browsing context alive; appendChild would silently reset form state.
 		function createTavernPanelRegistry() {
 			const entries = new Map(), listeners = new Set();
-			let snapshot = [], activation = 0;
+			let snapshot = [], activation = 0, reveal = null;
 			function publish() { snapshot = Array.from(entries.values()); listeners.forEach(function (fn) { fn(); }); }
 			function move(entry, target) {
 				if (!target || entry.node.parentNode === target) return;
@@ -619,7 +619,10 @@
 					if (typeof entry.home.moveBefore !== "function") throw new Error("当前浏览器不支持保留页面状态的移动，请在原消息中使用此面板。");
 					if (!pinned) move(entry, entry.home);
 					entry.pinned = pinned; if (pinned) entry.activation = ++activation; publish();
+					// The panel docks only where the status tab is mounted; bring that tab forward.
+					if (pinned && reveal) reveal(entry.sessionId);
 				},
+				onPin: function (fn) { reveal = fn; return function () { if (reveal === fn) reveal = null; }; },
 				dock: function (id, target) { const entry = entries.get(id); if (entry && entry.pinned) move(entry, target); },
 				restore: function (id) { const entry = entries.get(id); if (entry && entry.home.isConnected) move(entry, entry.home); }
 			};

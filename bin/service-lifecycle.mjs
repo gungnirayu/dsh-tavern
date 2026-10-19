@@ -3,7 +3,7 @@ import { startupTimeoutMs, waitForServiceStartup, stopStartupChild } from './ser
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
-import { resolveDshCliEntry } from './plugin-dependencies.mjs'
+import { resolveDesktopAsarCommand, resolveDshCliEntry } from './plugin-dependencies.mjs'
 import path from 'node:path'
 import { migrateSessionPrefixEvents } from './session-prefix-migration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
@@ -155,10 +155,11 @@ function inspectRecordedProcess(record) {
 }
 
 async function serviceState() {
-  const port = CLI_PORT
   const record = readPidRecord()
   const identity = record ? inspectRecordedProcess(record) : 'gone'
   const pidAlive = identity === 'owned'
+  // A running service keeps the port it started on, which may be a fallback (see startService).
+  const port = pidAlive && Number.isSafeInteger(record.port) ? record.port : CLI_PORT
   const portOpen = await isPortOpen(port)
   const ready = portOpen && await isServiceReady(port)
   if (record && !pidAlive && (identity !== 'unknown' || !portOpen)) {
@@ -298,7 +299,15 @@ export async function startService() {
     return { ...state, webUrl, runtimeGeneration: state.record.pid }
   }
   if (state.portOpen) {
-    throw new Error(`端口 ${state.port} 已被其他进程占用，拒绝启动。`)
+    // The default port is often taken by another app (the DeepSeek Harness desktop app serves
+    // on 3081). Without an explicit DSH_TAVERN_PORT, move to the next free port.
+    if (String(process.env.DSH_TAVERN_PORT ?? '').trim() !== '') throw new Error(`端口 ${state.port} 已被其他进程占用，拒绝启动。请换一个 DSH_TAVERN_PORT。`)
+    let free = null
+    for (let port = state.port + 1; port <= Math.min(65535, state.port + 20) && free === null; port++) if (!(await isPortOpen(port))) free = port
+    if (free === null) throw new Error(`端口 ${state.port} 及之后 20 个端口都被占用，拒绝启动。可用 DSH_TAVERN_PORT 指定端口。`)
+    console.log(`端口 ${state.port} 已被其他程序占用（比如 DeepSeek Harness 桌面版），改用端口 ${free}。`)
+    state.port = free
+    state.portOpen = false
   }
 
   const prefixRepairs = await migrateSessionPrefixEvents({
@@ -311,17 +320,32 @@ export async function startService() {
   const dsh = findDshCommand(runtimeHost)
   const invocation = resolveDshInvocation(
     dsh,
-    ['--profile', PROFILE, '--host', CLI_HOST, '--port', String(CLI_PORT), '--no-open'],
+    ['--profile', PROFILE, '--host', CLI_HOST, '--port', String(state.port), '--no-open'],
     runtimeHost,
   )
-  if (process.platform === 'win32') {
-    invocation.args = [resolveDshCliEntry({ dsh }), ...invocation.args]
-    invocation.command = process.execPath
+  // A pinned desktop DSH (DSH_DESKTOP_DSH_BOOTSTRAP) is already the Electron executable plus
+  // `--expose-internals <bootstrap>`; adding the entry again shifts every argument and the
+  // CLI reports `--profile <name> is required` (#254).
+  const pinned = invocation.args[0] === '--expose-internals'
+  if (process.platform === 'win32' && !pinned) {
+    // 0.2.0-rc.2 适配：桌面 0.2.0 的 dsh 是「Electron 可执行文件 + app.asar 内 CLI」的 shim，
+    // 纯 Node 既定位不到 @deepseek-ai/dsh npm 包（resolveDshCliEntry 会抛「无法定位当前 DSH CLI 包」），
+    // 也读不了 asar 内文件；必须改用 Electron + ELECTRON_RUN_AS_NODE=1（即 shim 自身的形态）。
+    // 非 asar 形态（0.1.5 桌面、真实 npm 包布局、host=cli）保持原有行为不变。
+    const desktop = runtimeHost === 'desktop' ? resolveDesktopAsarCommand({ dsh }) : null
+    if (desktop) {
+      invocation.command = desktop.command
+      invocation.args = ['--expose-internals', desktop.entry, ...invocation.args]
+      invocation.env = { ...(invocation.env ?? {}), ...desktop.env }
+    } else {
+      invocation.args = [resolveDshCliEntry({ dsh }), ...invocation.args]
+      invocation.command = process.execPath
+    }
   }
   mkdirSync(LOG_DIR, { recursive: true })
   const logOffset = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0
   const startupLog = (event, details = {}) => appendFileSync(LOG_FILE, JSON.stringify({ at: new Date().toISOString(), event, ...details }) + '\n')
-  startupLog('service.starting', { node: process.version, executable: invocation.command, entry: invocation.args[0], cwd: SOURCE_ROOT, home: DSH_ROOT, port: state.port, timeoutMs })
+  startupLog('service.starting', { node: process.version, executable: invocation.command, entry: invocation.args[0].startsWith('--') ? invocation.args[1] : invocation.args[0], cwd: SOURCE_ROOT, home: DSH_ROOT, port: state.port, timeoutMs })
   const logDescriptor = openSync(LOG_FILE, 'a')
   let child
   try {
@@ -329,7 +353,7 @@ export async function startService() {
       cwd: SOURCE_ROOT,
       // Track the actual Node service, not a cmd shim that can exit separately.
       detached: true,
-      env: runtimeEnvironment({ installation: false }),
+      env: { ...runtimeEnvironment({ installation: false }), ...(invocation.env ?? {}) },
       shell: false,
       windowsHide: true,
       stdio: ['ignore', logDescriptor, logDescriptor],

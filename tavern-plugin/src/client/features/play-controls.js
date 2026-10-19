@@ -101,7 +101,7 @@
 
 			// @include script-navigation.js
 
-        function TavernStorageMigration(props) {
+        function TavernSaveUpgrade(props) {
             const [state, setState] = React.useState(null);
             const [error, setError] = React.useState("");
             const [started, setStarted] = React.useState(false);
@@ -111,7 +111,7 @@
                 let disposed = false, timer;
                 async function read() {
                     try {
-                        const next = await rpc("getStorageMigration", {}, props.sessionId);
+                        const next = await rpc("getSaveUpgrade", {}, props.sessionId);
                         if (disposed) return;
                         setState(next); setError("");
                         if (next.phase === "running") timer = setTimeout(read, 1000);
@@ -125,24 +125,26 @@
                 if (requestBusy || state?.phase === "running") return;
                 setRequestBusy(true); setError("");
                 try {
-                    await rpc("migrateStorage", {}, props.sessionId);
+                    await rpc("upgradeSave", {}, props.sessionId);
                     setStarted(true); setRefresh(value => value + 1);
                 } catch (err) { setError(String(err.message || err)); }
                 finally { setRequestBusy(false); }
             }
-            if (!state && !error || state?.format === "native" && !started) return null;
+            if (!state && !error || state?.storage === "current" && state?.sessions?.ready) return null;
             const h = React.createElement;
             const busy = requestBusy || state?.phase === "running";
-            const complete = state?.format === "native" && state.phase === "completed";
-            const stage = {reading:"正在读取旧存档…",converting:"正在转换并读回存档…",verifying:"正在校验并切换存档…"}[state?.stage] || "正在迁移…";
-            return h("section", {className:"dsh-tavern-status-section", "aria-label":"存档格式"},
-                h("div", {className:"dsh-tavern-status-label"}, "存档格式"),
-                h("div", {className:"dsh-tavern-status-empty"}, complete ? "已迁移为新版存档，旧文件和历史版本已保留。" : "本局使用旧格式。迁移后使用新版存储，剧情、变量和历史版本保留。旧文件也会保留，但不包含迁移后的新进度。"),
+            const stage = {sessions:"正在检查会话日志迁移…",reading:"正在读取剧情与变量…",converting:"正在迁移存储并读回存档…",verifying:"正在校验剧情、变量和历史版本…"}[state?.stage] || "正在迁移…";
+            return h("section", {className:"dsh-tavern-status-section", "aria-label":"存档迁移"},
+                h("div", {className:"dsh-tavern-status-label"}, "存档迁移"),
+                h("div", {className:"dsh-tavern-status-empty"}, "统一迁移本局的会话日志与剧情存储，保留正文、变量、分支和历史版本。旧文件保留原样；迁移后的新进度写入新版存档。"),
                 busy ? h("div", {role:"status"}, stage + " 大存档可能需要较长时间，暂时不要关闭或重启酒馆。") : null,
                 error || state?.phase === "failed" ? h("div", {className:"dsh-card-error",role:"alert"}, error || state.error) : null,
-                !state ? h("button", {className:"dsh-tavern-btn",onClick:()=>setRefresh(value=>value+1)}, "重新检查存档格式") :
-                !complete ? h("button", {type:"button",className:"dsh-tavern-btn",disabled:busy || props.busy,onClick:migrate}, busy ? "迁移中…" : state.phase === "failed" ? "重试迁移" : "迁移旧存档") : null,
-                !busy && props.busy && !complete ? h("div", {className:"dsh-tavern-status-empty"}, "请等待本轮游玩和后台结算完成后再迁移。") : null
+                state?.sessions?.warning && state.phase !== "failed" ? h("div", {className:"dsh-tavern-status-empty",role:"note"}, state.sessions.warning) : null,
+                state?.phase === "failed" && !state.sessions?.ready ? h("div", {className:"dsh-tavern-status-empty"}, "这局的旧会话日志暂时无法升级，原档已保留。请点「导出诊断文件」，把文件发给开发者（不含剧情正文）；修复发布后更新酒馆即可自动升级。想先接着玩，可以在左侧对话菜单「⋯」里用「存档救援」把剧情转到新对话。") : null,
+                state?.phase === "failed" && !state.sessions?.ready ? h("button", {type:"button",className:"dsh-tavern-btn",onClick:() => downloadSessionDiagnostics({}, props.sessionId).catch(err => setError("导出诊断文件失败：" + String(err.message || err)))}, "导出诊断文件") : null,
+                !state ? h("button", {className:"dsh-tavern-btn",onClick:()=>setRefresh(value=>value+1)}, "重新检查存档迁移") :
+                h("button", {type:"button",className:"dsh-tavern-btn",disabled:busy || props.busy,onClick:migrate}, busy ? "迁移中…" : state.phase === "failed" ? "重试迁移" : "迁移存档"),
+                !busy && props.busy ? h("div", {className:"dsh-tavern-status-empty"}, "请等待本轮游玩和后台结算完成后再迁移。") : null
             );
         }
 
@@ -318,8 +320,9 @@
 					h("div", { className: "dsh-tavern-status-settle" }, h("span", { className: "dsh-tavern-status-dot " + (view.settleStatus || "idle") }), statusText)
 				),
 					h("div", { className: "dsh-tavern-status-body" },
+                        props.submitStage ? h(TavernStageSection, { sessionId: props.sessionId, submit: props.submitStage, generating: running }) : null,
                         h(TavernBackgroundWait, {sessionId:props.sessionId, activity:view.activity}),
-                        h(TavernStorageMigration, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
+                        h(TavernSaveUpgrade, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
 					["story", "script"].includes(view.mode || "story") && view.requestMode !== "sillytavern" && view.cardUpdate ? h("section", { className: "dsh-tavern-status-section" },
 						h("div", { className: "dsh-tavern-card-reload" },
 							h("button", { className: "dsh-tavern-btn" + (cardUpdateNotice ? "" : " quiet"), disabled: running || cardUpdateBusy || !!view.cardUpdate.error || view.settleStatus === "running", onClick: applyUpdatedCard }, cardUpdateBusy ? "正在重新加载人物卡和世界书…" : "重新加载人物卡和世界书"),
@@ -334,9 +337,8 @@
 					) : null,
 					view.worldBookError ? h("div", { className: "dsh-card-error" }, "世界书召回失败：" + view.worldBookError) : null,
 					view.foregroundError ? h("div", { className: "dsh-card-error" }, view.foregroundError.message || "前台正文生成失败，请重新生成本轮正文。") : null,
-					view.tavernHelper && view.statusBarPlacement !== "body" ? h("section", { className: "dsh-tavern-status-section" },
-						h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash })
-					) : null,
+					view.tavernHelper ? h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
+						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }) : null,
 					(view.presentationWarnings || []).map(function (warning, index) {
 						return h("div", { className: "dsh-card-error", key: "presentation-warning-" + index }, warning);
 					}),
@@ -356,7 +358,7 @@
                         h("p", { className: "dsh-tavern-settings-desc" }, "Guide 是本局持续生效的要求，会同时注入前台（正文）和后台（候选、变量结算），可用来引导剧情走向、文风和数值尺度。"),
                         h("details", { className: "dsh-tavern-guide-destinations" },
                             h("summary", null, "长期偏好与人物设定"),
-                            h("div", null, "跨游戏通用的个人喜好，可在长期偏好中设置。", h("button", { type: "button", onClick: () => props.openStyleTab("dsh-tavern:user-profile") }, "打开长期偏好 ↗")),
+                            h("div", null, "跨游戏通用的个人喜好，可在长期偏好中设置。", h("button", { type: "button", onClick: () => props.openStyleTab("dsh-tavern:presets", { section: "userProfile" }) }, "打开长期偏好 ↗")),
                             h("div", null, "故事专属设定写入人物卡。", h("button", { type: "button", disabled: !view.card.path, onClick: () => props.openStyleTab("dsh-tavern:cards", { cardPath: view.card.path }) }, "打开人物卡 ↗"))),
 						h("div", { className: "dsh-tavern-guide-list" },
 							(view.guides || []).length ? (view.guides || []).map(function (guide, index) {
@@ -408,11 +410,8 @@
 						)
 					),
 					h(TavernPluginTasks, { sessionId: props.sessionId, activity: view.activity, busy: running || view.activity?.busy || view.activity?.phase === "pending" }),
-					h(TavernLedger, { sessionId: props.sessionId, ledger: view.ledger, ledgerTask: view.ledgerTask, busy: running || view.activity?.busy }),
-					h("section", { className: "dsh-tavern-status-section" },
-						h("div", { className: "dsh-tavern-status-label" }, "人物姿势"),
-						view.posture ? h("div", { className: "dsh-tavern-status-now" }, view.posture) : h("div", { className: "dsh-tavern-status-empty" }, "等待第一轮状态结算")
-					)
+					h(TavernPluginStatusSections, { sessionId: props.sessionId }),
+					h(TavernLedger, { sessionId: props.sessionId, ledger: view.ledger, ledgerTask: view.ledgerTask, busy: running || view.activity?.busy })
 
 				)
 			);
@@ -464,7 +463,7 @@
 					function () { return selector(chat.getSnapshot()); }
 				);
 			}
-			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab });
+			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab, submitStage: props.submitStage });
 		}
 
 		const candidatePanel = { value: null, listeners: new Set() };
@@ -562,6 +561,22 @@
 			return res;
 		}
 
+		// Clear the failed or stopped latest round back to before it began (story, variables
+		// and progress stay as they were) and hand its input back to the box.
+		async function withdrawFailedTavernTurn(sessionId, inputActions, currentDraft) {
+			const result = await rpc("rollbackTurn", { expectedTurn: null }, sessionId) || {};
+			historyProjection.rolledBack(sessionId, result.view);
+			setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
+			const text = String(result.view && result.view.clearedInput || "");
+			if (text.trim() !== "") {
+				const current = String(currentDraft || "");
+				// Never glue the old input onto a new one: sent together, the reply acts out both.
+				if (current.trim() === "" || current === text) inputActions.setDraft(text);
+				else if (await askTavernConfirm("输入框里已有新的内容。要用撤回的原输入替换它吗？\n\n原输入：" + text, { confirmText: "替换", cancelText: "保留新内容" })) inputActions.setDraft(text);
+			}
+			return result;
+		}
+
 		function CandidateAction(props) {
 			const [busy, setBusy] = React.useState(false);
 			const candidatePanelState = useCandidatePanel();
@@ -581,6 +596,8 @@
 			const taskBusy = !!(taskForMessage && taskForMessage.busy);
 			const regenBusy = regenPanelState !== null && regenPanelState.sessionId === props.sessionId && regenPanelState.phase === "loading";
 			const [replayBusy, setReplayBusy] = React.useState(false);
+			const [withdrawBusy, setWithdrawBusy] = React.useState(false);
+			const draft = props.useInput(snapshot => snapshot.draft);
 			const projectedTaskRef = React.useRef("");
 			React.useEffect(function () {
 				if (!taskForMessage) return;
@@ -637,6 +654,20 @@
 				catch (err) { tavernErrorHub.report("重新生成本轮", err); }
 				finally { setReplayBusy(false); liveTavernView.invalidate(props.sessionId); }
 			}
+			// Learned from huajiao1998/dsh-tavern-sqlite-v2: a failed or stopped round can also be
+			// dropped entirely, not only replayed.
+			async function withdrawFailed() {
+				if (!canReplayFailed || frontRunning || replayBusy || withdrawBusy) return;
+				setWithdrawBusy(true);
+				try { await withdrawFailedTavernTurn(props.sessionId, props.inputActions, draft); }
+				catch (err) { tavernErrorHub.report("撤回这条输入", err); }
+				finally {
+					setWithdrawBusy(false);
+					notifyTavernDataChanged(["sessions"], "play-controls");
+					liveTavernView.invalidate(props.sessionId);
+					tavernCoordination.invalidate(props.sessionId);
+				}
+			}
 			const h = React.createElement;
 			const isScript = sessionMode === "script";
 			const hasReadyPanel = candidatePanelState !== null && candidatePanelState.sessionId === props.sessionId && candidatePanelState.messageId === props.messageId && candidatePanelState.phase === "ready";
@@ -652,7 +683,8 @@
 						generate(false);
 					}
 				} }, settlementActive ? "后台结算中…" : (activity.busy ? activity.label : ((busy || taskBusy) ? "生成中…" : (hasReadyPanel ? "重新生成候选项" : "生成候选项")))),
-				(canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null
+				(canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
+				canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null
 			);
 		}
 
@@ -818,7 +850,7 @@
                 finally { setBusy(false); }
             }
             return h("div", { className: "dsh-local-field" }, h("label", null, "当前预设", h("select", { className: "dsh-tavern-settings-select", "aria-label": "本局预设", value: data?.current?.id || "", disabled: busy || !data, onChange: event => change(event.target.value) },
-                h("option", { value: "" }, "不使用外部预设"),
+                h("option", { value: "" }, "不使用酒馆预设"),
                 data?.current?.id && !data.presets.some(p => p.path === data.current.id) ? h("option", { value: data.current.id }, data.current.name + "（源文件已移除）") : null,
                 (data?.presets || []).filter(p => p.valid && p.recognized).map(p => h("option", { key: p.path, value: p.path }, p.title)))),
                 h("p", { className: "dsh-tavern-settings-desc" }, "用于后续正文，选择后自动保存。"), error ? h("p", { role: "alert" }, "保存失败：" + error) : h("span", { role: "status", className: "dsh-local-feedback" }, busy ? "保存中…" : notice));
@@ -877,7 +909,14 @@
                 catch (err) { setError(String(err.message || err)); }
                 finally { setBusy(false); }
             }
-            if (!data || (!data.plugins.length && !data.errors.length)) return error ? h("p", { role: "alert" }, "插件信息读取失败：" + error) : null;
+            const pluginSettings = data && data.settings || [];
+            const settingsBlock = pluginSettings.map(entry => h("section", { key: entry.plugin, className: "dsh-local-section dsh-tavern-plugin-settings", "aria-label": entry.title },
+                h("h3", null, entry.title),
+                entry.fields.map(field => h(TavernPluginSettingField, { key: field.key, field: field, value: entry.values[field.key], busy: busy,
+                    onChange: value => change({ setting: { plugin: entry.plugin, key: field.key, value: value } }) }))));
+            // The options plugins add sit with the game's own settings; the switches stay under 高级.
+            if (props.part === "settings") return pluginSettings.length ? h(React.Fragment, null, settingsBlock, error ? h("p", { role: "alert" }, "保存失败：" + error) : null) : null;
+            if (!data || (!data.plugins.length && !data.errors.length && !(data.tasks && data.tasks.settlement.length))) return error ? h("p", { role: "alert" }, "插件信息读取失败：" + error) : null;
             const usesText = uses => uses.map(item => item.stage + "·" + item.mode).join("、");
             const settlementTasks = data.tasks ? data.tasks.settlement : [];
             // Swap with the neighbour in the same phase; the whole order is saved, so it holds for new tasks too.
@@ -915,6 +954,33 @@
                         new Date(item.at).toLocaleTimeString() + " · " + item.plugin + " · " + item.stage + "：" + item.message)),
                     h("button", { type: "button", className: "dsh-tavern-btn", onClick: load }, "刷新")) : null,
                 error ? h("p", { role: "alert" }, "保存失败：" + error) : null);
+        }
+
+        // One option a plugin added to this game's settings (tavern.gameSettings), drawn like Tavern's own.
+        function TavernPluginSettingField(props) {
+            const h = React.createElement;
+            const field = props.field;
+            const [draft, setDraft] = React.useState(String(props.value ?? ""));
+            React.useEffect(() => { setDraft(String(props.value ?? "")); }, [props.value]);
+            const description = field.description ? h("span", { className: "dsh-tavern-settings-desc" }, field.description) : null;
+            if (field.type === "boolean") return h("label", { className: "dsh-tavern-background-task" },
+                h("span", null, field.label, description),
+                h("input", { type: "checkbox", role: "switch", "aria-label": field.label, checked: props.value === true, disabled: props.busy, onChange: event => props.onChange(event.target.checked) }));
+            if (field.type === "select") return h("div", { className: "dsh-local-field" },
+                h("label", null, field.label, h("select", { className: "dsh-tavern-settings-select", "aria-label": field.label, value: props.value, disabled: props.busy, onChange: event => props.onChange(event.target.value) },
+                    field.options.map(option => h("option", { key: option.value, value: option.value }, option.label)))),
+                field.description ? h("p", { className: "dsh-local-help" }, field.description) : null);
+            // Numbers and text are saved when the field loses focus or on Enter.
+            function commit() {
+                const value = field.type === "number" ? Number(draft) : draft;
+                if (field.type === "number" && (draft.trim() === "" || !Number.isFinite(value))) { setDraft(String(props.value ?? "")); return; }
+                if (value !== props.value) props.onChange(value);
+            }
+            return h("div", { className: "dsh-local-field" },
+                h("label", null, field.label, h("input", { className: "dsh-tavern-settings-select", "aria-label": field.label, disabled: props.busy, value: draft,
+                    type: field.type === "number" ? "number" : "text", min: field.min, max: field.max, step: field.step, maxLength: field.maxLength,
+                    onChange: event => setDraft(event.target.value), onBlur: commit, onKeyDown: event => { if (event.key === "Enter") commit(); } })),
+                field.description ? h("p", { className: "dsh-local-help" }, field.description) : null);
         }
 
         // Manual plugin tasks (tavern.manualTask): one button each, run as an exclusive background task.
@@ -965,15 +1031,18 @@
             return h("aside", { className: "dsh-tavern-status dsh-local-settings", "aria-label": "本局设置" },
                 h("div", { className: "dsh-tavern-status-head" }, h("strong", null, "本局设置")),
                 h("div", { className: "dsh-tavern-status-body" }, isPlayMode(mode) ? h(React.Fragment, null,
-                    h("p", { className: "dsh-local-intro" }, "仅影响本局，修改后自动保存。已有对话和变量会保留。"),
-                    h("section", { className: "dsh-local-section" }, h("h3", null, "基本信息"),
+                    h("p", { className: "dsh-local-intro" }, "仅影响本局，修改后自动保存，已有对话和变量会保留。"),
+                    h("p", { className: "dsh-local-warning dsh-local-intro" }, "切换预设、长期偏好、模型、结算或联网搜索后，下一次请求要重建缓存，耗时和费用会增加。"),
+                    h("section", { className: "dsh-local-section" }, h("h3", null, "游玩"),
                         h(TavernLocalPlayerName, { key: owner + ":name", sessionId: owner }),
-                        h(TavernStatusBarSetting, { key: owner + ":status", sessionId: owner }),
                         h(TavernConversationPreset, { key: owner + ":preset", sessionId: owner }),
                         h(UserPreferenceProfileTab, { key: owner + ":profile", scope: { sessionId: owner }, conversationOnly: true }),
-                        h("p", { className: "dsh-local-warning" }, "切换预设或长期偏好会使提示词缓存失效，首次请求会增加耗时和费用。")),
-                    h(TavernConversationBackgroundModel, { key: owner, sessionId: owner }), h(TavernConversationWritingSkills, { key: owner + ":skills", sessionId: owner }),
-                    h(TavernConversationPlugins, { key: owner + ":plugins", sessionId: owner })) : h("p", null, "请选择一个游玩对话。")));
+                        h(TavernStatusBarSetting, { key: owner + ":status", sessionId: owner })),
+                    h(TavernConversationBackgroundModel, { key: owner, sessionId: owner }),
+                    h(TavernConversationPlugins, { key: owner + ":plugin-settings", sessionId: owner, part: "settings" }),
+                    h("details", { className: "dsh-local-advanced" }, h("summary", null, "高级"),
+                        h(TavernConversationWritingSkills, { key: owner + ":skills", sessionId: owner }),
+                        h(TavernConversationPlugins, { key: owner + ":plugins", sessionId: owner }))) : h("p", null, "请选择一个游玩对话。")));
         }
 
         function TavernConversationSettingsAction(props) {
@@ -991,9 +1060,9 @@
             const h = React.createElement;
             const [catalog, setCatalog] = React.useState([]);
             const [selection, setSelection] = React.useState(null);
-            const [tasks, setTasks] = React.useState({ variables: true, posture: true, characterDesign: false, variableFeedback: true });
+            const [tasks, setTasks] = React.useState({ variables: true, posture: true });
             const [saved, setSaved] = React.useState(null);
-            const [features, setFeatures] = React.useState({ webSearchEnabled: false, sceneImagesEnabled: false, sceneImagesAvailable: false });
+            const [features, setFeatures] = React.useState({ webSearchEnabled: false, sceneImagesEnabled: false, sceneImagesAvailable: false, mvuCard: false });
             const [loaded, setLoaded] = React.useState(false);
             const [busy, setBusy] = React.useState(false);
             const [error, setError] = React.useState("");
@@ -1008,7 +1077,7 @@
                 try {
                     const result = await rpc("getConversationBackgroundConfig", { sessionId: props.sessionId }, props.sessionId);
                     setCatalog(result.modelCatalog || []); setSelection(result.backgroundModel); setSaved(result.backgroundModel); setImageSelection(result.imageModel || null);
-                    setTasks(result.backgroundTasks); setFeatures({ webSearchEnabled: result.webSearchEnabled === true, sceneImagesEnabled: result.sceneImagesEnabled === true, sceneImagesAvailable: result.sceneImagesAvailable === true }); setLoaded(true);
+                    setTasks(result.backgroundTasks); setFeatures({ webSearchEnabled: result.webSearchEnabled === true, sceneImagesEnabled: result.sceneImagesEnabled === true, sceneImagesAvailable: result.sceneImagesAvailable === true, mvuCard: result.mvuCard === true }); setLoaded(true);
                 } catch (err) { setError(String(err.message || err)); }
             }
             React.useEffect(() => { void load(); }, []);
@@ -1043,37 +1112,32 @@
             const imageKnown = !imageSelection || catalog.some(group => group.provider === imageSelection.provider && group.models.some(model => model.id === imageSelection.model));
             const modelOptions = () => catalog.map(group => h("optgroup", { key: group.provider, label: group.providerName || group.provider }, group.models.map(model => h("option", { key: model.id, value: JSON.stringify({ provider: group.provider, model: model.id }) }, model.name || model.id))));
             const known = !selection || catalog.some(group => group.provider === selection.provider && group.models.some(model => model.id === selection.model));
+            const toggle = (name, title, description, checked, patch) => h("label", { key: name, className: "dsh-tavern-background-task" },
+                h("span", null, title, h("span", { className: "dsh-tavern-settings-desc" }, description)),
+                h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: !loaded || busy, onChange: event => save(patch(event.target.checked)) }));
             return h("div", { className: "dsh-local-runtime" },
-                h("section", { className: "dsh-local-section" }, h("h3", null, "后台模型"),
-                    h("p", { className: "dsh-tavern-settings-desc" }, "仅影响本局，下一次后台任务生效。正在运行的任务不变，保留原后台 Agent 和历史。"),
-                    h("p", { className: "dsh-tavern-settings-desc" }, "建议前台和后台使用 High 推理强度，优先保证正文输出和后台任务的质量。不推荐 Max，以免过度思考、增加等待。若更在意响应速度，可按需降低。"),
-                    h("p", { className: "dsh-local-warning" }, "切换模型或推理强度会使缓存失效，首次请求会增加耗时和费用。"),
+                h("section", { className: "dsh-local-section" }, h("h3", null, "模型"),
+                    h("p", { className: "dsh-tavern-settings-desc" }, "下一次后台任务生效。建议 High 推理强度；Max 容易过度思考、增加等待。"),
                     h("label", null, "后台模型", h("select", { "aria-label": "本局后台模型", className: "dsh-tavern-settings-select", value: key, disabled: !loaded || busy, onChange: event => { return save({ backgroundModel: event.target.value ? JSON.parse(event.target.value) : null }); } },
                         h("option", { value: "" }, "跟随前台"),
                         !known ? h("option", { value: key }, backgroundModelLabel(selection, catalog) + "（当前不可用）") : null,
-                        catalog.map(group => h("optgroup", { key: group.provider, label: group.providerName || group.provider }, group.models.map(model => h("option", { key: model.id, value: JSON.stringify({ provider: group.provider, model: model.id }) }, model.name || model.id)))))),
+                        modelOptions())),
                     h("label", null, "推理强度", h("select", { "aria-label": "本局后台推理强度", className: "dsh-tavern-settings-select", value: selection?.reasoningEffort || "", disabled: !key || !efforts.length || busy, onChange: event => { const next = { ...selection }; if (event.target.value) next.reasoningEffort = event.target.value; else delete next.reasoningEffort; return save({ backgroundModel: next }); } },
                         h("option", { value: "" }, key ? "模型默认" : "跟随前台"), efforts.map(item => h("option", { key: item.id, value: item.id }, item.name || item.id)))),
-                    ), features.sceneImagesAvailable ? h("section", { className: "dsh-local-section" }, h("h3", null, "生图 Agent 模型"),
-                    h("p", { className: "dsh-tavern-settings-desc" }, "为剧情插图整理画面、写绘图提示词，仅影响本局，下一次生图生效。跟随前台时使用前台模型的最低推理强度，出图更快。"),
-                    h("label", null, "生图 Agent 模型", h("select", { "aria-label": "本局生图 Agent 模型", className: "dsh-tavern-settings-select", value: imageKey, disabled: !loaded || busy, onChange: event => { return save({ imageModel: event.target.value ? JSON.parse(event.target.value) : null }); } },
-                        h("option", { value: "" }, "跟随前台"),
+                    features.sceneImagesAvailable ? h("label", null, "生图 Agent 模型", h("select", { "aria-label": "本局生图 Agent 模型", className: "dsh-tavern-settings-select", value: imageKey, disabled: !loaded || busy, onChange: event => { return save({ imageModel: event.target.value ? JSON.parse(event.target.value) : null }); } },
+                        h("option", { value: "" }, "跟随前台（最低推理强度）"),
                         !imageKnown ? h("option", { value: imageKey }, backgroundModelLabel(imageSelection, catalog) + "（当前不可用）") : null,
-                        modelOptions())),
-                    imageKey ? h("label", null, "推理强度", h("select", { "aria-label": "本局生图 Agent 推理强度", className: "dsh-tavern-settings-select", value: imageSelection?.reasoningEffort || "", disabled: !imageEfforts.length || busy, onChange: event => { const next = { ...imageSelection }; if (event.target.value) next.reasoningEffort = event.target.value; else delete next.reasoningEffort; return save({ imageModel: next }); } },
-                        h("option", { value: "" }, "模型默认"), imageEfforts.map(item => h("option", { key: item.id, value: item.id }, item.name || item.id)))) : null
-                    ) : null, h("section", { className: "dsh-local-section" }, h("h3", null, "后台结算"), h("p", { className: "dsh-local-help" }, "从下一次后台任务生效，正在运行的任务不变。"),
-                    [["variables", "变量结算", "MVU 卡建议开启，否则变量和状态栏可能不再同步。普通卡不执行此任务。"], ["posture", "人物姿势结算", "总结本轮结束时人物的位置、动作和姿势。"], ["variableFeedback", "变量回灌前台", "每轮把上一轮变化的变量最新值告诉前台（单项最多 100 字），减少时间、地点、数值前后不一致。"]].map(([name, title, description]) => h("label", { key: name, className: "dsh-tavern-background-task" },
-                        h("span", null, title, h("span", { className: "dsh-tavern-settings-desc" }, description)),
-                        h("input", { type: "checkbox", role: "switch", "aria-label": title, checked: tasks[name], disabled: !loaded || busy, onChange: event => { return save({ backgroundTasks: { [name]: event.target.checked } }); } }))),
-                    h("p", { className: "dsh-local-warning" }, "调整结算任务会使缓存失效，首次请求会增加耗时和费用。")), h("section", { className: "dsh-local-section" }, h("h3", null, "扩展功能"),
-                    [["webSearchEnabled", "联网搜索", "本局前台和后台可按需搜索；从后续请求生效。切换会使缓存失效，首次请求会增加耗时和费用。"]].map(([name, title, description]) => h("label", { key: name, className: "dsh-tavern-background-task" },
-                        h("span", null, title, h("span", { className: "dsh-tavern-settings-desc" }, description)),
-                        h("input", { type: "checkbox", role: "switch", "aria-label": title, checked: features[name], disabled: !loaded || busy, onChange: event => { return save({ [name]: event.target.checked }); } }))),
-                    ), error || key && reasoning.key === key && reasoning.error ? h("p", { role: "alert", className: "dsh-tavern-prompt-error" }, error || reasoning.error) : null,
-                    notice ? h("p", { role: "status" }, notice) : null,
-                    !loaded && error ? h("button", { className: "dsh-tavern-btn", onClick: load }, "重试") : null,
-                    h("div", { role: "status", className: "dsh-local-feedback" }, busy ? "保存中…" : ""));
+                        modelOptions())) : null,
+                    features.sceneImagesAvailable && imageKey ? h("label", null, "生图推理强度", h("select", { "aria-label": "本局生图 Agent 推理强度", className: "dsh-tavern-settings-select", value: imageSelection?.reasoningEffort || "", disabled: !imageEfforts.length || busy, onChange: event => { const next = { ...imageSelection }; if (event.target.value) next.reasoningEffort = event.target.value; else delete next.reasoningEffort; return save({ imageModel: next }); } },
+                        h("option", { value: "" }, "模型默认"), imageEfforts.map(item => h("option", { key: item.id, value: item.id }, item.name || item.id)))) : null),
+                h("section", { className: "dsh-local-section" }, h("h3", null, "功能"),
+                    features.mvuCard ? toggle("variables", "变量结算", "关闭后变量和状态栏不再更新。", tasks.variables, checked => ({ backgroundTasks: { variables: checked } })) : null,
+                    toggle("posture", "人物姿势", "每轮总结人物的位置、动作和姿势，供前台保持一致。", tasks.posture, checked => ({ backgroundTasks: { posture: checked } })),
+                    toggle("webSearchEnabled", "联网搜索", "前台和后台可按需搜索。", features.webSearchEnabled, checked => ({ webSearchEnabled: checked }))),
+                error || key && reasoning.key === key && reasoning.error ? h("p", { role: "alert", className: "dsh-tavern-prompt-error" }, error || reasoning.error) : null,
+                notice ? h("p", { role: "status" }, notice) : null,
+                !loaded && error ? h("button", { className: "dsh-tavern-btn", onClick: load }, "重试") : null,
+                h("div", { role: "status", className: "dsh-local-feedback" }, busy ? "保存中…" : ""));
         }
 
 		function TavernMoreActions(props) {
@@ -1209,16 +1273,8 @@
                     },
                     staleTurns: staleTurns, filteredStreak: filteredStreak, canRewind: canRewind,
                     onWithdraw: replayTurn === null ? undefined : async function () {
-                        try {
-                            const result = await clearFailedTail();
-                            const text = String(result.view && result.view.clearedInput || "");
-                            if (text.trim() !== "") {
-                                const current = String(draftRef.current || "");
-                                // Never glue the old input onto a new one: sent together, the reply acts out both.
-                                if (current.trim() === "" || current === text) props.inputActions.setDraft(text);
-                                else if (await askTavernConfirm("输入框里已有新的内容。要用撤回的原输入替换它吗？\n\n原输入：" + text, { confirmText: "替换", cancelText: "保留新内容" })) props.inputActions.setDraft(text);
-                            }
-                        } catch (error) { tavernErrorHub.report("撤回这条输入", error); }
+                        try { await withdrawFailedTavernTurn(props.sessionId, props.inputActions, draftRef.current); }
+                        catch (error) { tavernErrorHub.report("撤回这条输入", error); }
                         finally { refreshAfterRecovery(); }
                     },
                     onRewind: replayTurn === null || !canRewind ? undefined : async function () {
@@ -1291,11 +1347,17 @@
 			const suppressedDshTurnsRevision = suppressedDshTurns.join(",");
 			const regeneratedDshTurns = suppressionState.view && suppressionState.view.regeneratedDshTurns || {};
 			const regeneratedDshTurnsRevision = JSON.stringify(regeneratedDshTurns);
+			// 正在被重生成替换的那一楼：只藏旧正文，玩家输入留着。
+			const replacingDshTurns = suppressionState.view && Array.isArray(suppressionState.view.replacingDshTurns) ? suppressionState.view.replacingDshTurns : [];
+			const replacingDshTurnsRevision = replacingDshTurns.join(",");
+			// 正文已被替换掉、但宿主仍会画出来的原生回合（旧存档也要藏）。
+			const supersededDshTurns = suppressionState.view && Array.isArray(suppressionState.view.supersededDshTurns) ? suppressionState.view.supersededDshTurns : [];
+			const supersededDshTurnsRevision = supersededDshTurns.join(",");
 			React.useEffect(function () {
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
-					historyProjection.apply(props.sessionId, suppressedDshTurns, regeneratedDshTurns);
+					historyProjection.apply(props.sessionId, suppressedDshTurns, regeneratedDshTurns, replacingDshTurns, supersededDshTurns);
 				}
 				function scheduleProjection() {
 					if (frame === null) frame = window.requestAnimationFrame(applyProjectionState);
@@ -1314,7 +1376,7 @@
 				});
 				observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-chat-flow-kind", "data-chat-turn", "data-turn-tail"] });
 				return function () { observer.disconnect(); if (frame !== null) window.cancelAnimationFrame(frame); };
-			}, [props.sessionId, latestMessageId, running, suppressedDshTurnsRevision, regeneratedDshTurnsRevision]);
+			}, [props.sessionId, latestMessageId, running, suppressedDshTurnsRevision, regeneratedDshTurnsRevision, replacingDshTurnsRevision, supersededDshTurnsRevision]);
 			return null;
 		}
 		function CandidateQuestion(props) {
@@ -1491,7 +1553,7 @@
 			async function generate() {
 				const guide = guidance.trim();
 				if (guide) regenGuidance.set(props.sessionId, guide); else regenGuidance.delete(props.sessionId);
-				setRegenPanel(Object.assign({}, panel, { phase: "loading", error: "" }));
+				setRegenPanel(Object.assign({}, panel, { phase: "loading", error: "", rewrite: guide !== "" }));
 				try {
 					await submitBodyRegeneration(props.sessionId, panel, guide);
 					setRegenPanel(null);
@@ -1502,8 +1564,8 @@
 			}
 			return h(RegenGuideForm, {
 				title: "重新生成正文",
-				hint: "生成后直接替换当前正文",
-				loading: panel.phase === "loading" ? "正在重新生成正文…" : "",
+				hint: "不填意见是重新来一次；填了意见就在当前正文基础上改",
+				loading: panel.phase === "loading" ? (panel.rewrite ? "正在按意见改写正文…" : "正在重新生成正文…") : "",
 				error: panel.error,
 				value: guidance,
 				onChange: setGuidance,
@@ -1514,11 +1576,206 @@
 				onCancel: function () { setRegenPanel(null); }
 			});
 		}
+        function tavernHeaderMenuButton(h, label, iconPath, disabled, onClick) {
+            return h("button", { type: "button", role: "menuitem", disabled: disabled, onClick: onClick },
+                h("svg", { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" }, h("path", { d: iconPath })),
+                label);
+        }
+
+        const TAVERN_HEADER_GEAR_PATH = "M12 15a3 3 0 1 0 0-6a3 3 0 1 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
+
+        // Width the shortcuts may use, read from the whole title row so it does
+        // not depend on how many buttons are folded right now: the row, minus the
+        // host's own buttons, minus a minimum share kept for the session title.
+        function tavernHeaderAvailableWidth(node) {
+            const row = node.closest("[class*=\"_titleRow\"]");
+            if (!row) return node.clientWidth;
+            const px = value => parseFloat(value) || 0;
+            const rowStyle = window.getComputedStyle(row);
+            let free = row.clientWidth - px(rowStyle.paddingLeft) - px(rowStyle.paddingRight);
+            const children = Array.from(row.children).filter(child => window.getComputedStyle(child).display !== "none");
+            free -= px(rowStyle.columnGap) * Math.max(0, children.length - 1);
+            for (const child of children) {
+                const style = window.getComputedStyle(child);
+                free -= px(style.marginLeft) + px(style.marginRight);
+                if (child.contains(node)) { free -= Math.max(0, child.offsetWidth - node.offsetWidth); continue; }
+                if (/_titleCluster/.test(String(child.className))) {
+                    // Everything in the cluster except the crumbs stays; the crumbs keep a minimum.
+                    const parts = Array.from(child.children).filter(part => window.getComputedStyle(part).display !== "none");
+                    free -= px(style.columnGap) * Math.max(0, parts.length - 1);
+                    for (const part of parts) if (!/_crumbs/.test(String(part.className))) free -= part.offsetWidth;
+                    free -= Math.min(160, row.clientWidth * 0.3);
+                    continue;
+                }
+                free -= child.offsetWidth;
+            }
+            return Math.max(0, free);
+        }
+
+        // The 顶栏设置 entry in the ⋯ and right-click menus: the settings page's own
+        // editor in a dialog, so it works without a host route to the settings page.
+        function TavernHeaderSettingsDialog(props) {
+            const h = React.createElement;
+            React.useEffect(function () {
+                function key(event) { if (event.key === "Escape") props.onClose(); }
+                document.addEventListener("keydown", key);
+                return function () { document.removeEventListener("keydown", key); };
+            }, [props.onClose]);
+            return require("react-dom").createPortal(h("div", { className: "dsh-tavern-header-dialog-backdrop", onPointerDown: function (event) { if (event.target === event.currentTarget) props.onClose(); } },
+                h("div", { className: "dsh-tavern-header-dialog dsh-tavern-global-settings", role: "dialog", "aria-modal": "true", "aria-label": "顶栏设置" },
+                    h("div", { className: "dsh-tavern-header-dialog-head" },
+                        h("strong", null, "顶栏设置"),
+                        h("button", { type: "button", className: "dsh-tavern-header-op", "aria-label": "关闭", title: "关闭", onClick: props.onClose }, "×")),
+                    h(HeaderItemsSettings, { collapsible: false }))), document.body);
+        }
+
+        // One slot for every top-bar shortcut. 酒馆状态 and 导出 keep their own
+        // components (the export one owns a menu); pinned pages open their tab.
+        function TavernHeaderItems(props) {
+            const h = React.createElement;
+            const catalog = useTavernHeaderCatalog();
+            const header = useTavernHeaderItems();
+            const display = header.display === "icon" ? "icon" : "icon-text";
+            const items = header.items;
+            const owner = props.sessions.subagentAddress(props.sessionId)?.parentSessionId || props.sessionId;
+            const [folded, setFolded] = React.useState([]);
+            const [context, setContext] = React.useState(null);
+            const [more, setMore] = React.useState(null);
+            const [dialog, setDialog] = React.useState(false);
+            const closeDialog = React.useCallback(function () { setDialog(false); }, []);
+            const host = React.useRef(null);
+            const widths = React.useRef(new Map());
+            const measuredDisplay = React.useRef("");
+            const entries = React.useMemo(function () {
+                const map = new Map();
+                map.set("header:export", { id: "header:export", label: "导出" });
+                map.set("dsh-tavern:status", { id: "dsh-tavern:status", label: "酒馆状态" });
+                catalog.forEach(entry => map.set(entry.id, entry));
+                return map;
+            }, [catalog]);
+            const visible = items.filter(id => id === "dsh-tavern:status" || id === "header:export" || entries.has(id) || !catalog.length);
+            const titleOf = id => (entries.get(id) || {}).label || id.replace(/^[^:]+:/, "");
+            function saveHeader(next) {
+                Promise.resolve(displayPreferences.save({ headerItems: next }))
+                    .catch(error => tavernErrorHub.report("保存顶栏设置", error));
+            }
+            function move(id, delta) {
+                const index = items.indexOf(id), target = index + delta;
+                if (index < 0 || target < 0 || target >= items.length) return;
+                const next = items.slice();
+                [next[index], next[target]] = [next[target], next[index]];
+                saveHeader({ display: display, items: next });
+            }
+            function remove(id) {
+                saveHeader({ display: display, items: items.filter(value => value !== id) });
+            }
+            // Natural widths are cached: a folded button is display:none, so it
+            // cannot be measured again until the display mode changes.
+            React.useLayoutEffect(function () {
+                const node = host.current;
+                if (!node) return undefined;
+                let frame = 0;
+                // Icon-only and labelled buttons have different widths; a cached
+                // width from the other mode would fold the wrong pages.
+                if (measuredDisplay.current !== display) { widths.current.clear(); measuredDisplay.current = display; }
+                function measure() {
+                    const buttons = Array.from(node.querySelectorAll("[data-header-item]"));
+                    buttons.forEach(button => { button.style.display = "inline-flex"; });
+                    for (const button of buttons) widths.current.set(button.dataset.headerItem, button.offsetWidth);
+                    buttons.forEach(button => { button.style.display = ""; });
+                    const sample = node.appendChild(document.createElement("button"));
+                    sample.className = "dsh-tavern-btn dsh-tavern-header-more-button";
+                    const style = window.getComputedStyle(node);
+                    const gap = parseFloat(style.columnGap || style.gap) || 0;
+                    const moreWidth = sample.offsetWidth + gap;
+                    sample.remove();
+                    // ⋯ appears only once something folds, so its width is reserved
+                    // only then; the default bar looks exactly as it did before.
+                    const available = tavernHeaderAvailableWidth(node);
+                    const next = tavernHeaderFold(visible, id => widths.current.get(id) || 0, available, { gap: gap, fixed: TAVERN_HEADER_NOT_FOLDED, moreWidth: moreWidth });
+                    setFolded(current => current.length === next.length && current.every((id, index) => id === next[index]) ? current : next);
+                }
+                measure();
+                if (typeof ResizeObserver !== "function") return undefined;
+                const observer = new ResizeObserver(function () { cancelAnimationFrame(frame); frame = requestAnimationFrame(measure); });
+                observer.observe(node);
+                const row = node.closest("[class*=\"_titleRow\"]");
+                if (row) observer.observe(row);
+                return function () { observer.disconnect(); cancelAnimationFrame(frame); };
+            }, [visible.join("|"), display, catalog]);
+            React.useEffect(function () {
+                if (!context && !more) return undefined;
+                function close(event) {
+                    const target = event && event.target;
+                    if (target && target.closest && target.closest(".dsh-tavern-header-popup, [data-tavern-header-trigger]")) return;
+                    setContext(null); setMore(null);
+                }
+                function key(event) { if (event.key === "Escape") close(); }
+                document.addEventListener("pointerdown", close, true);
+                document.addEventListener("keydown", key);
+                window.addEventListener("scroll", close, true);
+                return function () {
+                    document.removeEventListener("pointerdown", close, true);
+                    document.removeEventListener("keydown", key);
+                    window.removeEventListener("scroll", close, true);
+                };
+            }, [context, more]);
+            function activate(id) {
+                setMore(null);
+                if (id === "header:export") return;
+                if (id === "dsh-tavern:status") { props.openStatus(owner); return; }
+                openTavernSidebarTab(props.ctx, { type: id }, { sessionId: owner });
+            }
+            function item(id) {
+                const entry = entries.get(id) || { id: id, label: titleOf(id) };
+                const label = entry.label || titleOf(id);
+                const content = id === "dsh-tavern:status"
+                    ? h(TavernConversationSettingsAction, { sessionId: props.sessionId, sessions: props.sessions, open: props.openStatus })
+                    : id === "header:export"
+                        ? h(TavernConversationExportAction, { sessionId: props.sessionId, sessions: props.sessions })
+                        : h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-header-page", title: label, "aria-label": label, onClick: function () { activate(id); } },
+                            tavernStartIcon(id, entry, 18),
+                            h("span", { className: "dsh-tavern-header-action-label" }, label));
+                return h("span", {
+                    key: id,
+                    className: "dsh-tavern-header-item" + (folded.includes(id) ? " is-folded" : ""),
+                    "data-header-item": id,
+                    onContextMenu: function (event) { event.preventDefault(); setMore(null); setContext({ id: id, x: event.clientX, y: event.clientY }); }
+                }, content);
+            }
+            const foldedEntries = folded.map(id => ({ id: id, label: titleOf(id) })).filter(entry => entry.id !== "header:export");
+            return h("div", { ref: host, className: "dsh-tavern-header-items" + (display === "icon" ? " is-icon" : "") },
+                visible.map(item),
+                foldedEntries.length ? h("div", { className: "dsh-tavern-more-actions dsh-tavern-header-more" },
+                    h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-header-more-button", "data-tavern-header-trigger": "more", "aria-label": "更多快捷入口", "aria-haspopup": "menu", "aria-expanded": Boolean(more), title: "更多快捷入口", onClick: function () { setContext(null); setMore(more ? null : { x: null, y: null }); } },
+                        h("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.4, strokeLinecap: "round", "aria-hidden": "true" }, h("path", { d: "M5 12h.01M12 12h.01M19 12h.01" }))),
+                    more ? h("div", { className: "dsh-tavern-more-menu dsh-tavern-header-popup", role: "menu", "aria-label": "更多快捷入口" },
+                        foldedEntries.map(entry => h("button", { key: entry.id, type: "button", role: "menuitem", onClick: function () { setMore(null); activate(entry.id); } }, tavernStartIcon(entry.id, entries.get(entry.id), 15), entry.label)),
+                        h("div", { className: "dsh-tavern-header-menu-sep", role: "separator" }),
+                        tavernHeaderMenuButton(h, "顶栏设置…", TAVERN_HEADER_GEAR_PATH, false, function () { setMore(null); setDialog(true); })) : null) : null,
+                context ? h("div", { className: "dsh-tavern-more-menu dsh-tavern-header-popup dsh-tavern-header-context", role: "menu", style: { position: "fixed", left: Math.min(context.x, (window.innerWidth || 1024) - 190) + "px", top: Math.min(context.y, (window.innerHeight || 768) - 190) + "px", right: "auto", bottom: "auto" } },
+                    tavernHeaderMenuButton(h, "左移", "M15 6l-6 6 6 6", items.indexOf(context.id) <= 0, function () { setContext(null); move(context.id, -1); }),
+                    tavernHeaderMenuButton(h, "右移", "M9 6l6 6-6 6", items.indexOf(context.id) >= items.length - 1, function () { setContext(null); move(context.id, 1); }),
+                    tavernHeaderMenuButton(h, "移除", "M6 6l12 12M18 6L6 18", false, function () { setContext(null); remove(context.id); }),
+                    h("div", { className: "dsh-tavern-header-menu-sep", role: "separator" }),
+                    tavernHeaderMenuButton(h, "顶栏设置…", TAVERN_HEADER_GEAR_PATH, false, function () { setContext(null); setDialog(true); })) : null,
+                dialog ? h(TavernHeaderSettingsDialog, { onClose: closeDialog }) : null);
+        }
+
 		function register(input) {
 			const ctx = input.ctx;
 			const slots = input.slots;
 			const uiConversation = ctx.get("uiConversation") || ctx.get("conversation");
 			const executeSlash = createTavernFrameSlashExecutor(ctx);
+            // The stage: another view of the same game, at the top of 酒馆状态 (docs/design/cast-presentation.md).
+            const submitTavernStageInput = function (sessionId, text) {
+                const scope = ctx.sessions.scope(sessionId);
+                const conversation = ctx.get("conversation");
+                if (!scope || !conversation) return Promise.reject(new Error("这一局没有在当前页面打开"));
+                const input = conversation.input.for(scope);
+                input.setDraft(text);
+                return Promise.resolve(input.submit("queue"));
+            };
             ctx.effect(() => ctx.betterSidebar.registerTab({
                 id: "dsh-tavern:conversation-settings", title: "本局设置", order: 8, single: true,
                 component: props => React.createElement(TavernConversationSettingsTab, { sessionId: props.scope.sessionId, sessions: ctx.sessions })
@@ -1546,22 +1803,24 @@
                 () => React.createElement(TavernImmersiveAction)
             )), "dsh-tavern: immersive header action");
             ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
-                { name: "conversation.session.header.utilities", id: "dsh-tavern-conversation-settings", order: 80 },
-                props => React.createElement(TavernConversationSettingsAction, { ...props, sessions: ctx.sessions, open: sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId }) })
-            )), "dsh-tavern: conversation settings action");
+                { name: "conversation.session.header.utilities", id: "dsh-tavern-header-items", order: 80 },
+                function (props) {
+                    const owner = ctx.sessions.subagentAddress(props.sessionId)?.parentSessionId || props.sessionId;
+                    const mode = useTavernSessionMode(owner);
+                    if (!mode) return null;
+                    return React.createElement(TavernHeaderItems, Object.assign({}, props, { ctx: ctx, sessions: ctx.sessions, openStatus: sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId }) }));
+                }
+            )), "dsh-tavern: header items");
+			ctx.effect(() => tavernPanelRegistry.onPin(sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId })), "dsh-tavern: reveal pinned panels");
 			ctx.effect(() => ctx.betterSidebar.registerTab({
 				id: "dsh-tavern:status",
 				title: "酒馆状态",
 				order: 7,
 				single: true,
 				component: function (props) {
-					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
+					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, submitStage: submitTavernStageInput, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
 				}
 			}), "dsh-tavern: Better Sidebar status tab");
-			ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
-				{ name: "conversation.session.header.utilities", id: "dsh-tavern-conversation-export", order: 90 },
-				function (props) { return React.createElement(TavernConversationExportAction, Object.assign({}, props, { sessions: ctx.sessions })); }
-			)), "dsh-tavern: conversation text export utility");
 			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-actions", order: -130, label: "候选项操作" },
 				function (props) { return React.createElement(CandidateDockActions, Object.assign({}, props, {

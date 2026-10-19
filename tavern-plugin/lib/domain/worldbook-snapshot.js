@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
+import { isProducerSource } from './message-source.js'
 
 // Compare model-visible history, not prepared Chat state. Rewind/fork naturally
 // select their own baseline; compaction of the record causes a full refresh.
@@ -11,7 +12,7 @@ export function worldbookSnapshot(session, text, pendingMessages = []) {
   let previous
   for (const message of messages) {
     const record = message?.source?.worldbookSnapshot
-    if (message?.source?.plugin !== 'dsh-tavern' || record?.schemaVersion !== 1) continue
+    if (!isProducerSource(message?.source, 'dsh-tavern') || record?.schemaVersion !== 1) continue
     const content = (message.content || []).filter(block => block.type === 'text').map(block => block.text).join('')
     if (content.includes(record.rendered)) previous = record
   }

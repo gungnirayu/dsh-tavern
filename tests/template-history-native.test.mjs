@@ -87,3 +87,29 @@ test('压缩检查点不会被模板同步改写成玩家原文；已被改写�
   assert.ok(texts().includes('【摘要】前两轮'))
   assert.ok(!texts().includes('行动1'))
 })
+
+test('DSH 0.2.1 的压缩检查点（source.kind = compact-checkpoint）同样不会被模板同步改写', async () => {
+  const session = Session.create('template-compact-v4')
+  const seqs = []
+  for (let turn = 1; turn <= 3; turn++) {
+    seqs.push(session.append('user/message', { id: 'u' + turn, role: 'user', content: [{ type: 'text', text: '行动' + turn }] }, { surfaceOp: 'append' }))
+    seqs.push(session.append('assistant/message', { turn, message: { id: 'a' + turn, role: 'assistant', content: [{ type: 'text', text: '回复' + turn }] } }, { surfaceOp: 'append' }))
+  }
+  const seqOf = value => typeof value === 'number' ? value : value.seq
+  // 0.2.1 / 会话格式 v4 把检查点记成 { kind: 'compact-checkpoint' }，不再是插件来源。
+  const checkpoint = { id: 'compact-1', role: 'user', content: [{ type: 'text', text: '【摘要】前两轮' }], source: { kind: 'compact-checkpoint', compactionId: 'c1' } }
+  session.append('user/message', checkpoint, { surfaceOp: { op: 'replace', startSeq: seqOf(seqs[0]), endSeq: seqOf(seqs[3]) }, sourceEventSeqs: seqs.slice(0, 4).map(seqOf) })
+  const messages = [
+    { role: 'user', text: '行动1', templateInputSource: '【摘要】前两轮' }, { role: 'assistant', text: '回复1', turn: 1 },
+    { role: 'user', text: '行动2' }, { role: 'assistant', text: '回复2', turn: 2 },
+    { role: 'user', text: '行动3' }, { role: 'assistant', text: '回复3', turn: 3 }
+  ]
+  const before = session.snapshotEvents().length
+  const texts = () => session.deriveMessages().flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text))
+  await synchronizeTemplateHistory(session, { messages }, async () => {})
+  assert.ok(texts().includes('【摘要】前两轮'))
+  assert.ok(!texts().includes('行动1'))
+  // 压缩之外替换检查点会让 DSH 重启后拒绝加载（compaction checkpoint has no matching compaction/start），一条都不能写。
+  const written = session.snapshotEvents().slice(before)
+  assert.ok(!written.some(event => event.data?.source?.kind === 'compact-checkpoint'), JSON.stringify(written.map(event => event.type)))
+})

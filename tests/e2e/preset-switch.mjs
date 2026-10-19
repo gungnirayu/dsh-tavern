@@ -8,8 +8,19 @@ export async function presetSwitch({ page, step, savedChat, inspectRound, output
   let rounds = identity.messages.filter(message => message.role === 'user').length
   for (const [key, gold, edit] of [['A', 50], ['A', 55, true], ['B', 60], ['', 70]]) {
     await step(edit ? '游玩中关闭当前预设的条目，下一轮立即生效' : `本局预设切换至 ${key || '内置'}，继续游玩并刷新`, async () => {
+      // A preset applies only when no reply or background task runs; plugin tasks may still be finishing.
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const state = await page.evaluate(async sessionId => (await (await fetch('/api/dsh-tavern/pluginTurnState', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId }) })).json()).state, identity.sessionId)
+        if (state && !state.busy) break
+        await page.waitForTimeout(500)
+      }
       const before = await savedChat()
-      await page.getByText('本局设置', { exact: true }).filter({ visible: true }).first().click()
+      // A restarted/mobile layout may retain only the active status tab.
+      if (!await page.locator('[data-dockkit-tab-title]').filter({ hasText: /^本局设置$/ }).count()) {
+        await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).filter({ visible: true }).first().click()
+        await page.getByText('本局设置', { exact: true }).filter({ visible: true }).first().click()
+      }
+      await page.locator('[data-dockkit-tab-title]').filter({ hasText: /^本局设置$/ }).filter({ visible: true }).first().click()
       const selector = page.getByRole('combobox', { name: '本局预设', exact: true })
       const path = key ? `presets/E2E-${key}.json` : ''
       if (edit) {
@@ -22,14 +33,28 @@ export async function presetSwitch({ page, step, savedChat, inspectRound, output
           if (!result.ok) throw new Error(result.error)
         }, path)
       } else {
-        await selector.selectOption(path)
-        await page.getByRole('complementary', { name: '本局设置', exact: true })
-          .locator('.dsh-local-field').filter({ has: selector }).getByRole('status').filter({ hasText: /^已保存$/ }).waitFor()
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await selector.selectOption(path)
+          const field = page.getByRole('complementary', { name: '本局设置', exact: true })
+            .locator('.dsh-local-field').filter({ has: selector })
+          const saved = field.getByRole('status').filter({ hasText: /^已保存$/ })
+          const conflict = field.getByRole('alert').filter({ hasText: '当前游戏已变化，请刷新后重试' })
+          await saved.or(conflict).waitFor()
+          if (await saved.isVisible()) break
+          assert.ok(attempt < 2, '本局预设在刷新重试后必须保存成功')
+          // Background display derivation can advance the optimistic revision.
+          // Follow the UI's explicit recovery action; other errors still fail.
+          await page.reload({ waitUntil: 'domcontentloaded' })
+          await page.locator('[data-dockkit-tab-title]').filter({ hasText: /^本局设置$/ }).filter({ visible: true }).first().click()
+          await selector.waitFor()
+        }
       }
       const switched = await savedChat()
       assert.equal(switched.id, identity.id)
       assert.equal(switched.sessionId, identity.sessionId)
-      assert.deepEqual(switched.messages, before.messages, '切换预设不能改动历史正文、变量或结算回执')
+      // The status frame records its display receipt whenever it renders; that is not story state.
+      const story = messages => messages.map(({ displayRuntime: _shown, ...message }) => message)
+      assert.deepEqual(story(switched.messages), story(before.messages), '切换预设不能改动历史正文、变量或结算回执')
       assert.equal(switched.runtimePresetSnapshot?.presetPath || '', path)
       const composer = page.getByRole('textbox', { name: /发消息|Message/ })
       await composer.fill(`E2E 预设验收 ${gold}`)
@@ -50,7 +75,7 @@ export async function presetSwitch({ page, step, savedChat, inspectRound, output
       await page.reload({ waitUntil: 'domcontentloaded' })
       await page.getByText(body, { exact: true }).filter({ visible: true }).first().waitFor()
       await status.filter({ hasText: new RegExp(`^金币：${gold}$`) }).waitFor()
-      await page.getByText('本局设置', { exact: true }).filter({ visible: true }).first().click()
+      await page.locator('[data-dockkit-tab-title]').filter({ hasText: /^本局设置$/ }).filter({ visible: true }).first().click()
       await selector.locator(`option[value="${path}"]`).waitFor({ state: 'attached' })
       assert.equal(await selector.inputValue(), path, '刷新后保留本局预设')
       const restored = await savedChat()
