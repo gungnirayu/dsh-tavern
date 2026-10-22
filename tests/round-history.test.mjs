@@ -300,7 +300,13 @@ test('真实 journal 持久化：消息面失败后 checkpoint 可恢复、重�
 test('完整重生成先独立替换唯一正文，再执行后台结算', async () => {
   const h = harness({ checkpoint: true })
   const originalEvents = structuredClone(h.session.events)
+  const saves = {}
+  const update = h.options.chats.update
+  h.options.chats.update = async (id, mutate, metadata) => (saves[metadata.source] = await update(id, mutate, metadata))
   const result = await h.create().regenerate('', '写得短一些', 'session')
+  // 旧正文藏到投影写入那一刻才放开，否则中间旧轮和生成轮同时可见（#312）。
+  assert.deepEqual(saves['foreground.regen-commit'].replacingDshTurns, [2])
+  assert.equal(saves['foreground.regen-projected'].replacingDshTurns, undefined)
   assert.equal(result.messages[1].text, '推门')
   assert.equal(result.messages[2].turn, 2)
   assert.deepEqual(result.messages[2].swipes, ['新正文3'])

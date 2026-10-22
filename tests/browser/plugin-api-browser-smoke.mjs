@@ -65,7 +65,7 @@ const dockSlots={};
 client.createPlayControlsFeatureModule().register({ctx:{get:()=>undefined,effect:fn=>fn(),betterSidebar:{registerTab:()=>()=>{}},sessions:{refresh:async()=>{},subagentAddress:()=>null},remote:{commands:{execute:async()=>({ok:true})}}},slots:{inject:(_name,fn)=>fn(),register:(spec,component)=>{dockSlots[spec.id]=component;return ()=>{};}}});
 const props={sessionId:'plugin-game',node:{data:{status:'completed',blocks:[],finalNode:{seq:1}},location:{kind:'turn',turn:{turn:1,status:'closed'}}},useTurnData:()=>null,fileMentions:()=>undefined};
 modules['react-dom/client'].createRoot(document.querySelector('#app')).render(React.createElement(components['assistant-step'],props));
-const dockProps={sessionId:'plugin-game',useSession:select=>select({running:false}),useChat:select=>select({legacy:{nodes:[{kind:'assistant',messageId:'fixture-reply'}]}})};
+const dockProps={sessionId:'plugin-game',useSession:select=>select({running:false}),useInput:select=>select({draft:''}),inputActions:{setDraft:()=>{}},useChat:select=>select({legacy:{nodes:[{kind:'assistant',messageId:'fixture-reply'}]}})};
 modules['react-dom/client'].createRoot(document.querySelector('#dock')).render(React.createElement(dockSlots['dsh-tavern-candidate-actions'],dockProps));
 `
 const server = createServer(async (req, res) => {
@@ -85,6 +85,7 @@ const server = createServer(async (req, res) => {
     let result = {}
     if (method === 'getSession') result = { view: { mode: 'story', latestAssistantTurn: 1, releaseCapabilities: { sceneImages: true }, card: { name: '测试卡' },
       replyProjections: [{ version: 2, turn: 1, parts: [{ kind: 'markdown', text: story }, { kind: 'html', content: statusBar }] }] } }
+    else if (method === 'listSessions') result = { sessions: [{ sessionId: 'plugin-game', mode: 'story' }] }
     else if (method === 'sceneImageStatus') result = { illustration: { key: 'k1', turn: 1, status: 'succeeded', enabled: true, versions: [{ id: 'v1', anchor: '她抖落斗篷上的水珠，朝吧台走去。' }], reference: {} } }
     else if (method === 'getSceneImageSettings') result = { settings: { enabled: false } }
     else if (method === 'pluginMediaTurns') result = { turns: [1] }

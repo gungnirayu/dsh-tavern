@@ -27,3 +27,11 @@ test('浏览器设置真实写入 Profile 后，销毁环境并重新加载可�
   const reloaded = helperHostHarness({ extensionSettings: await open().read() })
   assert.equal(reloaded.window.SillyTavern.extensionSettings.phone.size, 80)
 })
+
+test('读取结果仍与持久设置隔离，调用者修改不会污染后续读取', async t => {
+  const { store } = await fixture(t)
+  await store.save({ phone: { size: 80 } }, {})
+  const first = await store.read()
+  first.phone.size = 99
+  assert.equal((await store.read()).phone.size, 80)
+})

@@ -11,13 +11,17 @@ export function setFailedErrorVisibility(chat, events, turn, hidden) {
   return { ...chat, hiddenDshErrorTurns: [...turns].sort((a, b) => a - b) }
 }
 
-export function setAllFailedErrorVisibility(chat, events, hidden) {
+// `scope` limits the batch to the turns a caller actually meant: the stacked
+// notice removes the failures already cleared, and must keep the one still
+// owning the tail (and its replay button) visible.
+export function setAllFailedErrorVisibility(chat, events, hidden, scope) {
   if (typeof hidden !== 'boolean') throw new Error('无效的错误提示参数')
   const failed = new Set(events.filter(event => event?.type === 'turn/end' && event.data?.reason?.kind === 'error')
     .map(event => event.data.turn).filter(turn => Number.isSafeInteger(turn) && turn > 0))
   const turns = new Set((chat.hiddenDshErrorTurns || []).filter(turn => Number.isSafeInteger(turn) && turn > 0))
+  const selected = Array.isArray(scope) ? new Set(scope.map(Number).filter(turn => failed.has(turn))) : failed
   let changedCount = 0
-  for (const turn of failed) {
+  for (const turn of selected) {
     if (hidden === turns.has(turn)) continue
     if (hidden) turns.add(turn)
     else turns.delete(turn)

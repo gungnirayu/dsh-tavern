@@ -21,8 +21,6 @@ function promptSetName(value) {
   return name
 }
 
-export const DEFAULT_RENDER_DEPTH = 3
-function renderDepthOf(value) { return Number.isSafeInteger(value) && value >= 0 && value <= 100 ? value : DEFAULT_RENDER_DEPTH }
 
 // Header shortcuts: { display, items }. The items are page ids — a Tavern tab
 // (dsh-tavern:*), a plugin tab (tavern-plugin:*), the export menu (header:export)
@@ -148,7 +146,7 @@ export function presentPromptSets(document) {
 
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false }
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true }
 }
 
 
@@ -156,8 +154,9 @@ export function normalizePlayDefaults(value) {
   const input = object(value)
   return { playerName: typeof input.playerName === 'string' ? input.playerName.trim().slice(0, 80) || '你' : '你',
     statusBarPlacement: input.statusBarPlacement === 'body' ? 'body' : 'sidebar',
-    backgroundTasks: normalizeBackgroundTasks(input.backgroundTasks),
-    webSearchEnabled: input.webSearchEnabled === true, sceneImagesEnabled: input.sceneImagesEnabled === true }
+    // New games get 文风联想 unless the defaults turn it off; an existing game without the key stays off.
+    backgroundTasks: { ...normalizeBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
+    webSearchEnabled: input.webSearchEnabled === true }
 }
 
 export function applyTavernSettingsPatch(current, patch) {
@@ -165,10 +164,10 @@ export function applyTavernSettingsPatch(current, patch) {
   const input = object(patch)
   if (Object.hasOwn(input, 'defaultPlaySettings')) {
     const patch = object(input.defaultPlaySettings)
-    for (const key of ['webSearchEnabled', 'sceneImagesEnabled']) if (Object.hasOwn(patch, key) && typeof patch[key] !== 'boolean') throw new Error('默认开关必须为布尔值')
+    if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['variables', 'posture']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['variables', 'posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -178,7 +177,7 @@ export function applyTavernSettingsPatch(current, patch) {
     const disabled = Array.isArray(next.defaultDisabledWritingSkills) ? next.defaultDisabledWritingSkills : []
     next.defaultDisabledWritingSkills = enabled ? disabled.filter(value => value !== name) : [...new Set([...disabled, name])]
   }
-  for (const name of ['defaultForegroundModel', 'defaultBackgroundModel', 'defaultWorkbenchModel', 'defaultImageModel']) {
+  for (const name of ['defaultForegroundModel', 'defaultBackgroundModel', 'defaultWorkbenchModel']) {
     if (!Object.hasOwn(input, name)) continue
     const selection = normalizeBackgroundModel(input[name])
     if (input[name] !== null && !selection) throw new Error('默认模型配置无效')
@@ -202,10 +201,6 @@ export function applyTavernSettingsPatch(current, patch) {
     if (typeof input.autoOpenStatusPanel !== 'boolean') throw new Error('自动打开酒馆状态面板设置必须是布尔值')
     next.autoOpenStatusPanel = input.autoOpenStatusPanel
   }
-  if (Object.hasOwn(input, 'renderDepth')) {
-    if (!Number.isSafeInteger(input.renderDepth) || input.renderDepth < 0 || input.renderDepth > 100) throw new Error('渲染深度必须是 0 到 100 的整数')
-    next.renderDepth = input.renderDepth
-  }
   if (Object.hasOwn(input, 'headerItems')) {
     // null restores the shipped top bar.
     if (input.headerItems === null) delete next.headerItems
@@ -220,8 +215,8 @@ export function applyTavernSettingsPatch(current, patch) {
     next.backgroundTasks = normalizeBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
   }
   if (input.sillyModeEnabled === true || input.compatibilityMode === true) throw new Error('silly 模式已停用')
-  if (Object.prototype.hasOwnProperty.call(input, 'sillyModeEnabled')) next.sillyModeEnabled = false
-  if (Object.prototype.hasOwnProperty.call(input, 'compatibilityMode')) next.compatibilityMode = input.compatibilityMode === true
+  delete next.sillyModeEnabled
+  delete next.compatibilityMode
   if (Object.hasOwn(input, 'promptSet')) applyPromptSetChange(next, object(input.promptSet))
   if (Object.hasOwn(input, 'systemAppendEnabled')) next.systemAppendEnabled = input.systemAppendEnabled === true
   if (Object.prototype.hasOwnProperty.call(input, 'webSearchEnabled')) next.webSearchEnabled = input.webSearchEnabled === true
@@ -282,7 +277,6 @@ export function presentTavernSettings(document, defaults) {
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
     defaultWorkbenchModel: normalizeBackgroundModel(object(document).defaultWorkbenchModel),
-    defaultImageModel: normalizeBackgroundModel(object(document).defaultImageModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
     hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
     headerItems: readHeaderItems(object(document).headerItems),
@@ -292,10 +286,9 @@ export function presentTavernSettings(document, defaults) {
     storyToolCall: object(document).storyToolCall === true || object(document).storyHistoryToolCall === true,
     castPresentation: object(document).castPresentation === true,
     // Only the latest floors run a card's HTML interface; 0 renders every floor.
-    renderDepth: renderDepthOf(object(document).renderDepth),
     autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
-    compatibilityMode: false,
-    sillyModeEnabled: false,
+    // Library edits reach a running game on its next turn; only an explicit
+    // reload still refreshes the card definition, initvars and MVU state.
     webSearchEnabled: object(document).webSearchEnabled === true,
     systemAppendEnabled: object(document).systemAppendEnabled !== false,
     backgroundModel: normalizeBackgroundModel(object(document).backgroundModel),

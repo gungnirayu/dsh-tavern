@@ -1,3 +1,6 @@
+import { templateStateFields } from '../tavern-plugin/lib/domain/template-window-reader.js'
+import { createTemplateServices } from '../tavern-plugin/lib/vendor/st-prompt-template/host-build/services.js'
+import * as templateHost from '../tavern-plugin/lib/vendor/st-prompt-template/host-build/host.js'
 import { createPromptTemplateGlobalVariables } from '../tavern-plugin/lib/domain/prompt-template-global-variables.js'
 import { createNativeTemplateConnection } from '../tavern-plugin/lib/vendor/st-prompt-template/host-build/native-connection.js'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
@@ -19,7 +22,7 @@ async function fixture(t) {
   await persistence.write({id:'chat',sessionId:'session',cardPath:'cards/test.json',mode:'story',mvu:{enabled:true},
     tavernHelperLifecycleRevision:1,variables:{local:1},messages:[{role:'assistant',text:'正文',sourceText:'正文',turn:1,
       variables:[{hp:10}],tavernPluginData:{unrelated:{keep:true}}}],tavernPluginMetadata:{other:true}})
-  const adapter=createTavernScriptHostAdapter({resolveChatSlice:(_id,indices)=>persistence.readSlice('chat',indices),resolveChangedChatSlice:(_id,revision)=>persistence.readChangedSlice('chat',revision),patchChat:persistence.patch,resolveChat:()=>persistence.read('chat'),writeChat:persistence.write,
+  const adapter=createTavernScriptHostAdapter({presetRegexScripts:chat=>chat.runtimePresetSnapshot?.regexScripts || [],resolveChatMetadataSlice:()=>persistence.readSlice('chat',[],templateStateFields),resolveChatSlice:(_id,indices)=>persistence.readSlice('chat',indices),resolveChangedChatSlice:(_id,revision,fields)=>persistence.readChangedSlice('chat',revision,fields),patchChat:persistence.patch,resolveChat:()=>persistence.read('chat'),writeChat:persistence.write,
     updateChat:persistence.update,readChatRevision:persistence.readRevision,readCard:async()=>({name:'角色'}),
     worldBooks:{bound:async()=>null},scriptDispatch:{},isPlayChat:()=>true,
     globalVariables:createPromptTemplateGlobalVariables(createProfileDataStore({dataRoot:root})),
@@ -107,7 +110,7 @@ import { readRowsAt } from '../tavern-plugin/lib/domain/bounded-history.js'
 import { applyTemplateStateChanges } from '../tavern-plugin/lib/domain/template-state-patch.js'
 
 // Same native save, with and without the bounded stale-reader merge.
-async function nativeFixture(t, bounded) {
+async function nativeFixture(t, bounded, { beforePatch } = {}) {
   const root=await mkdtemp(join(tmpdir(),'template-stale-'))
   t.after(()=>rm(root,{recursive:true,force:true}))
   const persistence=createChatPersistence({store:createChatJournalStore({dataRoot:root,newConversations:true})})
@@ -116,7 +119,8 @@ async function nativeFixture(t, bounded) {
   await persistence.write({id:'chat',sessionId:'session',cardPath:'cards/test.json',mode:'story',mvu:{enabled:true},backgroundConfigVersion:1,conversationFeaturesVersion:1,
     tavernHelperLifecycleRevision:1,variables:{local:1},messages,tavernPluginMetadata:{other:true}})
   const full=[]
-  const adapter=createTavernScriptHostAdapter({resolveChatSlice:async(_id,indices)=>persistence.readSlice('chat',indices),patchChat:persistence.patch,
+  const patchChat=beforePatch?async(...args)=>{await beforePatch(persistence);return persistence.patch(...args)}:persistence.patch
+  const adapter=createTavernScriptHostAdapter({resolveChatSlice:async(_id,indices)=>persistence.readSlice('chat',indices),patchChat,
     resolveChat:async()=>{full.push('read');return persistence.read('chat')},writeChat:persistence.write,
     updateChat:async(...args)=>{full.push('update');return persistence.update(...args)},readChatRevision:async(...args)=>{full.push('revision');return persistence.readRevision(...args)},
     ...(bounded?{resolveChatSliceAt:async(_id,revision,indices)=>readRowsAt(persistence.readWindow,'chat',revision,indices),
@@ -151,4 +155,47 @@ test('过期读者的局部模板保存：只合并相关楼层，回执与完�
   assert.equal(results[0].stored.messages[7].variables[0].hp,77)
   assert.equal(results[0].stored.messages[7].variables[0].mp,700)
   assert.equal(results[0].stored.messages[3].variables[0].hp,300)
+})
+
+// Background tasks write between a template save's read and its patch every turn on a busy
+// long save. That race only moves the revision: the fast merge retries, never the full one.
+test('模板保存与后台写入撞车时重试局部合并，不读整份存档', async t => {
+  let raced = 0
+  const h = await nativeFixture(t, true, { beforePatch: async persistence => {
+    if (raced++ === 0) await persistence.update('chat', chat => { chat.variables.background = 1; return chat })
+  } })
+  const { state } = await h.adapter.readFullPromptTemplateState('session')
+  const { chat: _chat, chat_metadata: _metadata, ...header } = state
+  h.full.length = 0
+  const receipt = await h.adapter.saveFullPromptTemplateState('session', { ...header, changes: [{ op: 'set', path: ['chat', 7, 'variables', 0, 'hp'], value: 77 }] })
+  assert.equal(receipt.updated, true)
+  assert.deepEqual(h.full, [], '不走完整合并')
+  const stored = await h.persistence.read('chat')
+  assert.equal(stored.messages[7].variables[0].hp, 77)
+  assert.equal(stored.variables.background, 1)
+})
+
+
+test('template display keeps preset regex through full, unchanged and changed history reads', async t => {
+  const {adapter,persistence}=await fixture(t)
+  const rule = (findRegex, replaceString) => ({findRegex,replaceString,placement:[2],markdownOnly:true,promptOnly:true,enabled:true})
+  await persistence.update('chat', chat => { chat.runtimePresetSnapshot={regexScripts:[rule('/<thinking>[\\s\\S]*?<\\/thinking>/g',''),rule('/GLOBAL/g','PRESET')]}; return chat })
+  const connection=await createNativeTemplateConnection({sessionId:'session',rpc:(_method,args)=>adapter.readFullPromptTemplateState(args.sessionId,args.cursor)})
+  t.after(()=>templateHost.disposeTemplateHost())
+  templateHost.configureTemplateHost(connection.snapshot,{}, {yaml:{}})
+  const previousWindow=globalThis.window
+  globalThis.window={$:{fn:{html(){}}}}
+  t.after(()=>{if(previousWindow === undefined) delete globalThis.window; else globalThis.window=previousWindow})
+  const services=createTemplateServices(()=>connection.snapshot,()=>{})
+  const check = () => {
+    templateHost.refreshTemplateSnapshot({...connection.snapshot,extension_settings:{regex:[rule('/seed/g','GLOBAL'),rule('/!/g','!!')]}})
+    connection.snapshot.dsh.regexScripts.push(rule('/PRESET/g','CARD'))
+    assert.equal(services.getRegexedString('<thinking>secret</thinking>seed!',2,{isMarkdown:true}),'CARD!!')
+  }
+  check()
+  await connection.refresh()
+  check()
+  await persistence.update('chat', chat => {chat.messages.push({role:'assistant',text:'next',turn:2});return chat})
+  await connection.refresh()
+  check()
 })

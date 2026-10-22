@@ -27,3 +27,29 @@ import { foregroundSuppressedTurns } from '../tavern-plugin/lib/domain/rollback-
     assert.equal(events.slice(seq).filter(e => e.surfaceOp === 'append' && e.data.message?.content?.length).length, 0)
   }
 })
+
+test('撤销回退恢复带工具调用的轮次：工具结果占位与替换落在同一编辑步骤', () => {
+  let session = Session.create('restore-tool-result')
+  appendSessionEvent(session, 'turn/start', { turn: 1 })
+  appendSessionEvent(session, 'step/start', { turn: 1, step: 1 })
+  appendSessionEvent(session, 'user/message', { id: 'u', turn: 1, step: 1, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '推门' }] }, { surfaceOp: 'append' })
+  appendSessionEvent(session, 'assistant/message', { turn: 1, step: 1, stream: [], message: { id: 'a', role: 'assistant', content: [{ type: 'toolCall', id: 'c1', name: 'x', arguments: {} }], source: { kind: 'model', provider: 'test', model: 'test' } } }, { surfaceOp: 'append' })
+  appendSessionEvent(session, 'tool/result', { turn: 1, step: 1, message: { id: 'r', role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }], source: { kind: 'tool', callId: 'c1' } } }, { surfaceOp: 'append' })
+  appendSessionEvent(session, 'step/end', { turn: 1, step: 1 })
+  appendSessionEvent(session, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const saved = [...session.surface.nodes]
+  appendSessionEvent(session, 'turn/start', { turn: 2 })
+  appendSessionEvent(session, 'step/start', { turn: 2, step: 1 })
+  appendSessionEvent(session, 'user/message', { id: 'rollback', turn: 2, step: 1, role: 'user', source: { kind: 'user' }, content: [] },
+    { surfaceOp: { op: 'replace', start: saved[0], end: saved.at(-1) }, sourceEventSeqs: saved })
+  appendSessionEvent(session, 'step/end', { turn: 2, step: 1 })
+  appendSessionEvent(session, 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  preflightSurfaceRestore(session, saved)
+  restoreSurface(session, saved)
+  for (const reload of [false, true]) {
+    if (reload) session = Session.create(session.id, sessionEvents(session), session.header)
+    const events = sessionEvents(session)
+    assert.deepEqual(session.surface.nodes.map(n => events[n].type), ['user/message', 'assistant/message', 'tool/result'])
+    assert.equal(events[session.surface.nodes.at(-1)].data.message.content[0].text, 'ok')
+  }
+})

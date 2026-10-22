@@ -1,5 +1,5 @@
 // Players read a provider moderation stop or a model refusal as "Tavern is broken".
-// Say plainly what happened. Detection reuses the shared rules in response-refusal.js.
+// Say plainly what happened. Detection reuses the shared rules in response-classification.js.
 const TAVERN_REFUSAL_TOPIC = /内容|请求|政策|安全|露骨|色情|性|未成年|涉及|guideline|policy|content|explicit/i;
 function tavernProviderRefusalNotice(errorText) {
     return classifyResponse({ error: String(errorText || "") }).method === "provider-signal"

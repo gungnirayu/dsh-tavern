@@ -11,7 +11,7 @@
 			const [notice, setNotice] = React.useState("");
 			const importInput = React.useRef(null);
 			const [error, setError] = usePersistentError("Skill 库");
-			const roles = [["card", "卡片 Agent"], ["foreground", "前台"], ["background", "后台"], ["image", "文生图"]];
+			const roles = [["card", "卡片 Agent"], ["foreground", "前台"], ["background", "后台"]];
 			async function refresh() {
 				const result = await rpc("listSkills", {}, props.sessionId);
 				setSkills(result.skills || []);
@@ -75,7 +75,7 @@
 				error ? h("div", { className: "dsh-tavern-dock-error" }, error) : null,
 				notice ? h("p", { role: "status", className: "dsh-tavern-question-sub" }, notice) : null,
 				h("div", { className: "dsh-tavern-resource-body" }, roles.map(([group, title]) => {
-                    const items = skills.filter(skill => skill.agents.includes(group) || (!skill.agents.length && group === (skill.purpose === "writing" ? "foreground" : skill.purpose === "image" ? "image" : skill.purpose === "background" ? "background" : "card")));
+                    const items = skills.filter(skill => skill.agents.includes(group) || (!skill.agents.length && group === (skill.purpose === "writing" ? "foreground" : skill.purpose === "background" || skill.purpose === "image" ? "background" : "card")));
                     return h("details", { key: group, open: true, className: "dsh-tavern-skill-group" + (dropGroup === group ? " is-drop-target" : ""),
                         onDragOver: event => { if (!dragging || busy) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropGroup(group); },
                         onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setDropGroup(null); },

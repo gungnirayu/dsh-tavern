@@ -16,13 +16,101 @@ const patches = Object.values(workspace.patchedDependencies || {}).map(value => 
 
 const required = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bin/dsh-compatibility.mjs', 'bin/dsh-tavern.mjs', 'bin/launcher-environment.mjs', 'bin/launcher-settings.mjs', 'bin/profile-installation.mjs', 'bin/service-lifecycle.mjs', 'bin/application-update.mjs', 'config/dsh-compatibility.json', ...patches]
 required.push('bin/dsh-tavern-update-helper.mjs', 'bin/windows-update-launch.mjs', 'bin/update-diagnostics.mjs')
+const bundledWorldbooks = ['tavern-plugin/packages/dsh-tavern-image-bundled/世界书-通用生图规则.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/世界书-角色与服装库.json']
+required.push('bin/bundled-scene-image-plugin.mjs', 'tavern-plugin/packages/dsh-tavern-image-bundled/package.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/BUNDLED-VERSION.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/cordis.patch.yml', 'tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js', 'tavern-plugin/packages/dsh-tavern-image-bundled/client.js', ...bundledWorldbooks)
 required.push('tavern-plugin/lib/domain/server-template-runtime.js', 'tavern-plugin/lib/domain/server-template-worker.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/engine.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/manifest.json')
 required.push('tavern-plugin/lib/domain/tavern-client-assets.js', 'tavern-plugin/lib/client-assets/tavern.css')
 required.push('bin/build-tavern-client.mjs', 'tavern-plugin/src/client/main.js',
   ...['runtime-generation-monitor', 'library-refresh', 'live-tavern-view'].map(name => `tavern-plugin/src/client/modules/${name}.js`))
-required.push('bin/bundled-image-plugin.mjs', ...['package.json', 'cordis.patch.yml', 'LICENSE', 'src/index.ts', 'lib/index.js', 'lib/client.js'].map(file => `tavern-plugin/packages/dsh-image-gen/${file}`))
-required.push('tavern-plugin/lib/domain/scene-image-module-settings.js', 'tavern-plugin/lib/domain/image-generation-host.js', 'tavern-plugin/packages/dsh-image-gen/src/module.js', 'tavern-plugin/packages/dsh-image-gen/src/configuration.js',
-  ...['redact', 'scene-image-reference', 'scene-image-style', 'scene-image-channels', 'scene-image-connection', 'scene-image-comfy-workflow', 'scene-image-zip', 'scene-image-comfy', 'scene-image-provider', 'scene-image-auth', 'scene-image-novelai'].map(name => `tavern-plugin/packages/dsh-image-gen/src/tavern/${name}.js`))
+
+// Git emits USTAR/PAX UTF-8 names; Windows tar's listing and extraction depend on locale.
+function gitTarFiles(archive) {
+  const files = [], utf8 = new TextDecoder('utf-8', { fatal: true })
+  const text = bytes => utf8.decode(bytes).split('\0', 1)[0]
+  let offset = 0, pendingPath
+  while (offset < archive.length) {
+    assert.ok(offset + 512 <= archive.length, 'Truncated TAR header')
+    const header = archive.subarray(offset, offset + 512)
+    if (header.every(byte => byte === 0)) {
+      assert.ok(archive.length - offset >= 1024 && (archive.length - offset) % 512 === 0 && archive.subarray(offset).every(byte => byte === 0), 'Invalid TAR trailer')
+      assert.equal(pendingPath, undefined, 'Missing PAX target')
+      return files
+    }
+    const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0)
+    assert.equal(checksum, parseInt(text(header.subarray(148, 156)).trim(), 8), 'Invalid TAR checksum')
+    const sizeText = text(header.subarray(124, 136)).trim()
+    assert.match(sizeText, /^[0-7]+$/, 'Invalid TAR size')
+    const size = parseInt(sizeText, 8), next = offset + 512 + Math.ceil(size / 512) * 512
+    assert.ok(Number.isSafeInteger(size) && Number.isSafeInteger(next) && next <= archive.length, 'Truncated or invalid TAR entry')
+    const type = String.fromCharCode(header[156])
+    if (type === 'x') {
+      const body = archive.subarray(offset + 512, offset + 512 + size)
+      for (let cursor = 0; cursor < body.length;) {
+        const space = body.indexOf(32, cursor)
+        assert.ok(space > cursor, 'Invalid PAX record')
+        const lengthText = body.subarray(cursor, space).toString('ascii')
+        assert.match(lengthText, /^[0-9]+$/, 'Invalid PAX length')
+        const length = Number(lengthText)
+        assert.ok(Number.isSafeInteger(length) && length > space - cursor + 2 && cursor + length <= body.length, 'Invalid PAX length')
+        assert.equal(body[cursor + length - 1], 10, 'Invalid PAX terminator')
+        const record = utf8.decode(body.subarray(space + 1, cursor + length - 1))
+        assert.ok(record.indexOf('=') > 0, 'Invalid PAX attribute')
+        if (record.startsWith('path=')) pendingPath = record.slice(5)
+        cursor += length
+      }
+    } else if (type !== 'g') { // Git's global PAX header only carries its commit comment.
+      const prefix = text(header.subarray(345, 500))
+      const name = pendingPath ?? (prefix ? prefix + '/' : '') + text(header.subarray(0, 100))
+      assert.ok(name, 'Invalid TAR filename')
+      files.push(name)
+      pendingPath = undefined
+    }
+    offset = next
+  }
+  assert.fail('Missing TAR end marker')
+}
+
+// Read names from the archive bytes on every platform: system tar's listing depends on the
+// locale (macOS bsdtar without a UTF-8 LANG prints 世界书 as \344\270\226…).
+async function listTarFiles(file) {
+  return gitTarFiles(await readFile(file))
+}
+
+test('Git TAR 清单保留 Unicode、PAX 长路径和 USTAR prefix，并拒绝损坏或截断', () => {
+  const entry = (name, type, body = Buffer.alloc(0), prefix = '') => {
+    const header = Buffer.alloc(512)
+    header.write(name, 0, 100, 'utf8')
+    header.write(body.length.toString(8).padStart(11, '0') + '\0', 124, 12)
+    header.write(type, 156, 1)
+    header.write('ustar\0', 257, 6)
+    header.write(prefix, 345, 155, 'utf8')
+    header.fill(32, 148, 156)
+    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8)
+    return Buffer.concat([header, body, Buffer.alloc((512 - body.length % 512) % 512)])
+  }
+  const pax = value => {
+    let length = Buffer.byteLength(value) + 3
+    while (Buffer.byteLength(`${length} ${value}\n`) !== length) length = Buffer.byteLength(`${length} ${value}\n`)
+    return Buffer.from(`${length} ${value}\n`)
+  }
+  const longPath = '目录/' + '世界书'.repeat(40) + '.json'
+  const archive = Buffer.concat([
+    entry('pax_global_header', 'g', pax('comment=fixture')),
+    entry('世界书.json', '0', Buffer.from('内容')),
+    entry('pax_header', 'x', Buffer.concat([pax('comment=中文'), pax('path=' + longPath)])),
+    entry('placeholder', '0', Buffer.from('long path content')),
+    entry('plain.txt', '0'), // The previous PAX path must not leak into this entry.
+    entry('规则.json', '0', Buffer.alloc(0), 'plugins/中文目录'),
+    entry('目录/', '5'),
+    Buffer.alloc(1024),
+  ])
+  assert.deepEqual(gitTarFiles(archive), ['世界书.json', longPath, 'plain.txt', 'plugins/中文目录/规则.json', '目录/'])
+  for (const truncated of [archive.subarray(0, 511), archive.subarray(0, 600), archive.subarray(0, -1)]) assert.throws(() => gitTarFiles(truncated), /TAR/)
+  const damaged = Buffer.from(archive)
+  damaged[0] ^= 1
+  assert.throws(() => gitTarFiles(damaged), /checksum/)
+  assert.throws(() => gitTarFiles(Buffer.concat([entry('pax_header', 'x', Buffer.from('999 path=bad\n')), Buffer.alloc(1024)])), /PAX length/)
+})
 
 for (const [name, paths] of [
   ['Unix', unix.match(/^RUNTIME_PATHS='([^']+)'/m)[1].split(/\s+/)],
@@ -36,7 +124,7 @@ for (const [name, paths] of [
     t.after(() => rm(directory, { recursive: true, force: true }))
     const archive = path.join(directory, 'app.tar')
     execFileSync('git', ['archive', '--format=tar', `--output=${archive}`, process.env.DSH_TEST_ARCHIVE_TREE || 'HEAD', '--', ...paths], { cwd: root })
-    const files = execFileSync('tar', ['-tf', archive], { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 }).split(/\r?\n/)
+    const files = await listTarFiles(archive)
     for (const file of required) assert.ok(files.includes(file), `运行包遗漏：${file}`)
     assert.ok(!files.some(file => /^(docs|tests|references)\//.test(file)))
   })
@@ -45,8 +133,8 @@ for (const [name, paths] of [
 test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), 'tavern-runtime-package-'))
   t.after(() => rm(fixture, { recursive: true, force: true }))
-  for (const directory of ['bin', 'config', 'presets', 'tavern-plugin']) await mkdir(path.join(fixture, directory))
-  for (const file of new Set([...required, 'cordis.patch.yml', 'install.sh', 'install.ps1'])) {
+  for (const directory of ['android', 'bin', 'config', 'presets', 'tavern-plugin']) await mkdir(path.join(fixture, directory))
+  for (const file of new Set([...required, 'cordis.patch.yml', 'install.sh', 'install.ps1', 'android/setup.sh'])) {
     await mkdir(path.dirname(path.join(fixture, file)), { recursive: true })
     await writeFile(path.join(fixture, file), await readFile(path.join(root, file)))
   }
@@ -60,6 +148,7 @@ test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
   assert.ok(!manifest.files.some(file => file.path.endsWith('/unused.txt')), 'CDN 也不应下载嵌套的测试或文档')
   assert.equal(manifest.releaseSequence, 42)
   assert.equal(manifest.version, JSON.parse(await readFile(path.join(fixture, 'package.json'), 'utf8')).version)
+  assert.ok(manifest.files.some(file => file.path === 'android/setup.sh'), 'CDN 清单需要 android/ 才能增量更新 APK 端的安装脚本')
   for (const file of required) {
     const entry = manifest.files.find(entry => entry.path === file)
     assert.ok(entry, `CDN 清单遗漏：${file}`)
@@ -100,9 +189,14 @@ for (const format of ['tar', 'zip']) {
     await writeFile(file, archive)
     // ZIP readers may stop before consuming all stdin bytes; use a seekable file
     // to avoid EPIPE or a blocked synchronous pipe on macOS.
-    const listing = format === 'zip' && process.platform === 'linux'
-      ? execFileSync('unzip', ['-Z1', file], { encoding: 'utf8' })
-      : execFileSync('tar', ['-tf', file], { encoding: 'utf8' })
+    // Windows bsdtar uses the legacy system locale to decode ZIP names; .NET reads UTF-8 names directly.
+    const listing = format === 'tar'
+      ? (await listTarFiles(file)).join('\n')
+      : format === 'zip' && process.platform === 'win32'
+      ? execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference = \'Stop\'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead($env:DSH_TEST_ZIP_PATH); try { foreach ($entry in $zip.Entries) { [Console]::Out.WriteLine($entry.FullName) } } finally { $zip.Dispose() }'], { encoding: 'utf8', env: { ...process.env, DSH_TEST_ZIP_PATH: file } })
+      : format === 'zip' && process.platform === 'linux'
+        ? execFileSync('unzip', ['-Z1', file], { encoding: 'utf8' })
+        : execFileSync('tar', ['-tf', file], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'en_US.UTF-8' } })
     const files = listing.split(/\r?\n/)
     for (const file of required) assert.ok(files.includes(file), `运行包遗漏：${file}`)
     assert.ok(files.includes('LICENSE'), '保留许可文件')

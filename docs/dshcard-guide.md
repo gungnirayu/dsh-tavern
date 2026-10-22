@@ -129,11 +129,11 @@ node examples/dshcard-hello/build.mjs
 
 ## 卡内插件
 
-卡内插件就是普通的 DSH Tavern 插件，写法和接口与全局插件相同，见[插件开发：接口参考](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)。区别只在于它跟着卡走：
+卡内插件就是普通的 DSH Tavern 插件，写法和接口与全局插件相同，见[插件开发：接口总览](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)。区别只在于它跟着卡走：
 
 - 导入卡时随卡启用，不需要玩家另装；删除卡时一起卸载。
 - 只在这张卡的局里生效：回调只对这张卡的局触发，带别的局的 `gameId` 调接口会被拒绝，浏览器侧注册的界面只在这张卡的局里出现。
-- 在这张卡的局里，插件是这一局的一部分：总是启用，不出现在本局设置的「插件」开关里。玩家要停用，就在卡片详情里整体停用。
+- 在这张卡的局里，插件是这一局的一部分：总是启用。玩家要停用，就在卡片详情里整体停用。
 - Tavern 按插件 `package.json` 的 `name` 识别插件，同名而内容不同的插件同时只能启用一个：撞名时后导入的卡照常导入，但它的插件不会启用。所以插件名按约定写成 `dsh-card-<卡标识>-<插件名>`，例如大肥鱼的 `dsh-card-dafeiyu-galgame`；`dsh.json` 里的 `name` 写成同一个。
 
 一个插件文件夹有三个文件：
@@ -197,4 +197,4 @@ node examples/dshcard-hello/build.mjs
 - [开发实例：大肥鱼](dshcard-tutorial.md)：按动手顺序拆解大肥鱼：卡片结构、卡内插件怎么导演和画舞台、打包与调试。
 - [大肥鱼样板卡](https://github.com/flizzywine/dsh-tavern/releases/tag/dafeiyu-card-v1)：4 个素材包、导演插件、全身立绘舞台、背景音乐、本局配置项，源码在 [examples/dafeiyu-card](https://github.com/flizzywine/dsh-tavern/tree/main/examples/dafeiyu-card)。
 - [格式设计](https://github.com/flizzywine/dsh-tavern/blob/main/docs/design/dsh-card-format.md)：为什么这样设计、存储和安全的细节。
-- [插件开发：接口参考](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)：每个接口的参数和行为。
+- [插件开发：接口总览](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)：每个接口的参数和行为。

@@ -53,7 +53,7 @@ export function prepareTemplateHistory(session, before, after) {
   let cursor = 0
   for (let index = 0; index < before.messages.length; index++) {
     const old = before.messages[index], next = after.messages[index]
-    const texts = new Set([body(old), old.sourceText, old.sessionText, old.templateInputSource].filter(value => typeof value === 'string'))
+    const texts = new Set([body(old), old.sourceText, old.templateInputSource].filter(value => typeof value === 'string'))
     let at = anchoredInput(before.messages, index)
     if (at < 0) for (const text of texts) {
       const candidate = firstAtOrAfter(positions.get(old.role + '/message\0' + text), cursor)
@@ -79,7 +79,7 @@ function markRecentInputRewrites(session, messages) {
   let cursor = nodes.length - 1
   for (let index = messages.length - 1; index >= 0 && Object.hasOwn(messages, String(index)); index--) {
     const message = messages[index]
-    const texts = new Set([body(message), message.sourceText, message.sessionText, message.templateInputSource].filter(value => typeof value === 'string'))
+    const texts = new Set([body(message), message.sourceText, message.templateInputSource].filter(value => typeof value === 'string'))
     let at = anchoredInput(messages, index)
     if (at < 0) for (let offset = cursor; offset >= 0; offset--) {
       const event = nodes[offset]

@@ -1,6 +1,6 @@
 // 与 dsh-web-mobile 的抽屉断点一致；触屏笔记本不应仅因 coarse pointer 变成手机布局。
 // 宿主的插槽使用 display:contents 包装；它不占空间，但仍参与 CSS / DOM 选择器匹配。
-const TAVERN_HEADER_SELECTOR = '[data-slot="conversation.session.header"] > header, [data-phase] > header';
+const TAVERN_HEADER_SELECTOR = '[data-slot="conversation.header"] > header, [data-phase] > header';
 const TAVERN_MOBILE_QUERY = "(max-width: 1023px)";
 function narrowLayout() { return typeof window.matchMedia === "function" && window.matchMedia(TAVERN_MOBILE_QUERY).matches; }
 

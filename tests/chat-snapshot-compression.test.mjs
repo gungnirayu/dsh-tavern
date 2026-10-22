@@ -8,7 +8,6 @@ import { gzipSync, gunzipSync } from 'node:zlib'
 
 import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import { applyTavernHelperVariableMacros } from '../tavern-plugin/lib/domain/tavern-helper-variable-macros.js'
-import { createEphemeralCompatibilityRequest } from '../tavern-plugin/lib/domain/compatibility-request.js'
 
 function fixture() {
   // Intentionally nonalphabetical keys, numeric keys, nulls and inactive swipes.
@@ -33,8 +32,8 @@ function request(chat) {
     { role: 'system', content: '{{get_chat_variable::z}}\n{{get_message_variable::stat_data}}\n  {{format_message_variable::stat_data}}' },
     ...chat.messages.map(m => ({ role: m.role, content: m.text }))
   ], { chat: chat.variables, message: chat.messages[0].variables[0] })
-  return JSON.stringify(createEphemeralCompatibilityRequest({ provider: 'test', model: 'test-model', sessionId: 's', messages: [] },
-    projected.messages.map((m, i) => ({ id: String(i), role: m.role, content: [{ type: 'text', text: m.content }] }))))
+  return JSON.stringify({ provider: 'test', model: 'test-model', sessionId: 's',
+    messages: projected.messages.map((m, i) => ({ id: String(i), role: m.role, content: [{ type: 'text', text: m.content }] })) })
 }
 
 test('压缩重启和历史读取保持 JSON 键顺序、JSON/YAML 变量宏及请求字节不变', async t => {

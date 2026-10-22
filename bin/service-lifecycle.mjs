@@ -164,11 +164,16 @@ async function serviceState() {
   const ready = portOpen && await isServiceReady(port)
   if (record && !pidAlive && (identity !== 'unknown' || !portOpen)) {
     removePidRecord()
-    console.log(`已清理陈旧或无法确认且端口未监听的服务记录：PID ${record.pid}`)
+    console.log(`已清理不可用的服务记录：PID ${record.pid}（该 PID 不再指向本酒馆服务）。`)
   }
   // Never adopt another Android process by port/profile alone.
   const legacyRecord = !pidAlive && portOpen && RUNTIME_HOST !== 'android' ? findLegacyService(port) : null
   return { port, record: pidAlive ? record : legacyRecord, portOpen, ready }
+}
+
+export function legacyServiceOwnedHere(command, host = RUNTIME_HOST, root = DSH_ROOT) {
+  if (host === 'desktop') return command.includes('dsh-desktop-host')
+  return command.includes(path.join(root, 'runtime') + path.sep) && command.includes('dsh --profile')
 }
 
 function findLegacyService(port) {
@@ -178,7 +183,9 @@ function findLegacyService(port) {
   const pids = listeners.stdout.split(/\s+/).map(Number).filter(Number.isInteger)
   for (const pid of pids) {
     const processInfo = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' })
-    if (processInfo.status === 0 && processInfo.stdout.includes(`dsh --profile ${PROFILE}`)) {
+    // Same profile name is not enough: the CLI install (~/.dsh-tavern) and the desktop install (~/.dsh)
+    // both serve `tavern`, from different data. Adopt only this install's own runtime.
+    if (processInfo.status === 0 && processInfo.stdout.includes(`--profile ${PROFILE}`) && legacyServiceOwnedHere(processInfo.stdout)) {
       return { pid, port, profile: PROFILE, source: SOURCE_ROOT, legacy: true }
     }
   }
@@ -229,6 +236,15 @@ export async function openService() {
   await openBrowserTarget(url)
 }
 
+// A PID from outside this process's own namespace (or one owned by another user)
+// cannot be signalled; say so instead of leaking the raw `kill EPERM`.
+function stopPermissionMessage(pid) {
+  if (RUNTIME_HOST === 'android' && process.platform === 'linux') {
+    return `无法停止 DSH Tavern：PID ${pid} 权限不足；请从 Android 宿主停止服务后重试。`
+  }
+  return `无法停止 DSH Tavern：PID ${pid} 权限不足。该 PID 可能已被其他进程复用（例如在沙箱的临时 PID 命名空间里启动后留下的记录），请手动确认；确认不是酒馆服务时可删除 ${PID_FILE} 后重试。`
+}
+
 export async function stopService() {
   verifyProfile()
   const state = await serviceState()
@@ -251,12 +267,15 @@ export async function stopService() {
       try {
         process.kill(state.record.pid, 'SIGTERM')
       } catch (error) {
-        if (error?.code !== 'ESRCH') {
-          if (error?.code !== 'EPERM' || RUNTIME_HOST !== 'android' || process.platform !== 'linux') throw error
+        // The PID can be reused between the recheck and the signal. Tolerate the
+        // race, but never report the raw kill error or keep a foreign record.
+        if (error?.code === 'ESRCH') {
+          // Already gone; the wait loop below clears the record.
+        } else if (error?.code === 'EPERM') {
           const identity = inspectRecordedProcess(state.record)
-          if (identity === 'owned' || await isPortOpen(state.port)) {
-            throw new Error(`无法停止 DSH Tavern：PID ${state.record.pid} 权限不足；请从 Android 宿主停止服务后重试。`)
-          }
+          if (identity === 'owned' || await isPortOpen(state.port)) throw new Error(stopPermissionMessage(state.record.pid))
+        } else {
+          throw error
         }
       }
     }

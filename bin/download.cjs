@@ -11,7 +11,7 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
 
-const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
+const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|android\/|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
 const EXCLUDED_PART = new Set(['.', '..', 'docs', 'tests', '__tests__', 'testsets'])
 
 class DownloadError extends Error {

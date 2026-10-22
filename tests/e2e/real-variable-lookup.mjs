@@ -3,6 +3,7 @@ import {readFile,writeFile,readdir,copyFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import {parse,stringify} from 'yaml'
 import {parseSessionLog} from '../../tavern-plugin/lib/domain/session-log-codec.js'
+import {currentSessionLogs} from './session-files.mjs'
 export async function setupRealVariables({root,profile,data,runtimeHome}){
  const settings=parse(await readFile(join(runtimeHome,'settings.yaml'),'utf8'))
  const selection={...settings['agent-default-model'],reasoningEffort:'low'}
@@ -20,8 +21,8 @@ export async function setupRealVariables({root,profile,data,runtimeHome}){
 export async function realVariableLookupChecks({page,step,savedChat,root,output,report}){
  async function events(){
   const chat=await savedChat(),dir=join(root,'profile-data/tavern/sessions')
-  for(const file of await readdir(dir,{recursive:true}))if(file.endsWith('session.v3.jsonl.zstd')){
-   const parsed=parseSessionLog(await readFile(join(dir,file)))
+  for(const {path:file} of await currentSessionLogs(dir)){
+   const parsed=parseSessionLog(await readFile(file))
    if(parsed.header.id===chat.sessionId)return parsed.events
   }
   return []

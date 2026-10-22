@@ -3,12 +3,12 @@ import { pluginInstallation, appearance } from './introduction.mjs'
 
 // Plugin developer docs have one source in docs/; the site renders it as is.
 const REPO = 'https://github.com/flizzywine/dsh-tavern/blob/main/'
-const sitePages = { 'plugin-api.md': 'plugin-api', 'plugin-recipes.md': 'plugin-recipes', 'dshcard-guide.md': 'dshcard-guide', 'dshcard-tutorial.md': 'dshcard-tutorial' }
+const sitePages = { 'plugin-api.md': 'plugin-api', 'plugin-api-game.md': 'plugin-api-game', 'plugin-api-prompt.md': 'plugin-api-prompt', 'plugin-api-data.md': 'plugin-api-data', 'plugin-api-cards.md': 'plugin-api-cards', 'plugin-api-ui.md': 'plugin-api-ui', 'plugin-recipes.md': 'plugin-recipes', 'plugin-publishing.md': 'plugin-publishing', 'dshcard-guide.md': 'dshcard-guide', 'dshcard-tutorial.md': 'dshcard-tutorial' }
 export function developerDoc(file) {
   return readFileSync(new URL('../' + file, import.meta.url), 'utf8')
     .replace(/^# .*\n+/, '')
     .replace(/\]\((?!#|https:)([^)\s]+)\)/g, (_, target) => '](' + (sitePages[target] ? '#' + sitePages[target] : REPO + new URL(target, REPO + 'docs/').href.slice(REPO.length)) + ')')
-    .replace(/\]\(https:\/\/github\.com\/flizzywine\/dsh-tavern\/blob\/main\/docs\/(plugin-api|plugin-recipes)\.md\)/g, '](#$1)')
+    .replace(/\]\(https:\/\/github\.com\/flizzywine\/dsh-tavern\/blob\/main\/docs\/(plugin-[a-z-]+)\.md\)/g, '](#$1)')
 }
 
 // The four product sections are deliberately separate from help and the full index.
@@ -45,10 +45,13 @@ export const sections = [
     ['互联网搜索', 'M02'],
     ['前后台模型分工', 'M01'],
     ['系统提示词', 'L05 L06'],
-    ['工具与插件', 'M06 M07'],
     ['文生图', 'F01 F02 F03 F04 F05 F06 F07 F08 F09 F10'],
     ['生图渠道参考', 'G01 G02 G03 G04 G05 G06 G07 G08 G09'],
   ] },
+  { id: 'plugins', title: '插件', intro: '给酒馆加功能：在设置里粘贴插件的 GitHub 地址就能装。想自己写插件，看后面两篇开发文档。', chapters: [
+    ['安装与管理', 'M07'],
+  ] },
+  { id: 'dshcard', title: 'DSH 人物卡', intro: 'DSH 人物卡（.dshcard）把人物卡、素材、卡内插件和推荐预设装进一个文件，导入即用。这里讲怎么做一张。', chapters: [] },
 ]
 
 export const help = { id: 'help', title: '帮助与维护', intro: '安装、数据和排错的辅助说明。遇到问题时查阅，不需要按顺序阅读。', chapters: [['排错与维护', 'N03 H08 M03 N04 N05 N06 N07 N08']] }
@@ -265,13 +268,40 @@ export const overview = {
 
 - [提炼文风](#m04)：从样文中分析可复用的写法。
 - [保存 Skill](#m05)：明确请求后，将方法保存为技能文件。
-- [工具与插件](#m06)：扩展 DSH 的能力，不是通用酒馆插件安装器。
 
 ## 为文字剧情配图
 
 [文生图](#f01)独立于文字游玩，默认关闭，不会自动出图。配置渠道并打开开关后，可在每轮正文下方手动出图、重画、查看版本，以及在支持的渠道中设置人物参考。
 
 生图可能产生额外费用。无需逐个了解所有渠道，选择自己实际使用的服务即可。
+`,
+  plugins: `
+## 装插件只要一步
+
+打开酒馆 → 设置 → DSH Tavern → 插件，粘贴插件的 GitHub 地址，点「安装」，刷新页面。详细步骤、更新提示、启用/停用和删除见[安装酒馆插件](#m07)。
+
+## 去哪找插件
+
+- [Discord 交流群](https://discord.gg/hYAEjKnpra)：作者发布和讨论插件的地方，插件最全。
+- [讨论区的 Show and tell](https://github.com/flizzywine/dsh-tavern/discussions/categories/show-and-tell)
+
+## 自己写插件
+
+- [插件开发：常见用法](#plugin-recipes)：按要做的插件找写法，配图、记忆、读变量、后台推演、接管结算。
+- [插件开发：发布与一键安装](#plugin-publishing)：怎样发布，别人才能在设置里粘贴地址一键安装。
+- [插件开发：接口总览](#plugin-api)：插件怎么写、怎么拿到接口，以及分页的接口说明。
+`,
+  dshcard: `
+## DSH 人物卡是什么
+
+一个 \`.dshcard\` 文件里装着人物卡、立绘和背景等素材、卡内插件和推荐预设。玩家把它导入人物卡库就能玩，卡内插件随卡启用，不用另外安装。
+
+## 从哪里开始
+
+- [DSH 人物卡制作](#dshcard-guide)：格式、示例卡、打包与调试。
+- [DSH 人物卡开发实例：大肥鱼](#dshcard-tutorial)：按动手顺序，从一张样板卡讲到打包导入。
+
+普通的 SillyTavern 人物卡（PNG、JSON、CHARX）照常导入即可，见[酒馆生态兼容](#compatibility)。
 `,
   help: `
 ## 遇到问题时
@@ -290,10 +320,16 @@ export const overview = {
 }
 
 export const extraPages = [{ id: "local-settings", title: "本局设置", group: "play", intro: "在游玩顶部调整当前游戏，已有对话与变量保留。", content: "## 本局设置：只调整正在玩的这局\n\n入口在游玩顶部“本局设置”，打开后显示在右侧。大多数选项修改后自动保存，玩家称呼在离开输入框后保存；留意保存反馈。已有对话和变量保留。\n\n| 分组 | 设置 | 用途与生效范围 |\n| --- | --- | --- |\n| 游玩 | 玩家称呼 | 修改后用于后续内容，不重写已有正文 |\n| 游玩 | 当前预设 | 为本局选择外部预设，或不使用外部预设；影响后续正文 |\n| 游玩 | 长期偏好 | 选择已确认长期偏好或不使用长期偏好，下一轮生效；可展开核对本局实际内容，库中有更新时可应用最新版本 |\n| 游玩 | 状态栏位置 | 状态栏显示在侧边栏或正文下方 |\n| 模型 | 后台模型与推理强度 | 选择独立模型或跟随前台；下一次后台任务生效，正在执行的任务不变 |\n| 模型 | 生图 Agent 模型 | 整理插图画面、写绘图提示词用的模型；默认跟随前台（此时用最低推理强度，出图更快），也可单独选模型和推理强度；下一次生图生效 |\n| 功能 | 变量结算 | 只在 MVU 卡显示；控制后台 MVU 更新，关闭后变量和状态栏不再更新 |\n| 功能 | 人物姿势 | 每轮总结人物位置、动作和姿势，供前台保持一致，不在界面显示 |\n| 功能 | 联网搜索 | 允许本局前后台按需查外部资料，后续请求生效 |\n| 高级（默认折叠） | 写作 Skill | 控制本局后续可加载的写作方法，不删除已经加载到历史中的内容 |\n| 高级（默认折叠） | 插件 | 本局用到的第三方插件：按局开关、选择由谁负责结算、调整结算任务先后、查看最近错误 |\n\n切换预设、长期偏好、模型、推理强度或相关任务与工具配置可能使提示词缓存失效，首次请求会增加耗时和费用。无需为了每轮剧情频繁改设置；临时写作要求可以使用 [Guide](#b09)。\n\n" },
-  { id: 'plugin-installation', title: '用 DSH 命令安装 Tavern（试验）', group: 'getting-started', intro: '已有 DSH 时，用 dsh plugin 命令把 Tavern 安装到独立 Profile。这是安装 Tavern 本身的一种方式，不是给 Tavern 装插件；第三方插件见插件开发两页。', content: pluginInstallation },
+  { id: 'plugin-installation', title: '用 DSH 命令安装 Tavern（试验）', group: 'getting-started', intro: '已有 DSH 时，用 dsh plugin 命令把 Tavern 安装到独立 Profile。这是安装 Tavern 本身的一种方式，不是给 Tavern 装插件；给酒馆装插件见「插件」部分。', content: pluginInstallation },
   { id: 'appearance', title: '皮肤与外观', group: 'play', intro: '选择酒馆主题、强调色与壁纸。', content: appearance },
-  { id: 'dshcard-guide', title: 'DSH 人物卡制作', group: 'advanced', intro: '把人物卡、素材、卡内插件和推荐预设装进一个 .dshcard 文件：格式、示例卡和打包调试。', content: developerDoc('dshcard-guide.md') },
-  { id: 'dshcard-tutorial', title: 'DSH 人物卡开发实例：大肥鱼', group: 'advanced', intro: '以大肥鱼样板卡为例，按动手顺序讲：卡片结构、各部分作用、卡内插件怎么挂到舞台、打包导入和调试。', content: developerDoc('dshcard-tutorial.md') },
-  { id: 'plugin-recipes', title: '插件开发：常见用法', group: 'advanced', intro: '按要做的插件找写法：配图、记忆、读变量、后台推演、接管结算。', content: developerDoc('plugin-recipes.md') },
-  { id: 'plugin-api', title: '插件开发：接口参考', group: 'advanced', intro: '第三方 DSH 插件可用的 Tavern 接口，逐个说明。', content: developerDoc('plugin-api.md') }
+  { id: 'dshcard-guide', title: 'DSH 人物卡制作', group: 'dshcard', intro: '把人物卡、素材、卡内插件和推荐预设装进一个 .dshcard 文件：格式、示例卡和打包调试。', content: developerDoc('dshcard-guide.md') },
+  { id: 'dshcard-tutorial', title: 'DSH 人物卡开发实例：大肥鱼', group: 'dshcard', intro: '以大肥鱼样板卡为例，按动手顺序讲：卡片结构、各部分作用、卡内插件怎么挂到舞台、打包导入和调试。', content: developerDoc('dshcard-tutorial.md') },
+  { id: 'plugin-recipes', title: '插件开发：常见用法', group: 'plugins', intro: '按要做的插件找写法：配图、记忆、读变量、后台推演、接管结算。', content: developerDoc('plugin-recipes.md') },
+  { id: 'plugin-publishing', title: '插件开发：发布与一键安装', group: 'plugins', intro: '把插件放到 GitHub 上，别人就能在设置里粘贴地址一键安装。这里讲仓库怎么放、发布前查什么、怎么发新版本。', content: developerDoc('plugin-publishing.md') },
+  { id: 'plugin-api', title: '插件开发：接口总览', group: 'plugins', intro: '插件怎么写、怎么拿到接口，以及各页接口的索引。', content: developerDoc('plugin-api.md') },
+  { id: 'plugin-api-game', title: '接口：读取游戏', group: 'plugins', intro: '回合写完、读正文与人物卡、历史、时间线变化、改最新一轮。', content: developerDoc('plugin-api-game.md') },
+  { id: 'plugin-api-prompt', title: '接口：正文、结算与任务', group: 'plugins', intro: '往正文请求、世界书、后台结算、候选、压缩里添加内容；插件任务。', content: developerDoc('plugin-api-prompt.md') },
+  { id: 'plugin-api-data', title: '接口：媒体与数据', group: 'plugins', intro: '挂图片等媒体、存档数据、插件数据、本局配置项。', content: developerDoc('plugin-api-data.md') },
+  { id: 'plugin-api-cards', title: '接口：人物卡、Skill 与演出', group: 'plugins', intro: '人物卡库、改卡、Skill、台词标注与角色素材。', content: developerDoc('plugin-api-cards.md') },
+  { id: 'plugin-api-ui', title: '接口：浏览器侧 tavernUi', group: 'plugins', intro: '显示媒体、正文标记、按钮、面板、舞台、配音与音乐。', content: developerDoc('plugin-api-ui.md') }
 ]

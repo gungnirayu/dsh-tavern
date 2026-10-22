@@ -181,3 +181,19 @@ test('回合结束后的追加、正文提交折叠与原生上下文修复都�
     assert.deepEqual(result.anchors.map(item => item.anchor.turn), [34, 35])
   }
 })
+
+test('同一会话的脱离副本（预演）开编辑回合时，不推进真 Agent 的回合号', async () => {
+  const { setAgentResolver } = await import('../tavern-plugin/lib/domain/agent-lookup.js')
+  const live = turnFixture({ closeTurn: true })
+  const preview = turnFixture({ closeTurn: true })
+  preview.id = live.id
+  const agent = { session: live, phase: { kind: 'idle', lastTurn: 1 } }
+  setAgentResolver(() => agent)
+  try {
+    replaceSessionSurface(preview, 'assistant/message', structuredClone(data), turnTarget)
+    assert.equal(preview.events.filter(event => event.type === 'turn/start').at(-1).data.turn, 2, '预演副本自己照常开编辑回合')
+    assert.equal(agent.phase.lastTurn, 1, '真会话没有第 2 轮，下一轮仍应是第 2 轮，不能跳号')
+    replaceSessionSurface(live, 'assistant/message', structuredClone(data), turnTarget)
+    assert.equal(agent.phase.lastTurn, 2, '真会话自己的编辑回合照常登记')
+  } finally { setAgentResolver(null) }
+})

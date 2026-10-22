@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
-import { generateHelper, generateHelperRaw, generateHelperCompletion, identifyHelperModelMessages } from '../tavern-plugin/lib/domain/helper-generation.js'
+import { generateHelper, generateHelperRaw, generateHelperCompletion } from '../tavern-plugin/lib/domain/helper-generation.js'
+import { createModelCalls } from '../tavern-plugin/lib/domain/model-calls.js'
 import { createHelperGenerationTasks } from '../tavern-plugin/lib/domain/helper-generation-tasks.js'
 
 test('installed DSH accepts helper assistant histories and propagates cancellation through actual model lookup and stream', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async t => {
@@ -33,11 +33,9 @@ test('installed DSH accepts helper assistant histories and propagates cancellati
     }
   }
   llm.registerAdapter(['helper-fixture'], new Model())
-  const plugin = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-  const source = plugin.slice(plugin.indexOf('  async function callModel(opts) {'), plugin.indexOf('  // ---------- 角色卡 ----------'))
   const selection = { provider: 'helper-fixture', model: 'fixture' }
-  const callModel = new Function('llm', 'modelSelection', 'backgroundModelSelection', 'backgroundConfigForSession', 'identifyHelperModelMessages', source + '; return callModel')(
-    llm, () => selection, () => selection, async () => ({}), identifyHelperModelMessages)
+  const { callModel } = createModelCalls({ llm, agentDefaultModel: { currentSelection: () => selection }, agents: () => new Map(), sessionProjections: () => undefined,
+    backgroundConfigForSession: async () => ({}) })
   const context = { sessionId: 'game', history: [{ role: 'assistant', text: 'Existing answer' }], callModel }
   assert.equal(await generateHelper({ user_input: 'Next' }, context), 'native answer')
   assert.equal(await generateHelperRaw({ ordered_prompts: ['chat_history'], user_input: 'Next' }, context), 'native answer')

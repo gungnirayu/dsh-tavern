@@ -354,6 +354,26 @@ test('style 观察器无法改写的远程地址不回写，避免自触发死�
   assert.deepEqual(writes, [], '值不变时写回 style 会再次触发观察器')
 })
 
+test('同一页面重复注入静态缓存脚本时只安装一次，避免两个观察器互相触发卡死', () => {
+  const script = client.buildTavernFrameDocument({ content: '<div></div>' }).match(/<script data-dsh-tavern-static-cache>([\s\S]*?)<\/script>/)[1]
+  const observers = []
+  const writes = []
+  class Element {
+    constructor(tag) { this.tagName = tag; this.nodeType = 1; this.attrs = {} }
+    setAttribute(k, v) { writes.push(k); this.attrs[k] = v }
+    getAttribute(k) { return this.attrs[k] }
+  }
+  const context = vm.createContext({ Element, document: { documentElement: {} }, MutationObserver: class { constructor(fn) { observers.push(fn) } observe() {} } })
+  context.window = context
+  vm.runInContext(script, context)
+  vm.runInContext(script, context)
+  assert.equal(observers.length, 1)
+  const image = new Element('IMG'); image.setAttribute('src', 'https://img.example/a.png')
+  writes.length = 0
+  observers[0]([{ target: image }])
+  assert.deepEqual(writes, [], '已代理的地址不应再次写回')
+})
+
 test('右侧持久页面记录被捕获的按钮异常和执行日志，但不采集 DOM', () => {
   const html = client.buildTavernFrameDocument({ content: '', token: 'diagnostics', persistent: true, helperContext: { messages: [] }, observeMvuView: false, runtimeReporting: true })
   const script = html.match(/<script data-dsh-tavern-frame>([\s\S]*?)<\/script>/)[1]

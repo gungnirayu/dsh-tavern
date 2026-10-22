@@ -35,6 +35,7 @@
     "client.js",
     "lib",
     "locale",
+    "assets",
     "icon.svg",
     "cordis.patch.yml",
     "README.md",

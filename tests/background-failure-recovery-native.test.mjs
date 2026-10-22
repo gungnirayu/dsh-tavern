@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRequire } from 'node:module'
-import { createSceneImageNativeRuntime } from './fixtures/scene-image-native-runtime.mjs'
+import { createBackgroundNativeRuntime } from './fixtures/background-native-runtime.mjs'
 import { installHostSessionPatch } from '../tavern-plugin/lib/domain/host-session-patch.js'
 import { installTavernTokenMeter } from '../tavern-plugin/lib/domain/tavern-token-meter.js'
 
@@ -10,7 +10,7 @@ for (const reloadBeforeRetry of [false, true]) test(`first model failure can rew
 }, async t => {
   let unavailable = true
   let host
-  const runtime = await createSceneImageNativeRuntime(process.env.DSH_BOOT_MODULE, {
+  const runtime = await createBackgroundNativeRuntime(process.env.DSH_BOOT_MODULE, {
     async setupHost(ctx) {
       host = ctx
       const patch = await installHostSessionPatch({ hostRequire: createRequire(process.env.DSH_BOOT_MODULE),

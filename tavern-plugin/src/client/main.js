@@ -12,6 +12,24 @@ window.__ModuleLoader__.load({
 		// @include stylesheet.js
 		if (typeof document !== "undefined") installTavernStylesheet(document, __TAVERN_BUNDLED_CSS__);
 
+		// `dsh-tavern-shell-active` gates every Tavern rule that touches host chrome.
+		// It used to be added only when the left sidebar mounted. On a phone that
+		// sidebar is a drawer, so the class never appeared: the header cell fell back
+		// to the host's `display: none` and the whole top bar vanished, while the
+		// host's own corner buttons stayed. Mark the document as soon as the Tavern
+		// client loads, independently of which panels are mounted.
+		function markTavernShellActive() {
+			if (typeof document === "undefined") return;
+			const mark = function () {
+				if (document.body && !document.body.classList.contains("dsh-tavern-shell-active")) {
+					document.body.classList.add("dsh-tavern-shell-active");
+				}
+			};
+			if (document.body) mark();
+			else document.addEventListener("DOMContentLoaded", mark, { once: true });
+		}
+		markTavernShellActive();
+
 
 		function isPlayMode(mode) {
 			return mode === "story" || mode === "script";
@@ -44,6 +62,7 @@ window.__ModuleLoader__.load({
 		const tavernInteractionDiagnostics = createInteractionDiagnostics(window);
 
 		// @include text-resource-file.js
+		// @include download.js
 
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
@@ -377,11 +396,7 @@ window.__ModuleLoader__.load({
 		// conversation menu too: the structure goes to the developer, the story text stays home.
 		async function downloadSessionDiagnostics(args, sessionId) {
 			const result = await rpc("exportSessionDiagnostics", args, sessionId);
-			const url = URL.createObjectURL(new Blob([result.text], { type: "application/json;charset=utf-8" }));
-			const link = document.createElement("a");
-			link.href = url; link.download = result.filename;
-			document.body.appendChild(link); link.click(); link.remove();
-			window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+			downloadTavernBlob(new Blob([result.text], { type: "application/json;charset=utf-8" }), result.filename);
 		}
 
 		function rpc(method, args, sessionId, requestOptions) {
@@ -400,7 +415,7 @@ window.__ModuleLoader__.load({
 			if (trace) payload._traceId = trace.id;
 			if (sessionId) payload.sessionId = sessionId;
 			const viewRead = method === "getSession" ? beginSessionViewRead(payload.sessionId) : null;
-			if (viewRead) { payload.viewSync = 1; payload.resourceSync = 1; payload.openingWindow = 1; if (historyFromSessions.has(payload.sessionId)) payload.historyFrom = historyFromSessions.get(payload.sessionId); payload.viewCursor = viewRead.cursor; if (viewRead.receiptSync) payload.receiptSync = 1; }
+			if (viewRead) { payload.viewSync = 1; payload.resourceSync = 1; payload.helperWorldbookSync = 1; payload.openingWindow = 1; if (historyFromSessions.has(payload.sessionId)) payload.historyFrom = historyFromSessions.get(payload.sessionId); payload.viewCursor = viewRead.cursor; if (viewRead.receiptSync) payload.receiptSync = 1; }
 			if (method === "getTavernHelperContext" && !payload.eventId && !payload.fullView) payload.openingWindow = 1;
 			const requestBody = JSON.stringify(payload);
 			if (trace) {
@@ -420,7 +435,6 @@ window.__ModuleLoader__.load({
 				else request.signal.addEventListener("abort", releaseViewRead, { once: true });
 			}
 			if (requestOptions && requestOptions.keepalive === true) request.keepalive = true;
-			if (method === "generateSceneImage") recordImageInteraction(payload.sessionId, payload.turn, payload.requestId, "sent");
 			const responsePromise = controlChannel
 				? Promise.resolve().then(() => controlChannel.control(method, JSON.parse(requestBody), requestOptions && requestOptions.signal))
 				: fetch("/api/dsh-tavern/" + method, request).then(async function (response) {
@@ -454,6 +468,7 @@ window.__ModuleLoader__.load({
 					throw error;
 				}
 				const accepted = viewRead ? viewRead.accept(result) : result;
+				if (viewRead) rememberHistoryWindow(payload.sessionId, accepted.view);
                 if (accepted.contextWindow) return {...accepted,context:expandTavernOpeningWindow(accepted.contextWindow).tavernHelper};
                 return accepted.view && accepted.view.historyWindow ? {...accepted,view:expandTavernOpeningWindow(accepted.view)} : accepted;
 			}).catch(function (error) {
@@ -461,7 +476,6 @@ window.__ModuleLoader__.load({
 				const newer = viewRead && viewRead.current();
 				if (newer) return newer.view && newer.view.historyWindow ? {...newer,view:expandTavernOpeningWindow(newer.view)} : newer;
                 if (trace) trace.failed = true;
-				if (method === "generateSceneImage") recordImageInteraction(payload.sessionId, payload.turn, payload.requestId, "failed", "rpc-error");
 				throw error;
 			}).finally(function () {
 				if (viewRead) viewRead.release();
@@ -476,10 +490,6 @@ window.__ModuleLoader__.load({
                 }
                 if (elapsed >= 1000) { pagePerformance.slowRpcCount++; pagePerformance.slowRpcMaxMs = Math.max(pagePerformance.slowRpcMaxMs, elapsed); }
 			});
-		}
-
-		function recordImageInteraction(sessionId, turn, requestId, stage, reason) {
-			void rpc("recordSceneImageInteraction", { turn: turn, requestId: requestId, stage: stage, reason: reason }, sessionId).catch(function () {});
 		}
 
 		function rpcWithTimeout(method, args, sessionId) {
@@ -679,8 +689,8 @@ window.__ModuleLoader__.load({
 		function describeTavernActivity(value) {
 			const activity = value && typeof value === "object" ? value : {};
 			const role = String(activity.role || "");
-			// The worldbook prefilter yields to any other task, so it never blocks the player.
-			const busy = activity.busy === true && role !== "worldbook-filter";
+			// Next-turn preparation (worldbook prefilter, style reference) yields to any other task, so it never blocks the player.
+			const busy = activity.busy === true && role !== "worldbook-filter" && role !== "style-reference";
 			let label = "生成候选项";
 			let blockReason = "";
 			if (busy && role === "candidate") { label = "生成中…"; blockReason = "正在生成候选项，请稍候…"; }
@@ -708,6 +718,32 @@ window.__ModuleLoader__.load({
         const TAVERN_HISTORY_PAGE = 120;
         const historyFromSessions = new Map();
         const historyLoads = new Map();
+        // The first window's start stays: later syncs keep every floor already on the page and
+        // only append new rounds. A window that slid forward with each reply dropped floors the
+        // page still showed, which then asked for older history again and again, down to the
+        // first floor, turning every later view into the complete history.
+        function rememberHistoryWindow(sessionId, view) {
+            const from = view && view.historyWindow && view.historyWindow.from;
+            if (sessionId && Number.isSafeInteger(from) && from > 0 && !historyFromSessions.has(sessionId)) historyFromSessions.set(sessionId, from);
+        }
+        // Older floors load because the player scrolls up to them, not because a layout change
+        // brought one into view on its own.
+        let lastScrollIntentAt = 0;
+        const scrollIntentWaiters = new Set();
+        const scrollKeys = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown"]);
+        // Hosts without a page (tests loading the bundle in a bare context) have no events.
+        if (typeof window !== "undefined" && typeof window.addEventListener === "function") for (const type of ["wheel", "touchmove", "keydown", "pointerdown"]) window.addEventListener(type, function (event) {
+            // Typing in the composer is not scrolling.
+            if (type === "keydown" && (!scrollKeys.has(event.key) || event.target && event.target.closest && event.target.closest("input, textarea, [contenteditable]:not([contenteditable=\"false\"])"))) return;
+            lastScrollIntentAt = Date.now();
+            for (const waiter of [...scrollIntentWaiters]) waiter();
+        }, { capture: true, passive: true });
+        function whenScrolledByPlayer(callback) {
+            if (Date.now() - lastScrollIntentAt < 3000) { callback(); return function () {}; }
+            const waiter = function () { scrollIntentWaiters.delete(waiter); callback(); };
+            scrollIntentWaiters.add(waiter);
+            return function () { scrollIntentWaiters.delete(waiter); };
+        }
         function requestOlderHistory(sessionId, windowFrom) {
             if(historyLoads.has(sessionId))return historyLoads.get(sessionId);
             const current=historyFromSessions.get(sessionId);
@@ -755,7 +791,7 @@ window.__ModuleLoader__.load({
 // @include runtime/helper-event-api.js
 // @include-domain tavern-regex-engine.js
 // @include-domain tavern-helper-regex-api.js
-// @include-domain response-refusal.js
+// @include-domain response-classification.js
 // @include-domain chat-import-batch.js
 // @include refusal-notice.js
 // @include runtime/frame-document.js
@@ -799,10 +835,13 @@ window.__ModuleLoader__.load({
 
 // @include features/card-list.js
 
+// @include-domain update-status-controller.js
 // @include features/sidebar.js
 
 // @include features/scene-images.js
 // @include features/settings.js
+
+// @include features/text-layout.js
 
 // @include features/user-profile.js
 
@@ -824,20 +863,29 @@ window.__ModuleLoader__.load({
 
 // @include features/worldbook-library.js
 
+// @include features/worldbook-switcher.js
+
 // @include features/card-plugins.js
 
 // @include features/card-library.js
 
 // @include features/turn-history.js
 
+// @include modules/conversation-settings.js
+// @include features/conversation-header.js
+// @include-domain play-interaction-flow.js
+// @include features/play-interaction-panels.js
 // @include features/play-controls.js
 
 // @include features/request-context.js
 
 
-		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "betterSidebar", "remote", "remote.commands", "tavernSessionSignals"];
+		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "betterSidebar", "remote", "remote.commands", "tavernSessionSignals", "theme"];
 
 		function apply(ctx) {
+			// The profile switch page (dsh-profile-bridge) names itself by side from this flag.
+			window.__dshTavernLoaded = true;
+			ctx.effect(function () { return tavernTextLayoutFeature.register(ctx); }, "dsh-tavern: text layout in appearance settings");
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
@@ -998,20 +1046,6 @@ window.__ModuleLoader__.load({
 				}, TavernSettingsSection); });
 			}, "dsh-tavern: settings section");
 			ctx.effect(function () {
-				let dispose = null, active = true;
-				// Releases without scene images get no page at all.
-				rpc("getTavernSettings").then(function (result) {
-					if (!active || !(result.releaseCapabilities && result.releaseCapabilities.sceneImages)) return;
-					dispose = slots.inject("settings.section", function () { return slots.register({
-						name: "settings.section",
-						id: "dsh-tavern-scene-images",
-						order: 111,
-						label: function () { return "场景生图"; }
-					}, function () { return React.createElement("div", { className: "dsh-tavern-settings-section dsh-tavern-global-settings" }, React.createElement(SceneImageSettings, null)); }); });
-				}, function () {});
-				return function () { active = false; if (typeof dispose === "function") dispose(); };
-			}, "dsh-tavern: scene image settings section");
-			ctx.effect(function () {
 				return slots.inject("settings.section", function () { return slots.register({
 					name: "settings.section",
 					id: "dsh-tavern-speech",
@@ -1019,6 +1053,14 @@ window.__ModuleLoader__.load({
 					label: function () { return "配音"; }
 				}, function () { return React.createElement("div", { className: "dsh-tavern-settings-section dsh-tavern-global-settings" }, React.createElement(TavernSpeechSettings, null)); }); });
 			}, "dsh-tavern: speech settings section");
+			ctx.effect(function () {
+				return slots.inject("settings.section", function () { return slots.register({
+					name: "settings.section",
+					id: "dsh-tavern-plugins",
+					order: 113,
+					label: function () { return "酒馆插件"; }
+				}, TavernPluginsSettingsSection); });
+			}, "dsh-tavern: plugins settings section");
 
 			presetLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 			resourcesLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
@@ -1027,6 +1069,14 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:skills", title: "Skill 库", order: 8, single: true, component: props => React.createElement(TavernSkillsTab, { sessionId: props.scope.sessionId }) }), "dsh-tavern: Skill library");
             ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:card-memory", title: "改卡记忆", order: 9, single: true, component: props => React.createElement(TavernCardMemoryTab, { sessionId: props.scope.sessionId }) }), "dsh-tavern: card memory");
 			worldBookLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
+			ctx.effect(function () {
+				return worldBookSwitcherFeature.register({
+					ctx: ctx,
+					openLibrary: function (source, sessionId) {
+						return openTavernSidebarTab(ctx, { type: "dsh-tavern:worldbooks", meta: source ? { worldBookSource: source } : null }, { sessionId: sessionId });
+					}
+				});
+			}, "dsh-tavern: worldbook switcher panel");
 			cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 			ctx.effect(function () {
 				reconcileLibraryTabTitles();
@@ -1061,6 +1111,7 @@ window.__ModuleLoader__.load({
 		exports.buildOpeningPreviewDocument = buildOpeningPreviewDocument;
 		exports.buildTavernFrameDocument = buildTavernFrameDocument;
 		exports.openingPreviewSelection = openingPreviewSelection;
+		exports.tavernReplyReveal = tavernReplyReveal;
 		exports.syncTavernSubagentCatalogs = syncTavernSubagentCatalogs;
 		exports.syncTavernCardAgentResources = syncTavernCardAgentResources;
 		exports.applyTavernVariableReceipt = applyTavernVariableReceipt;
@@ -1131,6 +1182,7 @@ window.__ModuleLoader__.load({
         exports.tavernProviderRefusalNotice = tavernProviderRefusalNotice;
         exports.tavernModelRefusalNotice = tavernModelRefusalNotice;
         exports.renderTavernProjection = renderTavernProjection;
+		exports.latestTavernUserTurn = latestTavernUserTurn;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;
@@ -1144,6 +1196,7 @@ window.__ModuleLoader__.load({
 		exports.createTavernAssistantRendererFeatureModule = createTavernAssistantRendererFeatureModule;
 		exports.createTavernShellFeatureModule = createTavernShellFeatureModule;
 		exports.createTavernRuntimeGenerationMonitor = createTavernRuntimeGenerationMonitor;
+		// @include modules/reply-reveal.js
 		// @include modules/assistant-visibility.js
 		installTavernAssistantVisibilityPatch(require);
 		// @include modules/host-session-patch.js

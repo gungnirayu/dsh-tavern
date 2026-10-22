@@ -6,7 +6,9 @@ import { surfaceReplacementRange } from './session-events.js'
 export const OWNED = 1
 const FOREIGN = 2
 const UNKNOWN = 4
-const messageTypes = new Set(['system/message', 'user/message', 'assistant/message', 'tool/result'])
+// The host's surface-eligible types. A developer note the host writes inside a turn
+// belongs to that turn; left unclassified it split a regeneration and blanked the round (#304).
+const messageTypes = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
 
 export class SurfaceRecoveryError extends Error {
   constructor(message, seq) {

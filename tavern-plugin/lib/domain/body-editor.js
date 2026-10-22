@@ -2,10 +2,13 @@ import { upgradeReferences } from './session-upgrade-references.js'
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { editableReplyParts } from './reply-presentation.js'
+import { replyProse } from './reply-prose.js'
 import { locateRegenerationSurface } from './rollback-surface.js'
 import { sessionEvents } from './session-events.js'
 import { isScopedMessages } from './scoped-messages.js'
 import { diffJson } from './json-mutation.js'
+import { locateUserEditFloor, locateUserInputFloor, userInputText } from './input-floor.js'
+import { inputEventForTurn, inputKind, isFailedTurnEnd } from './session-turn-input.js'
 
 function latest(chat) {
   const message = chat.messages?.at(-1)
@@ -22,7 +25,11 @@ function token(chat, message) {
 /** Reconcile a durable Chat edit to native Surface; retries never duplicate history. */
 export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
   const references = upgradeReferences(sessionEvents(session))
-  const recorded = new Set(sessionEvents(session).filter(event => event.type === 'assistant/message').map(event => event.data?.message?.id))
+  const recorded = new Set()
+  for (const event of sessionEvents(session)) {
+    if (event.type === 'assistant/message' && event.data?.message?.id) recorded.add(event.data.message.id)
+    else if (event.type === 'user/message' && event.data?.id) recorded.add(event.data.id)
+  }
   const cleared = []
   let sessionDirty = false
   for (const message of chat.messages || []) {
@@ -30,12 +37,16 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
     const { id, turn } = message.bodyEdit
     const seq = references.sequence(message.bodyEdit.seq, message.bodyEdit.formatVersion)
     if (recorded.has(id)) continue
+    const user = message.bodyEdit.role === 'user' || message.role === 'user'
     let targetSeq = session.surface?.nodes.includes(seq) ? seq : null
     // Migration renumbers seqs and may fold the body-edit injection onto its
     // target; Chat markers still hold the pre-migration seq. Recover by turn.
     if (targetSeq == null && turn != null) {
-      const located = locateRegenerationSurface({ events: sessionEvents(session), nodes: session.surface?.nodes, turn })
-      targetSeq = located?.assistantSeq ?? null
+      if (user) targetSeq = locateUserInputFloor(session, turn)?.seq ?? null
+      else {
+        const located = locateRegenerationSurface({ events: sessionEvents(session), nodes: session.surface?.nodes, turn })
+        targetSeq = located?.assistantSeq ?? null
+      }
     }
     if (targetSeq == null) {
       // Issue #72: orphaned marker after migration wiped the injection. Chat
@@ -44,11 +55,20 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
       delete message.bodyEdit
       continue
     }
-    if (targetSeq !== seq) message.bodyEdit = { id, seq: targetSeq, turn, formatVersion: 4 }
-    replaceSessionSurface(session, 'assistant/message', {
-      turn, step: 1,
-      message: { id, role: 'assistant', content: [{ type: 'text', text: message.text }], source: { kind: 'model', provider: 'dsh-tavern', model: 'body-edit' } }
-    }, { start: targetSeq, end: targetSeq, sourceEventSeqs: [targetSeq] })
+    if (targetSeq !== seq) message.bodyEdit = user ? { id, seq: targetSeq, turn, role: 'user' } : { id, seq: targetSeq, turn, formatVersion: 4 }
+    if (user) {
+      replaceSessionSurface(session, 'user/message', {
+        id, role: 'user', content: [{ type: 'text', text: String(message.text ?? '') }], source: { kind: 'user' }
+      }, { start: targetSeq, end: targetSeq, sourceEventSeqs: [targetSeq] })
+    } else {
+      // `turn` is the native turn that draws the reply; after a regeneration it differs from the
+      // story round, which the replacement names like a projection does (story alignment).
+      const story = Number(message.turn)
+      replaceSessionSurface(session, 'assistant/message', {
+        turn, step: 1,
+        message: { id, role: 'assistant', content: [{ type: 'text', text: message.text }], source: { kind: 'model', provider: 'dsh-tavern', model: 'body-edit', ...(Number.isSafeInteger(story) && story > 0 ? { tavernStoryTurn: story } : {}) } }
+      }, { start: targetSeq, end: targetSeq, sourceEventSeqs: [targetSeq] })
+    }
     recorded.add(id)
     sessionDirty = true
   }
@@ -60,7 +80,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
 }
 
 /** Edit prose only; do not replay macros, scripts or settlement. */
-export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative }) {
+export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative, cancelPreparation }) {
   const pending = new Set()
   function refuseClosedPatch() {
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
@@ -74,6 +94,13 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (!chat) throw new Error('会话不存在')
     const agent = sessions.get(sessionId)
     if (!agent?.session) throw new Error('无法访问原生会话')
+    // What the next turn prepares (worldbook pool, style reference) comes from the reply
+    // being edited: stop it instead of refusing the edit.
+    if (cancelPreparation && activity(chat)?.busy) {
+      await cancelPreparation(chat.id)
+      chat = await chats.forSession(sessionId)
+      if (!chat) throw new Error('会话不存在')
+    }
     idle(chat, agent)
     await synchronizeBodyEdits(agent.session, chat, sessions.flush, async (dirty, cleared) => {
       const drop = new Set(cleared)
@@ -146,8 +173,7 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       if (text === source(message)) return present(chat)
       const reply = await project(text, chat)
       const patch = {
-        sourceText: text, projectionText: text, text: reply.sessionText,
-        displayText: reply.displayText, displayMode: reply.displayMode,
+        ...replyProse(text, { ...reply, projectionText: text }),
         ...(target ? { bodyEdit: { formatVersion: 4, id: 'tavern-body-edit:' + randomUUID(), seq: target.assistantSeq, turn: target.turn } } : {})
       }
       if (Array.isArray(message.swipes)) {
@@ -176,6 +202,146 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       return present(saved)
     } finally { pending.delete(sessionId) }
   }
+  // A player input is a floor too: the model surface gets a replacement
+  // user/message, while the Chat keeps the new text so the page can render it.
+  // Only that one message changes; no round is replayed and no settlement runs.
+  function userMessageForTurn(chat, turn) {
+    const messages = chat.messages || []
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (!message || message.role !== 'user' || message.greeting === true) continue
+      const reply = messages[index + 1]
+      const native = Number(reply?.native?.turn) || Number(reply?.nativeAnchor?.turn) || Number(reply?.turn) || 0
+      if (native === turn || (message.bodyEdit && Number(message.bodyEdit.turn) === turn)) return { message, index }
+    }
+    return null
+  }
+  function userRecord(chat, turn) {
+    const all = chat.userInputEdits
+    const record = all && typeof all === 'object' && !Array.isArray(all) ? all[String(turn)] : undefined
+    return record && typeof record === 'object' && typeof record.text === 'string' ? record : null
+  }
+  function userFallbackTurn(chat) {
+    const messages = chat.messages || []
+    const index = messages.findLastIndex(message => message && message.role === 'user' && message.greeting !== true)
+    if (index < 0) return 0
+    const reply = messages[index + 1]
+    return Number(reply?.native?.turn) || Number(reply?.nativeAnchor?.turn) || Number(reply?.turn) || 0
+  }
+  async function userContext(sessionId, input) {
+    refuseClosedPatch()
+    let chat = await chats.forSession(sessionId)
+    if (!chat) throw new Error('会话不存在')
+    const agent = sessions.get(sessionId)
+    if (!agent?.session) throw new Error('无法访问原生会话')
+    idle(chat, agent)
+    await synchronizeBodyEdits(agent.session, chat, sessions.flush, async (dirty, cleared) => {
+      const drop = new Set(cleared)
+      await chats.update(dirty.id, current => {
+        let changed = false
+        for (const message of current.messages || []) {
+          if (message.bodyEdit && drop.has(message.bodyEdit.id)) {
+            delete message.bodyEdit
+            changed = true
+          }
+        }
+        return changed ? current : undefined
+      }, { source: 'body-edit.stale-clear' })
+    })
+    chat = await chats.forSession(sessionId)
+    if (!chat) throw new Error('会话不存在')
+    idle(chat, agent)
+    const requested = Number(input?.turn) || 0
+    const turn = requested > 0 ? requested : userFallbackTurn(chat)
+    if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('找不到这条输入对应的回合')
+    const events = sessionEvents(agent.session)
+    const end = events.findLast(event => event.type === 'turn/end' && Number(event.data?.turn) === turn)
+    const failed = Boolean(end && isFailedTurnEnd(end.data?.reason?.kind))
+    const found = userMessageForTurn(chat, turn)
+    const record = userRecord(chat, turn)
+    const markerSeq = Number(record?.seq) || Number(found?.message?.bodyEdit?.seq) || 0
+    let located = markerSeq > 0 ? locateUserEditFloor(agent.session, markerSeq) : null
+    if (!located) located = locateUserInputFloor(agent.session, turn)
+    if (!located && failed) {
+      // A failed turn may already have been cleaned from the model surface (an
+      // old save or a previous retry). Its input is still in the log; use that
+      // exact text, but save the edit as an overlay instead of touching Surface.
+      const seq = Number(input?.seq) || 0
+      const original = (seq > 0 ? events.find(event => Number(event.seq) === seq && event.type === 'user/message' && inputKind(event.data) === 'player') : null)
+        || inputEventForTurn(agent.session, turn)
+      if (original && inputKind(original.data) === 'player') located = { seq: Number(original.seq), event: original, turn }
+    }
+    // Never fall back to "the newest input": that edits another message.
+    if (!located) throw new Error('这条输入已不在当前上下文中，无法编辑')
+    const text = record ? record.text : found ? String(found.message.text ?? '') : userInputText(located.event)
+    return { chat, agent, message: found?.message || null, index: found?.index ?? -1, turn, located, text, record, failed }
+  }
+  function userToken(chat, context) {
+    return createHash('sha256').update(JSON.stringify([chat.id, chat.timeline?.branchId, chat._storageRevision, context.turn, context.text,
+      context.record?.id || '', context.message?.bodyEdit?.id || '', context.failed === true ? 'failed' : ''])).digest('hex')
+  }
+  async function readUser(sessionId, input) {
+    const context = await userContext(sessionId, input)
+    return { token: userToken(context.chat, context), role: 'user', index: context.index, turn: context.turn, seq: context.located.seq,
+      failed: context.failed === true, parts: [{ kind: 'text', text: context.text }] }
+  }
+  async function saveUser(sessionId, input) {
+    if (pending.has(sessionId)) throw new Error('正在保存正文，请稍候')
+    pending.add(sessionId)
+    try {
+      const context = await userContext(sessionId, input)
+      if (input?.token !== userToken(context.chat, context)) throw new Error('输入或会话已变化，请重新打开编辑')
+      const texts = input.texts
+      if (!Array.isArray(texts) || texts.length !== 1 || typeof texts[0] !== 'string') throw new Error('编辑文本格式无效')
+      const text = texts[0]
+      if (text.trim() === '') throw new Error('输入不能为空')
+      // A failed turn is edited as a Chat overlay: the input may already be gone
+      // from the model surface, and the next retry/withdraw will read this text.
+      // Nothing on the Session is changed here.
+      if (context.failed) {
+        if (text === context.text) return present(context.chat)
+        const editId = 'tavern-user-edit:' + randomUUID()
+        const saved = await chats.update(context.chat.id, current => {
+          idle(current, context.agent)
+          current.userInputEdits = { ...(current.userInputEdits && typeof current.userInputEdits === 'object' && !Array.isArray(current.userInputEdits) ? current.userInputEdits : {}),
+            [String(context.turn)]: { text, id: editId, seq: context.located.seq } }
+          return current
+        }, { source: 'foreground.user-edit' })
+        return present(saved)
+      }
+      if (text === context.text) return present(context.chat)
+      const { chat, agent, turn, located } = context
+      const editId = 'tavern-user-edit:' + randomUUID()
+      const source = located.event.data?.source && typeof located.event.data.source === 'object'
+        ? { ...located.event.data.source, kind: 'user' }
+        : { kind: 'user' }
+      const data = { id: editId, role: 'user', content: [{ type: 'text', text }], source }
+      // A rejected host event must not publish a Chat text that future requests
+      // keep trying to synchronize. Validate on an isolated copy first.
+      const preview = agent.session.constructor.fromRestore(agent.session.id, structuredClone(sessionEvents(agent.session)), structuredClone(agent.session.header), agent.session.inheritedEventCount, 'detached')
+      replaceSessionSurface(preview, 'user/message', data, { start: located.seq, end: located.seq, sourceEventSeqs: [located.seq] })
+      const saved = await chats.update(chat.id, current => {
+        idle(current, agent)
+        const existing = userMessageForTurn(current, turn)
+        const currentRecord = userRecord(current, turn)
+        const before = currentRecord ? currentRecord.text : existing ? String(existing.message.text ?? '') : userInputText(located.event)
+        if (before !== context.text) throw new Error('输入或会话已变化，请重新打开编辑')
+        if (!agent.session.surface?.nodes.includes(located.seq)) throw new Error('模型上下文已变化，请重新打开编辑')
+        const edits = current.userInputEdits && typeof current.userInputEdits === 'object' && !Array.isArray(current.userInputEdits)
+          ? { ...current.userInputEdits } : {}
+        edits[String(turn)] = { text, id: editId, seq: located.seq, role: 'user' }
+        current.userInputEdits = edits
+        if (existing) {
+          existing.message.text = text
+          existing.message.bodyEdit = { id: editId, seq: located.seq, turn, role: 'user' }
+        }
+        return current
+      }, { source: 'foreground.user-edit' })
+      replaceSessionSurface(agent.session, 'user/message', data, { start: located.seq, end: located.seq, sourceEventSeqs: [located.seq] })
+      await sessions.flush(agent.session)
+      return present(saved)
+    } finally { pending.delete(sessionId) }
+  }
   // A whole new text (plugins): its HTML and markers must equal the current ones, in order;
   // only the prose between them changes, through the same checks as a player's edit.
   async function replaceText(sessionId, text) {
@@ -199,5 +365,5 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (gaps.some(rest => rest.trim())) throw new Error('只能修改原有的文字段落，不能在 HTML 块之间新增段落')
     return await save(sessionId, { token: token(chat, message), texts })
   }
-  return Object.freeze({ read, save, replaceText })
+  return Object.freeze({ read, save, readUser, saveUser, replaceText })
 }

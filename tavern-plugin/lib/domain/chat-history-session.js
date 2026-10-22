@@ -2,6 +2,7 @@ import { ensureSessionSystemHead, sessionEvents, appendSessionEvent, sessionEven
 import { createForegroundFrameBuilder } from './agent-input-frame.js'
 import { createForegroundFrameSessionAdapter } from './foreground-frame-session-adapter.js'
 import { foregroundFrameInputs } from './turn-orchestration.js'
+import { plainReplyProse } from './reply-prose.js'
 
 const clone = value => structuredClone(value)
 
@@ -37,8 +38,7 @@ export async function buildImportedConversation(chat, parsed, { operationId, fil
   for (const [index, row] of nativeMessages(parsed.messages).entries()) {
     const messageId = `tavern-import:${operationId}:${row.sourceLine}`
     const variables = textOnly ? initialVariables : row.variables || initialVariables
-    const message = { role: row.role, text: row.text, sourceText: row.text, projectionText: row.text,
-      sessionText: row.text, displayText: row.text, displayMode: 'markdown', ts: Date.parse(row.timestamp) || now,
+    const message = { role: row.role, ...plainReplyProse(row.text), ts: Date.parse(row.timestamp) || now,
       native: true, name: row.name, swipeId: 0, swipes: [row.text],
       ...(variables === undefined ? {} : { variables: [clone(variables)] }),
       importSource: { operationId, line: row.sourceLine, lines: row.sourceLines, swipe: row.sourceSwipe, stateSourceLine: textOnly ? null : row.stateSourceLine, stateInherited: textOnly || row.stateInherited } }

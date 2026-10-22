@@ -1,11 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import vm from 'node:vm'
-import { readFile, mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal-store.js'
-import { sanitizeMvuLoadDiagnostic, sanitizeModuleFailure, redactMvuLoadError } from '../tavern-plugin/lib/domain/mvu-diagnostics.js'
+import { createMaintenanceHandlers } from '../tavern-plugin/lib/rpc/maintenance.js'
 
 for (const method of ['recordMvuRuntimeDiagnostic', 'recordTavernCompatibilityCalls']) {
   test(`${method} does not clone historical variable snapshots`, async t => {
@@ -15,9 +14,6 @@ for (const method of ['recordMvuRuntimeDiagnostic', 'recordTavernCompatibilityCa
     await store.update('chat', () => ({ id: 'chat', sessionId: 'canonical', _storageRevision: 1,
       messages: Array.from({ length: 458 }, (_, turn) => ({ role: 'assistant', turn,
         variables: [{ stat_data: { entries: Array.from({ length: 100 }, () => ({ value: 'saved variable' })) } }] })) }))
-    const source = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-    const start = source.indexOf(`case '${method}':`)
-    const end = source.indexOf('\n      case ', start + 1)
     const rows = []
     let fullCopies = 0
     const clone = globalThis.structuredClone
@@ -25,13 +21,14 @@ for (const method of ['recordMvuRuntimeDiagnostic', 'recordTavernCompatibilityCa
       if (value?.messages?.some(message => message.variables)) fullCopies++
       return clone(value)
     })
-    const context = { str: String, sanitizeMvuLoadDiagnostic, sanitizeModuleFailure, redactMvuLoadError,
+    const context = { str: String,
       chatHeaderForSession: id => id === 'missing' ? undefined : store.readSessionState('chat'),
       chatForSession: id => id === 'missing' ? undefined : store.read('chat'),
       sessionStateForSession: id => id === 'missing' ? undefined : store.readSessionState('chat'),
       mvuDiagnostics: { record: async (...args) => rows.push(args) },
       compatibilityDiagnostics: { record: async (...args) => rows.push(args) } }
-    const invoke = vm.runInNewContext(`(async function(args){switch('${method}'){${source.slice(start, end)}}})`, context)
+    const handlers = createMaintenanceHandlers(context)
+    const invoke = args => handlers[method](args)
     for (let i = 0; i < 6; i++) {
       assert.equal((await invoke({ sessionId: 'alias', runtimeId: 'runtime', calls: [],
         diagnostic: { kind: 'mvu-load', phase: 'initialization-waiting' } })).recorded, true)

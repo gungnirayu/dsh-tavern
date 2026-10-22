@@ -1,19 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { createResourceHandlers } from '../tavern-plugin/lib/rpc/resources.js'
 
-// Exercise the production RPC branch with isolated persistence and resource dependencies.
-const source = readFileSync(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-const body = source.split("case 'applyConversationPreset': {")[1].split("case 'getPreset':")[0]
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
-const run = new AsyncFunction('args', 'str', 'chatForSession', 'groupOfMode', 'sessionActivity', 'agentRegistry', 'runtimePresets', 'updateChat', 'view', '{' + body)
+// Exercise the production RPC handler with isolated persistence and resource dependencies.
 function harness({ busy = false, stale = false, touched = false } = {}) {
   let chat = { id: 'game', mode: 'story', _storageRevision: 1, messages: Array.from({ length: 200 }, (_, turn) => ({ turn })), variables: { hp: 7 }, runtimePresetSnapshot: { presetPath: 'old' } }
   let reads = 0
   const snapshot = { presetPath: 'new', front: { text: 'front' }, middle: { text: 'middle' }, back: { text: 'back' }, regexScripts: [{ findRegex: 'a', replaceString: 'b' }] }
   return {
     chat: () => chat, reads: () => reads, snapshot,
-    apply: path => run({ sessionId: 'session', path }, String, async () => structuredClone(chat), () => 'play', async () => ({ busy }), new Map(), { fullSnapshot: async () => { reads++; return structuredClone(snapshot) } }, async (_id, update) => { const draft = structuredClone(chat); if (stale) { draft._storageRevision++; draft.messages.push({ turn: 200 }) } if (touched) draft._storageRevision++; chat = update(draft); return chat }, async saved => saved)
+    apply: path => createResourceHandlers({
+      str: String, chatForSession: async () => structuredClone(chat), groupOfMode: () => 'play',
+      sessionActivity: async () => ({ busy }), agentRegistry: new Map(),
+      runtimePresets: { fullSnapshot: async () => { reads++; return structuredClone(snapshot) } },
+      updateChat: async (_id, update) => { const draft = structuredClone(chat); if (stale) { draft._storageRevision++; draft.messages.push({ turn: 200 }) } if (touched) draft._storageRevision++; chat = update(draft); return chat }
+    }).applyConversationPreset({ sessionId: 'session', path })
   }
 }
 

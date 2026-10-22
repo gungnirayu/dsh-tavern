@@ -8,17 +8,20 @@ const STATE_PATH = 'save-maintenance.json'
  * old revisions nothing can reach any more, pre-migration journal files once
  * no kept revision predates the migration, and debugging logs (model request
  * bodies, worldbook recall audits) outside their recent windows. History for
- * forking from an earlier turn is kept for the latest `keepTurns` turns. A rule, not
- * a timer: after a settlement, a game whose save grew by `everyRevisions`
- * revisions since its last pass is tidied right away if it is idle.
+ * forking from an earlier turn is kept for the latest `keepTurns` turns. After a
+ * settlement, a game whose save grew by `everyRevisions` revisions since its last pass
+ * is tidied once it has been quiet for `quietMs`: a pass holds the save's write lock
+ * (seconds on a long save), so it never runs between two turns of play.
  */
 export function createSaveMaintenance({
   chats, listChatIds, requestLog, recallLog, isIdle, store,
-  keepRecent = 8, keepTurns = FORK_HISTORY_TURNS, everyRevisions = 50, graceMs, logger = console
+  keepRecent = 8, keepTurns = FORK_HISTORY_TURNS, everyRevisions = 50, graceMs, logger = console,
+  quietMs = 600000, setTimer = (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref?.(); return timer }, clearTimer = clearTimeout
 }) {
   let state = null
   let disposed = false
   let tail = Promise.resolve()
+  const quiet = new Map() // chatId -> the pass waiting for the game to go quiet
 
   async function load() {
     if (state) return state
@@ -104,23 +107,29 @@ export function createSaveMaintenance({
   return Object.freeze({
     maintainChat: chatId => serial(async () => { await load(); if (!state.scanned) await scanForks(); return maintainChat(chatId) }),
     sweep: () => serial(sweep),
-    // The rule: called after each settlement with the save's revision.
+    // The rule: called after each settlement with the save's revision. Each settlement
+    // restarts the quiet period; the pass runs when none followed for `quietMs`.
     noteWrite(chatId, revision) {
       if (disposed || !chatId || !Number.isSafeInteger(revision)) return
-      void serial(async () => {
-        await load()
-        if (revision - (Number(state.compacted[chatId]) || 0) < everyRevisions) return
-        if (!state.scanned) await scanForks()
-        const result = await maintainChat(chatId)
-        const freed = (result.compaction?.bytes || 0) + (result.legacy?.bytes || 0)
-        if (freed > 0) logger.log('dsh-tavern: 存档整理', chatId, '释放约', Math.round(freed / 1048576), 'MB')
-      }).catch(error => logger.warn('dsh-tavern: 存档整理失败', chatId, String(error?.message || error)))
+      clearTimer(quiet.get(chatId))
+      quiet.set(chatId, setTimer(() => {
+        quiet.delete(chatId)
+        void serial(async () => {
+          if (disposed) return
+          await load()
+          if (revision - (Number(state.compacted[chatId]) || 0) < everyRevisions) return
+          if (!state.scanned) await scanForks()
+          const result = await maintainChat(chatId)
+          const freed = (result.compaction?.bytes || 0) + (result.legacy?.bytes || 0)
+          if (freed > 0) logger.log('dsh-tavern: 存档整理', chatId, '释放约', Math.round(freed / 1048576), 'MB')
+        }).catch(error => logger.warn('dsh-tavern: 存档整理失败', chatId, String(error?.message || error)))
+      }, quietMs))
     },
     async recordFork(chat) {
       const entry = forkEntry(chat)
       if (!entry || !chat?.id) return
       await serial(async () => { await load(); state.forks[chat.id] = entry; await save() })
     },
-    dispose() { disposed = true }
+    dispose() { disposed = true; for (const timer of quiet.values()) clearTimer(timer); quiet.clear() }
   })
 }

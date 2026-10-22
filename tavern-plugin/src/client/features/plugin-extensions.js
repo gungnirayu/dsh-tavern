@@ -14,6 +14,7 @@
 			const stageViews = [];
 			const statusSections = [];
 			const turnViews = [];
+			const illustrators = [];
 			const listeners = new Set();
 			// Tavern's own context, for the sidebar a plugin panel opens in (set at apply).
 			let host = null;
@@ -50,7 +51,7 @@
 			}
 			const service = {
 				ctx: undefined,
-				apiVersion: 3,
+				apiVersion: 5,
 				registerMediaRenderer(kind, render) {
 					if (typeof kind !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/.test(kind)) throw new TypeError("只能为插件自定义的 <插件名>/<类型> 注册显示方式");
 					if (typeof render !== "function") throw new TypeError("registerMediaRenderer 需要 render 函数");
@@ -79,6 +80,47 @@
 				callHost(name, args) {
 					if (typeof name !== "string" || !name) return Promise.reject(new TypeError("callHost 需要处理函数的名字"));
 					return rpc("callPluginHandler", { name: name, args: args === undefined ? {} : args }).then(function (reply) { return reply ? reply.result : null; });
+				},
+				// An image plugin drives Tavern's own illustration UI (apiVersion 5): the 配图 button on each
+				// turn and the card around its pictures. Tavern shows a button only for a handler given.
+				registerIllustrator(input) {
+					if (!input || !Array.isArray(input.kinds) || !input.kinds.length || input.kinds.some(function (kind) { return typeof kind !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/.test(kind); })) throw new TypeError("registerIllustrator 需要 kinds：插件自己的 <插件名>/<类型> 列表");
+					const handlers = {};
+					["draw", "redraw", "revise", "editPrompt", "add", "cancel", "action"].forEach(function (name) {
+						if (input[name] === undefined) return;
+						if (typeof input[name] !== "function") throw new TypeError("registerIllustrator 的 " + name + " 必须是函数");
+						handlers[name] = input[name];
+					});
+					const entry = Object.assign({ owner: ownerOf(this), kinds: input.kinds.slice() }, handlers);
+					return owned(this, function () { return addTo(illustrators, entry); }, "tavernUi.registerIllustrator()");
+				},
+				// Pictures Tavern's own scene images drew, every game, newest first; read-only (apiVersion 4).
+				listIllustrations() {
+					return rpc("listSceneImageHistory", {}).then(function (reply) {
+						return ((reply && reply.items) || []).flatMap(function (item) {
+							return item.versions.map(function (version) {
+								return { gameId: item.sessionId || "", gameTitle: item.title || item.cardName || "", cardName: item.cardName || "", turn: item.turn, gameDeleted: item.deleted === true,
+									description: version.description, createdAt: version.createdAt,
+									url: "/api/dsh-tavern/scene-image-stored?" + new URLSearchParams({ chatId: item.chatId, key: item.key, versionId: version.id }).toString() };
+							});
+						}).sort(function (a, b) { return b.createdAt - a.createdAt; });
+					});
+				},
+				// Names of the given games, { [gameId]: { title, cardName } }; deleted games are left out (apiVersion 4).
+				getGames(gameIds) {
+					return rpc("gameTitles", { gameIds: Array.isArray(gameIds) ? gameIds : [] }).then(function (reply) { return (reply && reply.games) || {}; });
+				},
+				// The plugin's own data, not tied to a game; the same copy its host side reads (tavern.readPluginData).
+				readPluginData() {
+					let owner;
+					try { owner = ownerOf(this); } catch (error) { return Promise.reject(error); }
+					return rpc("pluginData", { plugin: owner, op: "read" }).then(function (reply) { return reply ? reply.data : null; });
+				},
+				savePluginData(data) {
+					let owner;
+					try { owner = ownerOf(this); } catch (error) { return Promise.reject(error); }
+					if (data === undefined) return Promise.reject(new TypeError("savePluginData 需要 data；要清除请传 null"));
+					return rpc("pluginData", { plugin: owner, op: "save", data: data }).then(function () {});
 				},
 				// A sidebar page of the plugin's own, for the game open beside it (apiVersion 2).
 				registerPanel(input) {
@@ -367,6 +409,8 @@
 				stageViews: function () { return stageViews.slice(); },
 				statusSections: function () { return statusSections.slice(); },
 				turnViews: function () { return turnViews.slice(); },
+				// The latest registered illustrator handling `kind`; without a kind, the latest one that can draw.
+				illustrator: function (kind) { for (let index = illustrators.length - 1; index >= 0; index -= 1) if (kind === undefined ? illustrators[index].draw : illustrators[index].kinds.indexOf(kind) >= 0) return illustrators[index]; return null; },
 				startGroups: function () { return startGroups.map(function (group) { return { title: group.title, tabs: group.tabs.slice() }; }); }
 			};
 		}
@@ -516,8 +560,140 @@
 			return state;
 		}
 
-		function tavernPluginMediaUrl(sessionId, item) {
-			return "/api/dsh-tavern/plugin-media?" + new URLSearchParams({ sessionId: sessionId, id: item.id, v: String(item.updatedAt || "") }).toString();
+		function tavernPluginMediaUrl(sessionId, item, version) {
+			const query = { sessionId: sessionId, id: item.id, v: String(item.updatedAt || "") };
+			if (version !== undefined) query.version = String(version);
+			return "/api/dsh-tavern/plugin-media?" + new URLSearchParams(query).toString();
+		}
+
+		// What the 配图 button is doing for a turn, shown in that turn's text: a placeholder while the
+		// illustrator plans the pictures, then a short note when it skipped or failed.
+		const tavernIllustrationDrafts = (function () {
+			const states = new Map(), listeners = new Set();
+			function emit() { Array.from(listeners).forEach(function (listener) { listener(); }); }
+			return {
+				get: function (sessionId, turn) { return states.get(sessionId + ":" + turn) || null; },
+				set: function (sessionId, turn, value) { const key = sessionId + ":" + turn; if (value) states.set(key, value); else states.delete(key); emit(); },
+				subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; }
+			};
+		})();
+		const TAVERN_ILLUSTRATION_NOTICE_MS = 8000;
+		async function runTavernIllustrator(illustrator, sessionId, turn) {
+			const planning = { planning: true };
+			tavernIllustrationDrafts.set(sessionId, turn, planning);
+			let draft = null;
+			try {
+				const result = await illustrator.draw({ gameId: sessionId, turn: turn });
+				const notice = result && typeof result.notice === "string" ? result.notice.trim() : "";
+				if (notice) draft = { text: notice.slice(0, 200) };
+			} catch (error) { draft = { text: String(error && error.message || error).slice(0, 200), failed: true }; }
+			if (tavernIllustrationDrafts.get(sessionId, turn) !== planning) return;
+			tavernIllustrationDrafts.set(sessionId, turn, draft);
+			if (draft) setTimeout(function () { if (tavernIllustrationDrafts.get(sessionId, turn) === draft) tavernIllustrationDrafts.set(sessionId, turn, null); }, TAVERN_ILLUSTRATION_NOTICE_MS);
+		}
+		// `items` are the turn's plugin media: once the illustrator attaches a new one, planning is
+		// over and that item's own card shows the drawing, so the placeholder goes.
+		function TavernIllustrationDraft(props) {
+			const subscribe = React.useCallback(function (listener) { return tavernIllustrationDrafts.subscribe(listener); }, []);
+			const draft = React.useSyncExternalStore(subscribe, function () { return tavernIllustrationDrafts.get(props.sessionId, props.turn); });
+			const known = React.useRef({ draft: null, ids: null });
+			const ids = (props.items || []).map(function (item) { return item.id; });
+			if (known.current.draft !== draft) known.current = { draft: draft, ids: new Set(ids) };
+			if (!draft) return null;
+			if (draft.planning && ids.some(function (id) { return !known.current.ids.has(id); })) return null;
+			return React.createElement("figure", { className: "dsh-tavern-plugin-media dsh-tavern-illustration" },
+				React.createElement("div", { className: draft.failed ? "dsh-tavern-plugin-media-failed" : "dsh-tavern-plugin-media-pending", role: draft.failed ? "alert" : "status" }, draft.planning ? "正在整理画面…" : draft.text));
+		}
+
+		// Tavern's illustration card around a picture an illustrator plugin drew: earlier versions,
+		// redraw / edit prompt / add, delete, progress and the plugin's own extra buttons.
+		function TavernIllustrationCard(props) {
+			const h = React.createElement;
+			const item = props.item, illustrator = props.illustrator;
+			const askConfirm = useTavernConfirm(props.sessionId);
+			const history = item.history || [];
+			const count = history.length + (item.attachment ? 1 : 0);
+			const [selected, setSelected] = React.useState(count - 1);
+			const [busy, setBusy] = React.useState(false);
+			const [error, setError] = React.useState("");
+			const [panel, setPanel] = React.useState(null);
+			const [draft, setDraft] = React.useState("");
+			React.useEffect(function () { setSelected(count - 1); setError(""); }, [item.updatedAt, count]);
+			const index = Math.min(Math.max(selected, 0), count - 1);
+			const current = index === history.length;
+			const url = count ? tavernPluginMediaUrl(props.sessionId, item, current ? undefined : index) : "";
+			const working = item.status === "pending" || Boolean(item.activity);
+			const context = { gameId: props.sessionId, turn: props.turn, textVersion: item.textVersion, item: item };
+			async function run(name, extra) {
+				if (busy || !illustrator[name]) return;
+				setBusy(true); setError("");
+				try { await illustrator[name](Object.assign({}, context, extra || {})); setPanel(null); setDraft(""); }
+				catch (e) { setError(String(e && e.message || e)); }
+				finally { setBusy(false); }
+			}
+			async function removeVersion() {
+				if (busy || !await askConfirm(count > 1 ? "删除这一张？其他版本保留。" : "删除这张插图？")) return;
+				setBusy(true); setError("");
+				try { await rpc("removePluginMediaVersion", { sessionId: props.sessionId, itemId: item.id, version: current ? null : index }, props.sessionId); }
+				catch (e) { setError(String(e && e.message || e)); }
+				finally { setBusy(false); }
+			}
+			function open(kind) { setPanel(kind); setDraft(kind === "prompt" ? String((current ? item.prompt : history[index] && history[index].prompt) || item.prompt || "") : ""); }
+			const progress = item.activity ? item.activity.progress : item.progress;
+			const workingLabel = (item.activity ? item.activity.label : "生成中") + (typeof progress === "number" && progress > 0 && progress < 1 ? " " + Math.round(progress * 100) + "%" : "…");
+			const canCancel = illustrator.cancel && (item.status === "pending" || item.activity && item.activity.cancellable);
+			return h("figure", { className: "dsh-tavern-plugin-media dsh-tavern-illustration", "data-kind": item.kind, "data-owner": item.owner },
+				url ? h("a", { href: url, "aria-label": "放大插图", onClick: function (event) { event.preventDefault(); openSceneImagePreview(url, event.currentTarget, null, illustrator.editPrompt && !working ? function () { open("prompt"); } : null); } },
+					h("img", { src: url, alt: item.caption || "插图", loading: "lazy" })) : null,
+				item.caption && url ? h("figcaption", null, current ? item.caption : history[index] && history[index].caption || item.caption) : null,
+				url ? h("div", { className: "dsh-tavern-image-actions" },
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || working, onClick: removeVersion }, "删除图片"),
+					count > 1 ? h(React.Fragment, null,
+						h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": "上一张插图", disabled: index <= 0, onClick: function () { setSelected(index - 1); } }, "‹"),
+						h("span", null, String(index + 1) + " / " + String(count)),
+						h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": "下一张插图", disabled: index >= count - 1, onClick: function () { setSelected(index + 1); } }, "›")) : null,
+					// With revise, 重画 opens a panel: the same prompt again, or a prompt rewritten by the wish (or freshly).
+					illustrator.revise ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || working, onClick: function () { open("redraw"); } }, "重画")
+						: illustrator.redraw ? h("button", { type: "button", className: "dsh-tavern-btn", title: "按这张图的提示词再画一张，旧图保留为上一个版本", disabled: busy || working, onClick: function () { return run("redraw"); } }, "重画") : null,
+					illustrator.editPrompt ? h("button", { type: "button", className: "dsh-tavern-btn", title: "自己改这张图的提示词再画", disabled: busy || working, onClick: function () { open("prompt"); } }, "改提示词") : null,
+					illustrator.add ? h("button", { type: "button", className: "dsh-tavern-btn", title: "为这一轮另选一个场景，再加一张插图", disabled: busy, onClick: function () { open("add"); } }, "新增插图") : null) : null,
+				panel === "redraw" ? h("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": "重画插图" },
+					h("textarea", { value: draft, maxLength: 2000, rows: 2, autoFocus: true, disabled: busy, "aria-label": "重画意见（选填）",
+						placeholder: "想怎么改？例如：改成雨夜，镜头拉近。留空则重新构思画面，或用同一份提示词再画一张",
+						onChange: function (event) { setDraft(event.target.value); },
+						onKeyDown: function (event) {
+							if (event.key === "Escape" && !busy) setPanel(null);
+							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !busy) { event.preventDefault(); run("revise", { instruction: draft.trim() }); }
+						} }),
+					h("div", { className: "dsh-tavern-image-repaint-actions" },
+						h("button", { type: "button", className: "dsh-tavern-image-repaint-cancel", disabled: busy, onClick: function () { setPanel(null); } }, "取消"),
+						illustrator.redraw && !draft.trim() ? h("button", { type: "button", className: "dsh-tavern-btn", title: "提示词不变，只换随机种子再画一张", disabled: busy, onClick: function () { return run("redraw"); } }, "同提示词重画") : null,
+						h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", title: draft.trim() ? "按意见改写这张图的提示词后重画" : "重新整理这张图的提示词再画，多跑一次文字模型", disabled: busy,
+							onClick: function () { return run("revise", { instruction: draft.trim() }); } }, draft.trim() ? "按意见重画" : "重新整理提示词"))) : null,
+				panel === "prompt" || panel === "add" ? h("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": panel === "prompt" ? "改提示词重画" : "新增插图" },
+					h("textarea", { value: draft, maxLength: 12000, rows: panel === "prompt" ? 6 : 2, autoFocus: true, disabled: busy,
+						"aria-label": panel === "prompt" ? "画面提示词" : "新插图想画什么（选填）",
+						placeholder: panel === "prompt" ? "直接写画面提示词" : "想画哪个场景？留空由插件另选一个不同的场景",
+						onChange: function (event) { setDraft(event.target.value); },
+						onKeyDown: function (event) {
+							if (event.key === "Escape" && !busy) setPanel(null);
+							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !busy) { event.preventDefault(); run(panel === "prompt" ? "editPrompt" : "add", panel === "prompt" ? { prompt: draft.trim() } : { instruction: draft.trim() }); }
+						} }),
+					h("div", { className: "dsh-tavern-image-repaint-actions" },
+						h("button", { type: "button", className: "dsh-tavern-image-repaint-cancel", disabled: busy, onClick: function () { setPanel(null); } }, "取消"),
+						h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", disabled: busy || panel === "prompt" && !draft.trim(),
+							onClick: function () { return run(panel === "prompt" ? "editPrompt" : "add", panel === "prompt" ? { prompt: draft.trim() } : { instruction: draft.trim() }); } }, panel === "prompt" ? "用这段重画" : "新增插图"))) : null,
+				working ? h("div", { className: "dsh-tavern-plugin-media-pending", role: "status" }, workingLabel,
+					canCancel ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { return run("cancel"); } }, "取消") : null) : null,
+				!url && item.status === "failed" ? h("div", { className: "dsh-tavern-image-actions" },
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: removeVersion }, "移除")) : null,
+				(item.actions || []).length && illustrator.action ? h("div", { className: "dsh-tavern-image-actions" }, item.actions.map(function (entry) {
+					return h("button", { key: entry.id, type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: async function () {
+						if (entry.confirm && !await askConfirm(entry.confirm)) return;
+						return run("action", { actionId: entry.id });
+					} }, entry.label);
+				})) : null,
+				error || item.error ? h("span", { role: "alert", className: "dsh-tavern-settings-error" }, error || (item.status === "failed" ? "生成失败：" : "") + item.error) : null);
 		}
 
 		function TavernPluginMediaItem(props) {
@@ -526,6 +702,8 @@
 			const item = props.item;
 			const caption = item.caption ? h("figcaption", null, item.caption) : null;
 			let body;
+			const illustrator = item.kind.indexOf("/") > 0 ? tavernUiExtensions.illustrator(item.kind) : null;
+			if (illustrator && tavernPluginAllowed(illustrator.owner, props.sessionId)) return h(tavernPluginBoundary(), { owner: illustrator.owner }, h(TavernIllustrationCard, { item: item, illustrator: illustrator, sessionId: props.sessionId, turn: props.turn }));
 			if (item.kind.indexOf("/") > 0) {
 				const renderer = tavernUiExtensions.mediaRenderer(item.kind);
 				if (!renderer) return null;

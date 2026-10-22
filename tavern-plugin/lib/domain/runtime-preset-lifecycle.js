@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isProducerSource, isSystemPromptSource } from './message-source.js'
+import { isTurnInput } from './session-turn-input.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -147,6 +148,22 @@ export function projectRuntimePresetRequest(request, snapshot, options = {}) {
   }] : []
   return Object.assign({}, request, {
     ...(moveSystem ? { system: '' } : {}),
-    messages: normalizeRuntimeRequestRoles(instructions.concat(front, systemMessages, nativeSystems, history, back))
+    messages: normalizeRuntimeRequestRoles(instructions.concat(front, systemMessages, nativeSystems, withBack(history, back)))
   })
+}
+
+// The back phase follows this turn's input, before the turn's first reply. On
+// step 1 that is the end of the request; on later steps of a tool loop it stays
+// there instead of moving after the tool results. Moving it would change the
+// text before the step-1 reply, which breaks Anthropic thinking signatures and
+// the provider prefix cache for every later step of the turn.
+function withBack(history, back) {
+  if (back.length === 0) return history
+  let input = -1
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (isTurnInput(history[index])) { input = index; break }
+  }
+  const reply = input < 0 ? -1 : history.findIndex((message, index) => index > input && message.role === 'assistant')
+  if (reply < 0) return history.concat(back)
+  return history.slice(0, reply).concat(back, history.slice(reply))
 }

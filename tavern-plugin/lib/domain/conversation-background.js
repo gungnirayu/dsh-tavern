@@ -15,24 +15,17 @@ export function patchConversationBackground(chat, patch) {
     next.backgroundModelSelection = normalizeBackgroundModel(patch.backgroundModel)
     if (patch.backgroundModel !== null && !next.backgroundModelSelection) throw new Error('后台模型配置无效')
   }
-  if (Object.hasOwn(patch, 'imageModel')) {
-    // null follows the foreground model (at the lightest reasoning level).
-    next.imageModelSelection = normalizeBackgroundModel(patch.imageModel)
-    if (patch.imageModel !== null && !next.imageModelSelection) throw new Error('生图 Agent 模型配置无效')
-  }
   if (Object.hasOwn(patch, 'backgroundTasks')) {
     next.backgroundTasks = normalizeBackgroundTasks({ ...normalizeBackgroundTasks(chat.backgroundTasks), ...patch.backgroundTasks })
   }
-  for (const name of ['webSearchEnabled', 'sceneImagesEnabled']) {
-    if (Object.hasOwn(patch, name)) {
-      if (typeof patch[name] !== 'boolean') throw new Error('开关配置必须为布尔值')
-      next[name] = patch[name]
-    }
+  if (Object.hasOwn(patch, 'webSearchEnabled')) {
+    if (typeof patch.webSearchEnabled !== 'boolean') throw new Error('开关配置必须为布尔值')
+    next.webSearchEnabled = patch.webSearchEnabled
   }
   return next
 }
 
-export function adoptConversationFeatures(chat, legacy = {}, legacyImageEnabled = false) {
+export function adoptConversationFeatures(chat, legacy = {}) {
   if (chat.conversationFeaturesVersion === 1) return chat
-  return { ...chat, conversationFeaturesVersion: 1, webSearchEnabled: legacy?.webSearchEnabled === true, sceneImagesEnabled: legacyImageEnabled === true }
+  return { ...chat, conversationFeaturesVersion: 1, webSearchEnabled: legacy?.webSearchEnabled === true }
 }

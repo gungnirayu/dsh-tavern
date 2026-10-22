@@ -22,7 +22,7 @@ COMMIT_URL=${DSH_TAVERN_COMMIT_URL:-https://api.github.com/repos/${REPOSITORY}/c
 CDN_METADATA_URL=${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/${REPOSITORY}@main/dsh-tavern-runtime.json}
 CDN_ROOT_URL=${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/${REPOSITORY}}
 # This installer's release (package.json, written by bin/build-installer-scripts.mjs): never install older code.
-INSTALLER_VERSION='3.0.0'
+INSTALLER_VERSION='3.1.0'
 LEGACY_DSH_ROOT=${DSH_TAVERN_LEGACY_DSH_HOME:-${DSH_HOME:-${HOME}/.dsh}}
 DSH_ROOT=${DSH_HOME:-${HOME}/.dsh}
 if [ "${INSTALL_HOST}" = "cli" ]; then
@@ -131,65 +131,94 @@ fail() {
 if [ "${INSTALL_HOST}" = "desktop" ]; then
   desktop_executable=${DSH_DESKTOP_APP_EXECUTABLE:-}
   if [ -z "$desktop_executable" ] && [ "$(uname -s)" = "Darwin" ]; then
-    # Official first, then the community app (DSH NEXT replaced DSH Desktop after 2.0.18).
-    for desktop_name in "DeepSeek Harness" "DSH NEXT" "DSH Desktop"; do
+    # Only official DeepSeek Harness is supported.
+    for desktop_name in "DeepSeek Harness"; do
       for desktop_app in "/Applications/${desktop_name}.app" "$HOME/Applications/${desktop_name}.app"; do
         if [ -x "$desktop_app/Contents/MacOS/${desktop_name}" ]; then desktop_executable="$desktop_app/Contents/MacOS/${desktop_name}"; break 2; fi
       done
     done
   fi
-  [ -n "$desktop_executable" ] && [ -x "$desktop_executable" ] || fail "请先安装官方 DeepSeek Harness（https://deepseek.com/harness/）或社区 DSH NEXT"
+  [ -n "$desktop_executable" ] && [ -x "$desktop_executable" ] || fail "请先安装官方 DeepSeek Harness（https://deepseek.com/harness/）"
   cat >"${TEMP_DIR}/official-desktop-runtime.cjs" <<'DSH_OFFICIAL_DESKTOP_MODULE'
-// Shared bootstrap for the desktop hosts, shell installers and the Windows bundle:
-// the official DeepSeek Harness, or the community DSH Desktop / DSH NEXT (same DSH, other layout).
-// Runs under Electron Node mode so packaged app.asar files remain readable.
+// Bootstrap for official DeepSeek Harness only. Electron reads packaged app.asar files.
 const fs = require('node:fs');
 const path = require('node:path');
-const OFFICIAL = '@deepseek-ai/dsh-desktop', COMMUNITY = 'dsh-plugin-desktop';
-// Discovery order: official first, then the community app (NEXT replaced Desktop after 2.0.18).
-const APP_NAMES = ['DeepSeek Harness', 'DSH NEXT', 'DSH Desktop'];
-function layout(executable, platform = process.platform, arch = process.arch) {
+const OFFICIAL = '@deepseek-ai/dsh-desktop';
+const APP_NAMES = ['DeepSeek Harness'];
+// Read archive metadata under plain Node as well, so unsupported hosts fail before mutation.
+function asarRead(archive, relative, contents) {
+  const fd = fs.openSync(archive, 'r');
+  try {
+    const sizes = Buffer.alloc(16);
+    fs.readSync(fd, sizes, 0, 16, 0);
+    const headerSize = sizes.readUInt32LE(4), jsonSize = sizes.readUInt32LE(12);
+    const json = Buffer.alloc(jsonSize);
+    fs.readSync(fd, json, 0, jsonSize, 16);
+    let entry = JSON.parse(json.toString('utf8'));
+    for (const part of relative.split(/[\\/]/).filter(Boolean)) entry = entry?.files?.[part];
+    if (!entry || entry.files) return null;
+    if (!contents) return '';
+    if (entry.unpacked || !Number.isSafeInteger(Number(entry.offset))) return null;
+    const data = Buffer.alloc(entry.size);
+    fs.readSync(fd, data, 0, entry.size, 8 + headerSize + Number(entry.offset));
+    return data.toString('utf8');
+  } catch { return null; } finally { fs.closeSync(fd); }
+}
+// Split a path at the archive that contains it; null when it is not inside one. A directory named
+// *.asar is not told apart here: exists() finds its files directly, and asarRead fails on it.
+// (A trailing-separator check does not work: on Windows "app.asar\\" exists for the file too.)
+function inAsar(file) {
+  const match = /^(.*?\.asar)[\\/](.+)$/.exec(file);
+  return match ? { archive: match[1], relative: match[2] } : null;
+}
+// A file the runner can load: on disk, or inside app.asar (readable under Electron only).
+function exists(file) {
+  if (fs.existsSync(file)) return true;
+  const packed = inAsar(file);
+  return packed !== null && fs.existsSync(packed.archive) && asarRead(packed.archive, packed.relative, false) !== null;
+}
+function packageName(app) {
+  try { return JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).name || ''; } catch {}
+  try { return app.endsWith('.asar') ? String(JSON.parse(asarRead(app, 'package.json', true) || '{}').name || '') : ''; } catch { return ''; }
+}
+function layout(executable, platform = process.platform) {
   const resources = platform === 'darwin' ? path.resolve(path.dirname(executable), '../Resources') : path.join(path.dirname(executable), 'resources');
-  const app = fs.existsSync(path.join(resources, 'app', 'package.json')) ? path.join(resources, 'app') : path.join(resources, 'app.asar');
-  let name = '';
-  try { name = JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).name; } catch {}
-  if (name === COMMUNITY) {
-    // The community app ships its own unpacked DSH and one runtime per architecture, including a real
-    // Node. Run tools with that Node: under the app's Electron, pnpm lingers for minutes after "Done".
-    const runtime = [arch, 'x64', 'arm64'].map(each => path.join(resources, 'runtime', each, 'primary-runtime')).find(dir => fs.existsSync(dir))
-      || path.join(resources, 'runtime', arch, 'primary-runtime');
-    const nodeDir = path.join(runtime, 'dependencies', 'node');
-    const node = (platform === 'win32' ? [path.join(nodeDir, 'node.exe'), path.join(nodeDir, 'bin', 'node.exe')] : [path.join(nodeDir, 'bin', 'node')]).find(file => fs.existsSync(file));
-    return { resources, app, name, host: app, node, bootstrap: path.join(app, 'lib', 'desktop-cli.js'), pnpm: path.join(runtime, 'dependencies', 'pnpm', 'bin', 'pnpm.mjs') };
-  }
+  const unpacked = path.join(resources, 'app'), packed = path.join(resources, 'app.asar');
+  const app = fs.existsSync(path.join(unpacked, 'package.json')) ? unpacked : packed;
+  const name = packageName(app);
   const host = path.join(app, 'dsh');
   return { resources, app, name, host, bootstrap: path.join(host, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js'), pnpm: path.join(resources, 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs') };
 }
 function prepare({ executable, home, env = process.env, platform = process.platform }) {
-  if (!executable || !home) throw Error('请先安装 DeepSeek Harness 或 DSH NEXT，并指定安装目录');
+  if (!executable || !home) throw Error('请先安装官方 DeepSeek Harness，并指定安装目录');
   const paths = layout(executable, platform);
-  if (paths.name !== OFFICIAL && paths.name !== COMMUNITY) throw Error('Desktop 宿主必须是官方 DeepSeek Harness 或社区 DSH NEXT / DSH Desktop：' + executable);
+  if (paths.name !== OFFICIAL) throw Error('桌面版仅支持官方 DeepSeek Harness，不支持社区 DSH Desktop / DSH NEXT：' + executable
+    + '（读到的应用包名：' + (paths.name || '无法读取') + '，应用目录：' + paths.app + '）');
   const bootstrap = paths.bootstrap;
-  for (const file of [bootstrap, paths.pnpm]) if (!fs.existsSync(file)) throw Error('桌面运行时不完整：' + file);
-  const runner = paths.node || executable;
+  for (const file of [bootstrap, paths.pnpm]) if (!exists(file)) throw Error('桌面运行时不完整：' + file);
+  const runner = executable;
+  const dshRunner = runner, pnpmRunner = runner;
+  const runnerOf = name => name === 'dsh' ? dshRunner : name === 'pnpm' ? pnpmRunner : runner;
+  const variableOf = name => name === 'dsh' ? 'DSH_DESKTOP_DSH_RUNNER' : name === 'pnpm' ? 'DSH_DESKTOP_PNPM_RUNNER' : 'DSH_DESKTOP_NODE_EXECUTABLE';
   const bin = path.join(home, 'tools', 'official-desktop', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const [name, entry] of [['node', null], ['pnpm', paths.pnpm], ['dsh', bootstrap]]) {
     const file = path.join(bin, name + (platform === 'win32' ? '.cmd' : ''));
     const text = platform === 'win32'
-      ? '@echo off\r\nsetlocal DisableDelayedExpansion\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"%DSH_DESKTOP_NODE_EXECUTABLE%" --expose-internals ' + (entry ? '"%' + (name === 'dsh' ? 'DSH_DESKTOP_DSH_BOOTSTRAP' : 'DSH_DESKTOP_PNPM_ENTRY') + '%" ' : '') + '%*\r\nexit /b %errorlevel%\r\n'
-      : '#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ' + quote(runner) + ' --expose-internals ' + (entry ? quote(entry) + ' ' : '') + '"$@"\n';
+      ? '@echo off\r\nsetlocal DisableDelayedExpansion\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"%' + variableOf(name) + '%" --expose-internals ' + (entry ? '"%' + (name === 'dsh' ? 'DSH_DESKTOP_DSH_BOOTSTRAP' : 'DSH_DESKTOP_PNPM_ENTRY') + '%" ' : '') + '%*\r\nexit /b %errorlevel%\r\n'
+      : '#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ' + quote(runnerOf(name)) + ' --expose-internals ' + (entry ? quote(entry) + ' ' : '') + '"$@"\n';
     fs.writeFileSync(file, text, { mode: 0o755 });
   }
   const key = Object.keys(env).find(key => key.toUpperCase() === 'PATH') || 'PATH';
+  // NODE_EXECUTABLE runs installer code and `node`; PNPM_RUNNER runs pnpm; DSH_RUNNER runs the DSH entry.
   return { DSH_HOME: path.resolve(home), DSH_DESKTOP_NODE_EXECUTABLE: runner, DSH_DESKTOP_APP_EXECUTABLE: executable,
-    DSH_DESKTOP_DSH_BOOTSTRAP: bootstrap, DSH_DESKTOP_PNPM_ENTRY: paths.pnpm,
+    DSH_DESKTOP_PNPM_RUNNER: pnpmRunner, DSH_DESKTOP_DSH_RUNNER: dshRunner, DSH_DESKTOP_DSH_BOOTSTRAP: bootstrap, DSH_DESKTOP_PNPM_ENTRY: paths.pnpm,
     DSH_TAVERN_HOST_DEPENDENCY_ANCHOR: path.join(paths.host, 'package.json'),
     [key]: bin + (platform === 'win32' ? ';' : ':') + (env[key] || '') };
 }
 function discover(env = process.env, platform = process.platform) {
-  // DSH_DESKTOP_NODE_EXECUTABLE is the community app's bundled Node, not an app; skip it then.
+  // A standalone node executable is not a desktop host.
   const node = env.DSH_DESKTOP_NODE_EXECUTABLE && !/^node(\.exe)?$/i.test(path.basename(env.DSH_DESKTOP_NODE_EXECUTABLE)) ? env.DSH_DESKTOP_NODE_EXECUTABLE : undefined;
   const candidates = [env.DSH_DESKTOP_APP_EXECUTABLE, node, process.versions.electron ? process.execPath : undefined];
   for (const app of APP_NAMES) {
@@ -197,11 +226,11 @@ function discover(env = process.env, platform = process.platform) {
     if (platform === 'win32') for (const root of [env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs'), env.ProgramFiles]) if (root) candidates.push(path.join(root, app, app + '.exe'));
   }
   const executable = candidates.find(file => file && fs.existsSync(file));
-  if (!executable) throw Error('找不到 DeepSeek Harness 或 DSH NEXT；请先安装，或用 DSH_DESKTOP_APP_EXECUTABLE 指定程序路径');
+  if (!executable) throw Error('找不到官方 DeepSeek Harness；请先安装，或用 DSH_DESKTOP_APP_EXECUTABLE 指定程序路径');
   return executable;
 }
-// The program that runs installer code: the bundled Node for the community app, else the app's Electron.
-function runner(executable, platform = process.platform) { return layout(executable, platform).node || executable; }
+// Installer code always runs under the official app's Electron.
+function runner(executable) { return executable; }
 module.exports = { layout, prepare, discover, runner, APP_NAMES };
 if (require.main === module) {
   try {
@@ -211,11 +240,8 @@ if (require.main === module) {
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 DSH_OFFICIAL_DESKTOP_MODULE
-  # The community app bundles a real Node; under its Electron, child tools linger long after finishing.
+  # Use the official desktop Electron runtime.
   desktop_runner=$desktop_executable
-  case $(uname -m) in arm64|aarch64) desktop_arch=arm64 ;; *) desktop_arch=x64 ;; esac
-  desktop_node="$(dirname "$desktop_executable")/../Resources/runtime/${desktop_arch}/primary-runtime/dependencies/node/bin/node"
-  [ -x "$desktop_node" ] && desktop_runner=$desktop_node
   DSH_DESKTOP_APP_EXECUTABLE="$desktop_executable" ELECTRON_RUN_AS_NODE=1 "$desktop_runner" --expose-internals "${TEMP_DIR}/official-desktop-runtime.cjs" "$DSH_ROOT" --shell >"${TEMP_DIR}/desktop-env.sh" || fail "桌面运行环境校验失败"
   . "${TEMP_DIR}/desktop-env.sh"
 fi
@@ -696,7 +722,7 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
 
-const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
+const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|android\/|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
 const EXCLUDED_PART = new Set(['.', '..', 'docs', 'tests', '__tests__', 'testsets'])
 
 class DownloadError extends Error {

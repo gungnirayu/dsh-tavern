@@ -7,11 +7,40 @@ function findTavernQuoteRanges(text) {
 function installTavernTextColors(root, options, findQuotes) {
     const doc = root.ownerDocument, win = doc.defaultView;
     if (!win.CSS || !win.CSS.highlights || typeof win.Highlight !== 'function') return { setEnabled() {}, setColors() {}, dispose() {} };
-    const prefix = 'dsh-tavern-text-' + Math.random().toString(36).slice(2);
+    // One stylesheet and four named highlights per document, shared by every mounted
+    // message: each registered ::highlight name costs style work on every element, so
+    // one set per message made each sidebar or layout change recalculate for ~200ms.
+    // Kept inside this function because frames receive it as source text.
+    const prefix = 'dsh-tavern-text';
     const colors = { 'quote-light': true, 'quote-dark': true, 'em-light': true, 'em-dark': true };
-    const highlights = new Map();
-    const style = doc.createElement('style');
-    style.setAttribute('data-dsh-tavern-text-colors', '');
+    const shared = win.__dshTavernTextColors || (win.__dshTavernTextColors = { users: 0, style: null, highlights: new Map(), themed: new Set(), theme: null });
+    // The page root changes often (layout variables, input modality); only a change of
+    // the resolved text colors is a theme change that every message must re-read.
+    function themeKey() {
+        return win.getComputedStyle(doc.documentElement).colorScheme + '|' + win.getComputedStyle(doc.body || doc.documentElement).color;
+    }
+    if (!shared.users++) {
+        shared.themeKey = themeKey();
+        shared.theme = new win.MutationObserver(function () {
+            const key = themeKey();
+            if (key === shared.themeKey) return;
+            shared.themeKey = key;
+            shared.themed.forEach(function (schedule) { schedule(); });
+        });
+        const themeAttributes = { attributes: true, attributeFilter: ['style', 'class', 'data-ds-dark-theme', 'data-ds-theme-source'] };
+        shared.theme.observe(doc.documentElement, themeAttributes);
+        if (doc.body) shared.theme.observe(doc.body, themeAttributes);
+        shared.style = doc.createElement('style');
+        shared.style.setAttribute('data-dsh-tavern-text-colors', '');
+        doc.head.appendChild(shared.style);
+        for (const kind of Object.keys(colors)) {
+            const highlight = new win.Highlight();
+            highlight.priority = kind.startsWith('quote') ? 2 : 1;
+            shared.highlights.set(kind, highlight);
+            win.CSS.highlights.set(prefix + '-' + kind, highlight);
+        }
+    }
+    const style = shared.style;
     function setColors(overrides) {
         style.textContent = Object.entries(colors).map(([kind, fallback]) => {
             const value = overrides && overrides[kind.startsWith('quote') ? 'quote' : 'em'];
@@ -20,13 +49,12 @@ function installTavernTextColors(root, options, findQuotes) {
             return '::highlight(' + prefix + '-' + kind + '){color:' + color + '}';
         }).join('\n');
     }
-    setColors(options.colors);
-    doc.head.appendChild(style);
-    for (const kind of Object.keys(colors)) {
-        const highlight = new win.Highlight();
-        highlight.priority = kind.startsWith('quote') ? 2 : 1;
-        highlights.set(kind, highlight);
-        win.CSS.highlights.set(prefix + '-' + kind, highlight);
+    if (shared.users === 1 || options.colors) setColors(options.colors);
+    // This instance's ranges, so a refresh or dispose removes only its own.
+    const owned = [];
+    function clearOwned() {
+        for (const [kind, range] of owned) shared.highlights.get(kind).delete(range);
+        owned.length = 0;
     }
     let enabled = options.enabled !== false, disposed = false, timer = null;
     const excluded = 'script,style,textarea,input,select,button,a,code,pre,kbd,samp,svg,math,[hidden],[contenteditable]:not([contenteditable="false"]),[role="button"],[role="textbox"]';
@@ -66,11 +94,12 @@ function installTavernTextColors(root, options, findQuotes) {
     function add(kind, entry, start, end) {
         const range = doc.createRange();
         range.setStart(entry.node, start); range.setEnd(entry.node, end);
-        highlights.get(kind + '-' + entry.palette).add(range);
+        shared.highlights.get(kind + '-' + entry.palette).add(range);
+        owned.push([kind + '-' + entry.palette, range]);
     }
     function refresh() {
         timer = null;
-        for (const highlight of highlights.values()) highlight.clear();
+        clearOwned();
         if (disposed || !enabled) return;
         computedColors = new WeakMap(); explicitColors = new WeakMap();
         const walker = doc.createTreeWalker(root, 4); // SHOW_TEXT; never edit React/card-owned DOM.
@@ -99,7 +128,7 @@ function installTavernTextColors(root, options, findQuotes) {
     function schedule() { if (!disposed && enabled && timer === null) timer = win.setTimeout(refresh, 32); }
     const observer = new win.MutationObserver(schedule);
     observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'color', 'hidden'] });
-    if (doc.documentElement !== root) observer.observe(doc.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+    shared.themed.add(schedule);
     // Batch mounts before reading computed styles; each message adds a stylesheet.
     schedule();
     return {
@@ -109,12 +138,20 @@ function installTavernTextColors(root, options, findQuotes) {
             if (timer !== null) win.clearTimeout(timer);
             timer = null;
             if (enabled) schedule();
-            else for (const highlight of highlights.values()) highlight.clear();
+            else clearOwned();
         },
         dispose() {
+            if (disposed) return;
             disposed = true; observer.disconnect(); if (timer !== null) win.clearTimeout(timer);
-            for (const kind of highlights.keys()) win.CSS.highlights.delete(prefix + '-' + kind);
+            clearOwned();
+            shared.themed.delete(schedule);
+            if (--shared.users) return;
+            shared.theme.disconnect();
+            shared.theme = null;
+            for (const kind of shared.highlights.keys()) win.CSS.highlights.delete(prefix + '-' + kind);
+            shared.highlights.clear();
             style.remove();
+            shared.style = null;
         }
     };
 }

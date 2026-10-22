@@ -38,6 +38,11 @@ function chatSummary(chat, preservedLastOpenedAt = 0) {
   }
 }
 
+// What a recovery scan saw: every indexed chat and every link. Cheap next to reading chats.
+function stampOf(index, links) {
+  return chatRows(index).map(row => str(row.id)).join('\n') + '\u0000' + Object.entries(links).map(([key, value]) => key + '=' + value).join('\n')
+}
+
 function sameSummary(left, right) {
   return left && right && JSON.stringify(left.backgroundHistoryIds || []) === JSON.stringify(right.backgroundHistoryIds || []) && ['id', 'cardPath', 'cardName', 'title', 'mode', 'requestMode', 'createdAt', 'updatedAt', 'lastOpenedAt', 'backgroundSessionId'].every(function (key) { return left[key] === right[key] })
 }
@@ -79,6 +84,9 @@ export function createTavernConversationRegistry(options = {}) {
     })
   }
 
+  // Sessions the recovery scan found no chat for (background agents ask on every request),
+  // keyed by the index and links they were scanned against: a new chat or link scans again.
+  const missing = new Map()
   async function resolveUsing(sessionId, readChat) {
     const id = str(sessionId)
     if (id === '') return undefined
@@ -87,7 +95,9 @@ export function createTavernConversationRegistry(options = {}) {
       const mapped = await readChat(links[id])
       if (mapped !== undefined) return mapped
     }
-    let found
+    const scanned = missing.get(id)
+    if (scanned !== undefined && scanned === stampOf(await store.readIndex(), links)) return undefined
+    let found, stamp
     await store.updateLinks(async function (value) {
       const current = Object.assign({}, normalizeLinks(value))
       let changed = false
@@ -101,6 +111,7 @@ export function createTavernConversationRegistry(options = {}) {
         changed = true
       }
       const index = await store.readIndex()
+      stamp = stampOf(index, current)
       // Published links already own these chats (including intentional aliases).
       // Only unlinked records need recovery; a new Session must not materialize
       // every historical game while holding the shared links write lock.
@@ -116,6 +127,10 @@ export function createTavernConversationRegistry(options = {}) {
       }
       return changed ? current : undefined
     })
+    if (found === undefined && stamp !== undefined) {
+      missing.set(id, stamp)
+      if (missing.size > 256) missing.delete(missing.keys().next().value)
+    } else missing.delete(id)
     return found
   }
 

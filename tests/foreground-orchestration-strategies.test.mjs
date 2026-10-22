@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { Session } from './fixtures/dsh-session-host.mjs'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
-import { createForegroundOrchestrationStrategies, createNativePlayOrchestrationStrategy, createCompatibilityOrchestrationStrategy } from "../tavern-plugin/lib/domain/foreground-orchestration-strategies.js"
+import { createForegroundOrchestrationStrategies, createNativePlayOrchestrationStrategy } from "../tavern-plugin/lib/domain/foreground-orchestration-strategies.js"
 import { ensureSessionStablePrefix, sessionStablePrefixSections } from '../tavern-plugin/lib/domain/session-stable-prefix.js'
 import { ensureSessionSeedTrajectory } from '../tavern-plugin/lib/domain/session-seed-trajectory.js'
 
@@ -19,14 +19,6 @@ function strategies(overrides = {}) {
   const calls = []
   const chats = new Map([['native', { id: 'native', requestMode: 'dsh', mode: 'story' }], ['compat', { id: 'compat', requestMode: 'sillytavern', mode: 'story' }]])
   const options = {
-    compatibility: {
-      async beforeTurn(input) { calls.push(['compat.before', input.userText]) },
-      async beginTurn(input) { calls.push(['compat.begin', input.turn, input.requestId]) },
-      async chatForSession(sessionId) { return chats.get(sessionId) },
-      async compileTurn(_chat, userText) { calls.push(['compat.compile', userText]); return { messages: [{ role: 'system', content: 'compat' }] } },
-      async persistCompiled(input) { calls.push(['compat.persist', input.turn]) },
-      projectMessages(compiled) { return compiled.messages.map(function (message) { return { role: message.role, content: [{ type: 'text', text: message.content }] } }) }
-    },
     nativePlay: {
       async modeFor() { return 'story' },
       filterMessages(messages) { return messages },
@@ -46,8 +38,16 @@ function strategies(overrides = {}) {
     },
     ...overrides
   }
-  return { value: createForegroundOrchestrationStrategies(options), compatibility: createCompatibilityOrchestrationStrategy(options.compatibility), calls, chats }
+  return { value: createForegroundOrchestrationStrategies(options), calls, chats }
 }
+
+test('retired conversation mode is rejected before native preparation or system assembly', async () => {
+  const run = strategies()
+  const input = { chat: run.chats.get('compat'), sessionId: 'compat', payload: { step: 1, turn: 1, messages: [] } }
+  await assert.rejects(run.value.prepareStep(input), /silly 模式已停用/)
+  await assert.rejects(run.value.assembleSystemPrompt({ sections: [], tools: [] }, input), /silly 模式已停用/)
+  assert.deepEqual(run.calls, [])
+})
 
 test('游玩固定背景来自原生系统装配，预设前后段保持顺序，快照不重复发送', async () => {
   const session = Session.create('native')
@@ -240,11 +240,37 @@ test('历史正文走工具调用：开关打开时请求里的旧正文变成�
 
   const on = await requestWith(true)
   // 玩家消息与模型正文都变成提交调用；本轮输入（最后一条玩家消息）保持原样。
-  assert.deepEqual(on.messages.map(message => message.role), ['assistant', 'tool', 'assistant', 'tool', 'user'])
-  assert.deepEqual(JSON.parse(on.messages[0].content[0].arguments), { content: '第一次' })
-  assert.deepEqual(on.messages[2].content.map(block => block.type), ['tool-call'])
-  assert.equal(on.messages[2].content[0].name, 'submit_story')
-  assert.deepEqual(JSON.parse(on.messages[2].content[0].arguments), { content: '上一轮正文' })
-  assert.equal(on.messages[3].toolCallId, on.messages[2].content[0].id, 'DSH 0.2 的回执是对应这次调用的 tool 消息')
-  assert.equal(on.messages[4].content[0].text, '第二次', '本轮玩家输入保持原样')
+  // 历史以调用开头时先垫一条固定的 user 轮次，严格的 Gemini 渠道才接受（#330）。
+  assert.deepEqual(on.messages.map(message => message.role), ['user', 'assistant', 'tool', 'assistant', 'tool', 'user'])
+  assert.equal(on.messages[0].id, on.messages[1].content[0].id + ':anchor')
+  assert.deepEqual(JSON.parse(on.messages[1].content[0].arguments), { content: '第一次' })
+  assert.deepEqual(on.messages[3].content.map(block => block.type), ['tool-call'])
+  assert.equal(on.messages[3].content[0].name, 'submit_story')
+  assert.deepEqual(JSON.parse(on.messages[3].content[0].arguments), { content: '上一轮正文' })
+  assert.equal(on.messages[4].toolCallId, on.messages[3].content[0].id, 'DSH 0.2 的回执是对应这次调用的 tool 消息')
+  assert.equal(on.messages[5].content[0].text, '第二次', '本轮玩家输入保持原样')
+})
+
+test('Anthropic：去掉本轮输入之前各轮回复的签名思考块，本轮工具循环里的保留', async () => {
+  const { projectAnthropicPriorThinking } = await import('../tavern-plugin/lib/domain/foreground-orchestration-strategies.js')
+  const replay = blocks => ({ response: { kind: 'pi-ai', version: 2, api: 'anthropic-messages', provider: 'opencode', model: 'claude-opus-5-5' }, blocks })
+  const model = blocks => ({ kind: 'model', provider: 'opencode', model: 'claude-opus-5-5', replayState: replay(blocks) })
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: '第一轮' }], source: { kind: 'user' } },
+    { role: 'assistant', content: [{ type: 'reasoning', text: '' }, { type: 'text', text: '第一轮正文' }],
+      source: model([{ type: 'reasoning', thinkingSignature: 'sig-1' }, { type: 'text' }]) },
+    { role: 'assistant', content: [{ type: 'reasoning', text: '只有思考' }], source: model([{ type: 'reasoning', thinkingSignature: 'sig-2' }]) },
+    { role: 'user', content: [{ type: 'text', text: '第二轮' }], source: { kind: 'user' } },
+    { role: 'assistant', content: [{ type: 'reasoning', text: '' }, { type: 'tool-call', id: 't1', name: 'x', arguments: '{}' }],
+      source: model([{ type: 'reasoning', thinkingSignature: 'sig-3' }, { type: 'tool-call' }]) }
+  ]
+  const projected = projectAnthropicPriorThinking(messages)
+  assert.equal(projected.length, 4, '只有思考的旧回复整条去掉')
+  assert.deepEqual(projected[1].content, [{ type: 'text', text: '第一轮正文' }])
+  assert.deepEqual(projected[1].source.replayState.blocks, [{ type: 'text' }], '回传记录与内容保持对齐')
+  assert.equal(projected[3], messages[4], '本轮工具循环里的思考原样保留')
+  // 其他协议不动。
+  const deepseek = messages.map(message => message.role === 'assistant'
+    ? { ...message, source: { ...message.source, replayState: { ...message.source.replayState, response: { ...message.source.replayState.response, api: 'openai-completions' } } } } : message)
+  assert.equal(projectAnthropicPriorThinking(deepseek), deepseek)
 })

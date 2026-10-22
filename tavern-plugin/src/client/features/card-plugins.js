@@ -63,31 +63,3 @@
 				h("p", { className: "dsh-tavern-settings-desc" }, "只在这张卡的游戏里生效。"),
 				message ? h("p", { role: "status", className: "dsh-tavern-settings-desc" }, message) : null);
 		}
-
-		/** The card's stage switch in the card library: off for ordinary cards, so their games show no stage. */
-		function TavernCardStageBox(props) {
-			const h = React.createElement;
-			const [enabled, setEnabled] = React.useState(null);
-			const [busy, setBusy] = React.useState(false);
-			React.useEffect(function () {
-				let active = true;
-				setEnabled(null);
-				rpc("cardStage", { path: props.path }).then(function (reply) { if (active) setEnabled(reply.enabled === true); }, function () { if (active) setEnabled(false); });
-				return function () { active = false; };
-			}, [props.path]);
-			if (enabled === null) return null;
-			async function toggle(next) {
-				setBusy(true);
-				try {
-					const reply = await rpc("setCardStage", { path: props.path, enabled: next });
-					setEnabled(reply.enabled === true);
-					window.dispatchEvent(new CustomEvent("dsh-tavern-card-stage-changed", { detail: { path: props.path } }));
-				} catch (error) { tavernErrorHub.report("人物卡舞台", error); }
-				finally { setBusy(false); }
-			}
-			return h("label", { className: "dsh-tavern-card-plugins dsh-tavern-card-stage" },
-				h("span", { className: "dsh-tavern-settings-copy" }, h("strong", null, "舞台"),
-					h("span", { className: "dsh-tavern-settings-desc" }, enabled ? "这张卡的游戏在酒馆状态顶部显示舞台：立绘、背景和逐句演出。" : "开启后，这张卡的游戏在酒馆状态顶部显示舞台。普通人物卡不需要。")),
-				h("input", { type: "checkbox", role: "switch", "aria-label": "舞台", checked: enabled, disabled: busy, onChange: function (event) { void toggle(event.target.checked); } }));
-		}
-

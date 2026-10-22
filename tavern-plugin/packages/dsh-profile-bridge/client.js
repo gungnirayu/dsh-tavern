@@ -17,48 +17,50 @@ window.__ModuleLoader__.load({
     const NS = 'profileBridge'
 
     const zh = {
-      section: 'Profile 切换',
-      title: 'Profile 切换',
-      subtitle: '选择桌面版使用哪套配置。',
-      original: '原版 DSH',
-      originalHint: '桌面版自带的配置',
-      tavern: 'DSH Tavern',
-      tavernHint: '装好了酒馆插件的配置',
-      pending: '重启后生效',
-      restartHint: '重启桌面版后生效。',
-      restart: '立即重启',
+      sectionTavern: '原版DSH',
+      sectionOriginal: 'DSH酒馆',
+      explain: 'DSH 酒馆和原版 DSH 是同一个应用里的两套环境，切换时应用会重启一次，对话和设置都会保留。',
+      toOriginal: '重启并切换到原版 DSH',
+      toTavern: '重启并切换到 DSH 酒馆',
+      noTavern: '还没有装好 DSH 酒馆，装好后这里就能切过去。',
+      noOriginal: '找不到原版 DSH 的备份，暂时切不回去。请看下面的「说明与日志」。',
+      standalone: '这是 DSH 酒馆的独立窗口，原版 DSH 就是 DeepSeek Harness 本身，不用切换、不用重启。',
+      openOriginal: '打开原版 DSH',
       restarting: '正在重启…',
       quitHint: '请从托盘退出桌面版，切换完成后会自动重新打开（两分钟内有效）。',
-      confirm: '确定',
       loading: '读取中…',
-      noModules: '缺少 node_modules，插件尚未安装',
       cliHint: '当前不是桌面版。命令行用户直接用 dsh --profile <名称> 选择即可。',
       failure: '操作失败',
       more: '说明与日志',
+      shortcut: '添加桌面快捷方式',
+      shortcutHint: '首次安装会自动添加「DSH 酒馆」桌面快捷方式，点开即可打开酒馆。可随时删除，更新时不会重新添加；需要时可在这里恢复。',
+      shortcutDone: '已添加到桌面：',
+      shortcutExists: '桌面上已经有了：',
       logEmpty: '（还没有日志）',
-      why: '桌面版固定读取 profiles/desktop。选择其他配置时，会把它链接到所选配置（Windows 用 junction，macOS/Linux 用符号链接）；原版配置先备份，随时可以选回。更换需要桌面版先退出：重启走正常退出流程，有任务时会先请你确认，不会强制结束进程。',
+      why: '桌面版固定读取 profiles/desktop。进入 DSH 酒馆时，会把它链接到 profiles/tavern（Windows 用 junction，macOS/Linux 用符号链接）；原版配置先备份为 desktop.fresh-*，切回原版时恢复。切换需要桌面版先退出：重启走正常退出流程，有任务时会先请你确认，不会强制结束进程。',
     }
     const en = {
-      section: 'Profile switch',
-      title: 'Profile switch',
-      subtitle: 'Choose which setup the Desktop app uses.',
-      original: 'Original DSH',
-      originalHint: 'The setup Desktop ships with',
-      tavern: 'DSH Tavern',
-      tavernHint: 'The setup with the Tavern plugins installed',
-      pending: 'After restart',
-      restartHint: 'Takes effect after Desktop restarts.',
-      restart: 'Restart now',
+      sectionTavern: 'Original DSH',
+      sectionOriginal: 'DSH Tavern',
+      explain: 'DSH Tavern and the original DSH are two setups of the same app. Switching restarts the app once; conversations and settings are kept.',
+      toOriginal: 'Restart and switch to original DSH',
+      toTavern: 'Restart and switch to DSH Tavern',
+      noTavern: 'DSH Tavern is not installed yet; once it is, you can switch from here.',
+      noOriginal: 'The original DSH backup is missing, so switching back is not possible right now. See "Details and log" below.',
+      standalone: 'This is the standalone DSH Tavern window. The original DSH is DeepSeek Harness itself; no switch or restart needed.',
+      openOriginal: 'Open original DSH',
       restarting: 'Restarting…',
       quitHint: 'Quit Desktop from the tray; it reopens by itself after the switch (valid for two minutes).',
-      confirm: 'OK',
       loading: 'Loading…',
-      noModules: 'node_modules missing; plugins are not installed yet',
       cliHint: 'This is not the Desktop app. Command-line users can pick one with dsh --profile <name>.',
       failure: 'Failed',
       more: 'Details and log',
+      shortcut: 'Add desktop shortcut',
+      shortcutHint: 'The first installation adds a "DSH 酒馆" desktop shortcut to open the Tavern. You can delete it; updates will not recreate it. Restore it here whenever you need it.',
+      shortcutDone: 'Added to the desktop: ',
+      shortcutExists: 'Already on the desktop: ',
       logEmpty: '(no log yet)',
-      why: 'Desktop always reads profiles/desktop. Choosing another setup links it there (a junction on Windows, a symlink elsewhere); the original is backed up first and you can choose it again any time. Desktop has to exit first: restarting is a normal quit that asks for confirmation when tasks are running, never a forced kill.',
+      why: 'Desktop always reads profiles/desktop. Opening DSH Tavern links it to profiles/tavern (a junction on Windows, a symlink elsewhere); the original is first backed up as desktop.fresh-* and restored when you switch back. Desktop has to exit first: restarting is a normal quit that asks for confirmation when tasks are running, never a forced kill.',
     }
 
     /** Scoped stylesheet; class names are prefixed so they never leak into the host. */
@@ -69,25 +71,16 @@ window.__ModuleLoader__.load({
 .pb-head { display: grid; gap: 2px; }
 .pb-title { margin: 0; font-size: 16px; font-weight: 600; }
 .pb-sub { margin: 0; opacity: 0.6; }
-.pb-list { display: grid; gap: 10px; }
-.pb-option { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; border: 1px solid var(--pb-line); border-radius: 12px; cursor: pointer; transition: border-color .15s, background .15s; }
-.pb-option:hover:not(:disabled) { border-color: rgba(127,127,127,0.5); }
-.pb-option:focus-visible { outline: 2px solid var(--pb-accent); outline-offset: 2px; }
-.pb-option:disabled { cursor: default; }
-.pb-option.is-on { border-color: var(--pb-accent); background: var(--pb-accent-soft); }
-.pb-dot { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid rgba(127,127,127,0.55); display: grid; place-items: center; }
-.pb-option.is-on .pb-dot { border-color: var(--pb-accent); }
-.pb-option.is-on .pb-dot::after { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--pb-accent); }
-.pb-info { flex: 1; min-width: 0; display: grid; }
-.pb-name { font-size: 14px; font-weight: 500; }
-.pb-hint { font-size: 12px; opacity: 0.55; }
-.pb-bad { color: #e5484d; opacity: 1; }
-.pb-tag { flex: none; font-size: 12px; color: var(--pb-accent); }
 .pb-bar { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 10px; background: var(--pb-accent-soft); }
 .pb-bar-text { flex: 1; min-width: 0; }
 .pb-btn { appearance: none; font: inherit; font-size: 13px; flex: none; color: #fff; background: var(--pb-accent); border: 0; border-radius: 8px; padding: 6px 16px; cursor: pointer; }
 .pb-btn:hover:not(:disabled) { background: #3d5bf0; }
 .pb-btn:disabled { opacity: 0.5; cursor: default; }
+.pb-shortcut { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 10px; border: 1px solid var(--pb-line); }
+.pb-shortcut .pb-sub { margin: 0; }
+.pb-done { margin: 4px 0 0; font-size: 12px; word-break: break-all; }
+.pb-btn-quiet { color: inherit; background: var(--pb-fill); border: 1px solid var(--pb-line); }
+.pb-btn-quiet:hover:not(:disabled) { background: var(--pb-accent-soft); }
 .pb-error { margin: 0; padding: 10px 12px; border-radius: 10px; color: #e5484d; background: rgba(229,72,77,0.08); }
 .pb-fold summary { list-style: none; cursor: pointer; opacity: 0.55; font-size: 12px; user-select: none; }
 .pb-fold summary::-webkit-details-marker { display: none; }
@@ -104,126 +97,106 @@ window.__ModuleLoader__.load({
       return typeof error.message === 'string' ? error.message : String(error)
     }
 
-    /** Key of the option for Desktop's own (unlinked) profile. */
-    const ORIGINAL = ''
+    /** The menu names this page by side at once: the Tavern client marks a page that loaded it. */
+    const inTavern = () => window.__dshTavernLoaded === true
 
     /**
-     * One settings page: the setups Desktop can run as a single-choice list. The
-     * one in use is selected; picking another offers a restart, which queues the
-     * link (or, for Desktop's own profile, the revert) and quits and reopens the app.
+     * One settings page with one action: from the tavern setup, back to the original DSH;
+     * from the original, into DSH Tavern. Either way the app quits and reopens once.
      * @param {{ t: Function, rpcCall: Function }} props - injected faces from the registration.
      */
     function ProfileBridgeSettings(props) {
       const t = props.t
       const call = props.rpcCall
       const [status, setStatus] = React.useState(null)
-      const [loading, setLoading] = React.useState(true)
       const [failure, setFailure] = React.useState(null)
-      // The option the user picked (not yet applied), and the receipt once the switch is queued.
-      const [picked, setPicked] = React.useState(null)
       const [applied, setApplied] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
 
-      const load = React.useCallback(async () => {
-        setLoading(true)
-        try {
-          const result = await call('status', {})
+      React.useEffect(() => {
+        let alive = true
+        call('status', {}).then((result) => {
+          if (!alive) return
           if (result?.ok === true) setStatus(result.value)
           else setFailure(describeFailure(result?.error))
-        } catch (error) {
-          setFailure(describeFailure({ code: 'transport', message: error?.message ?? String(error) }))
-        } finally {
-          setLoading(false)
-        }
+        }, (error) => { if (alive) setFailure(describeFailure({ message: error?.message ?? String(error) })) })
+        return () => { alive = false }
       }, [call])
 
-      React.useEffect(() => {
-        void load()
-      }, [load])
+      // Which side this page is on comes from the page itself, the same as the menu name.
+      const side = inTavern() ? 'tavern' : 'original'
+      const standalone = status?.desktopApp === false
+      const tavernReady = (status?.profiles ?? []).some((profile) => profile.name === 'tavern' && (profile.bundles ?? []).includes('dsh-profile-bridge') && profile.hasNodeModules)
+      // Back to the original needs its backup; into the tavern needs a tavern setup that can come back.
+      const blocked = side === 'original' ? (tavernReady ? null : t('noTavern'))
+        : (status?.backups ?? []).length > 0 ? null : t('noOriginal')
+      const target = side === 'original' ? 'tavern' : null
 
-      const apply = React.useCallback(async () => {
-        if (picked === null) return
+      const [shortcut, setShortcut] = React.useState(null)
+      async function addShortcut() {
         setBusy(true)
         setFailure(null)
         try {
-          const result = picked === ORIGINAL
-            ? await call('unlink', {})
-            : await call('link', { target: picked })
-          if (result?.ok === true) setApplied(result.value ?? {})
+          const result = await call('shortcut', {})
+          if (result?.ok === true) setShortcut(result.value)
           else setFailure(describeFailure(result?.error))
         } catch (error) {
-          setFailure(describeFailure({ code: 'transport', message: error?.message ?? String(error) }))
+          setFailure(describeFailure({ message: error?.message ?? String(error) }))
         } finally {
           setBusy(false)
         }
-      }, [call, picked])
+      }
 
+      async function openOriginal() {
+        setFailure(null)
+        try {
+          const result = await call('openOriginal', {})
+          if (result?.ok !== true) setFailure(describeFailure(result?.error))
+        } catch (error) {
+          setFailure(describeFailure({ message: error?.message ?? String(error) }))
+        }
+      }
+
+      async function apply() {
+        setBusy(true)
+        setFailure(null)
+        try {
+          const result = target ? await call('link', { target }) : await call('unlink', {})
+          if (result?.ok === true) setApplied(result.value ?? {})
+          else setFailure(describeFailure(result?.error))
+        } catch (error) {
+          setFailure(describeFailure({ message: error?.message ?? String(error) }))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const title = t(inTavern() ? 'sectionTavern' : 'sectionOriginal')
       const isDesktop = status?.appKind === 'desktop'
-      const linked = status?.activeIsLink === true
-      const currentKey = linked ? status?.linkTargetName : ORIGINAL
-      const chosenKey = picked !== null ? picked : currentKey
-      const canQuit = status?.platform !== 'win32'
-      // Desktop's own profile can only be chosen again while its backup still exists.
-      const canRevert = !linked || (status?.backups ?? []).length > 0
-      const options = status === null ? [] : [
-        ...(canRevert ? [{ key: ORIGINAL, label: t('original'), hint: t('originalHint') }] : []),
-        ...(status.profiles ?? [])
-          // Only profiles that also carry this page: from any other the app has no way back.
-          .filter((profile) => profile.name !== status.activeName && (profile.bundles ?? []).includes('dsh-profile-bridge'))
-          .map((profile) => ({
-            key: profile.name,
-            label: profile.name === 'tavern' ? t('tavern') : profile.name,
-            hint: profile.name === 'tavern' ? t('tavernHint') : profile.dir,
-            bad: profile.hasNodeModules ? null : t('noModules'),
-          })),
-      ]
-
       return h('section', { className: 'pb' },
         h('style', null, CSS),
         h('header', { className: 'pb-head' },
-          h('h2', { className: 'pb-title' }, t('title')),
-          h('p', { className: 'pb-sub' }, isDesktop || status === null ? t('subtitle') : t('cliHint')),
+          h('h2', { className: 'pb-title' }, title),
+          h('p', { className: 'pb-sub' }, status === null ? t('loading') : !isDesktop ? t('cliHint') : standalone ? t('standalone') : t('explain')),
         ),
-
-        status === null
-          ? h('p', { className: 'pb-sub' }, loading ? t('loading') : '')
-          : !isDesktop ? null : h('div', { className: 'pb-list', role: 'radiogroup', 'aria-label': t('title') },
-              options.map((option) => {
-                const on = option.key === chosenKey
-                return h('button', {
-                  key: option.key || '(original)',
-                  type: 'button',
-                  role: 'radio',
-                  'aria-checked': on,
-                  className: on ? 'pb-option is-on' : 'pb-option',
-                  disabled: busy || applied !== null,
-                  onClick: () => setPicked(option.key === currentKey ? null : option.key),
-                },
-                  h('span', { className: 'pb-dot' }),
-                  h('span', { className: 'pb-info' },
-                    h('span', { className: 'pb-name' }, option.label),
-                    h('span', { className: option.bad ? 'pb-hint pb-bad' : 'pb-hint' }, option.bad ?? option.hint),
-                  ),
-                  on && picked !== null ? h('span', { className: 'pb-tag' }, t('pending')) : null,
-                )
-              }),
-            ),
-
-        picked === null ? null : h('div', { className: 'pb-bar' },
+        !isDesktop ? null : standalone ? h('div', { className: 'pb-bar' },
+          h('span', { className: 'pb-bar-text' }),
+          h('button', { type: 'button', className: 'pb-btn', disabled: busy, onClick: () => void openOriginal() }, t('openOriginal')),
+        ) : blocked ? h('p', { className: 'pb-error' }, blocked) : h('div', { className: 'pb-bar' },
           h('span', { className: 'pb-bar-text' },
-            applied === null ? t('restartHint') : applied.closesApp ? t('restarting') : t('quitHint'),
+            applied === null ? '' : applied.closesApp ? t('restarting') : t('quitHint'),
             ...(applied?.warnings ?? []).map((warning) => h('span', { key: warning, style: { display: 'block', opacity: 0.75 } }, `• ${warning}`)),
           ),
-          applied !== null ? null : h('button', {
-            type: 'button',
-            className: 'pb-btn',
-            disabled: busy,
-            onClick: () => void apply(),
-          }, busy ? t('restarting') : canQuit ? t('restart') : t('confirm')),
+          applied !== null ? null : h('button', { type: 'button', className: 'pb-btn', disabled: busy, onClick: () => void apply() },
+            busy ? t('restarting') : target ? t('toTavern') : t('toOriginal')),
         ),
-
         failure !== null ? h('p', { className: 'pb-error' }, `${t('failure')}: ${failure}`) : null,
-
+        !isDesktop || standalone ? null : h('div', { className: 'pb-shortcut' },
+          h('div', { className: 'pb-bar-text' },
+            h('p', { className: 'pb-sub' }, t('shortcutHint')),
+            shortcut ? h('p', { className: 'pb-done' }, (shortcut.existed ? t('shortcutExists') : t('shortcutDone')) + shortcut.path) : null),
+          h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: busy, onClick: () => void addShortcut() }, t('shortcut')),
+        ),
         h('details', { className: 'pb-fold' },
           h('summary', null, t('more')),
           h('p', null, t('why')),
@@ -248,7 +221,7 @@ window.__ModuleLoader__.load({
           name: 'settings.section',
           id: 'profile-bridge',
           order: 60,
-          label: () => t('section'),
+          label: () => t(inTavern() ? 'sectionTavern' : 'sectionOriginal'),
           inject: () => ({ rpcCall, t }),
         }, ProfileBridgeSettings))
       },

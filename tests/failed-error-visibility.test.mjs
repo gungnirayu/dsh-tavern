@@ -19,3 +19,17 @@ test('失败状态：清除或被后续轮次取代的失败为过期；只统�
   assert.deepEqual(failedErrorTurnStates(events, [4]).staleTurns, [1, 3, 4])
   assert.equal(failedErrorTurnStates(events.slice(0, 4), []).filteredStreak, 0)
 })
+
+test('批量隐藏可以只处理指定轮次，尾巴失败不被顺手藏掉', async () => {
+  const { setAllFailedErrorVisibility } = await import('../tavern-plugin/lib/domain/failed-error-visibility.js')
+  const events = [1, 2, 3].map(turn => ({ type: 'turn/end', data: { turn, reason: { kind: 'error', error: { message: 'boom' } } } }))
+  const chat = { hiddenDshErrorTurns: [] }
+  const scoped = setAllFailedErrorVisibility(chat, events, true, [1, 3])
+  assert.deepEqual(scoped.chat.hiddenDshErrorTurns, [1, 3])
+  assert.equal(scoped.changedCount, 2)
+  assert.deepEqual(setAllFailedErrorVisibility(chat, events, true).chat.hiddenDshErrorTurns, [1, 2, 3])
+  const restored = setAllFailedErrorVisibility(scoped.chat, events, false, [2])
+  assert.deepEqual(restored.chat.hiddenDshErrorTurns, [1, 3], '不在范围内的轮次保持原样')
+  assert.equal(restored.changedCount, 0)
+  assert.deepEqual(setAllFailedErrorVisibility(chat, events, true, [99]).chat.hiddenDshErrorTurns, [], '未知轮次直接忽略')
+})

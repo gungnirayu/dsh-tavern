@@ -14,6 +14,7 @@ if ! cmp -s package.json "$APP/package.json" || ! cmp -s pnpm-lock.yaml "$APP/pn
   echo "注意：依赖清单与本机安装不同，同步后还需要重新安装依赖才能生效。" >&2
 fi
 # shellcheck disable=SC2086
-git ls-files --cached --others --exclude-standard -- $PATHS | while IFS= read -r file; do [ -e "$file" ] && printf '%s\n' "$file"; done | rsync -a --files-from=- ./ "$APP/"
+# core.quotePath=false: otherwise Git prints non-ASCII names (世界书-*.json) as quoted octal escapes.
+git -c core.quotePath=false ls-files --cached --others --exclude-standard -- $PATHS | while IFS= read -r file; do [ -e "$file" ] && printf '%s\n' "$file"; done | rsync -a --files-from=- ./ "$APP/"
 echo "已同步到 $APP，正在重启……"
 DSH_TAVERN_NO_OPEN=1 node "$APP/bin/dsh-tavern.mjs" restart

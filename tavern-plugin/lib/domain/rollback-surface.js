@@ -2,7 +2,7 @@ import { storyEventTurn } from './session-upgrade-references.js'
 import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 import { inputAttachments } from './player-input-content.js'
 import { isRescuedHistoryMessage } from './chat-history-rescue.js'
-import { replaceSessionSurface } from './session-surface-mutations.js'
+import { createSessionSurfaceMutator, replaceSessionSurface } from './session-surface-mutations.js'
 import { restoredSurfaceSeqs } from './surface-restoration.js'
 import { sessionEvents, surfaceReplacementRange } from './session-events.js'
 import { createSurfaceOwnership, planSurfaceRecovery, planSurfaceRange, SurfaceRecoveryError, OWNED } from './surface-recovery.js'
@@ -115,9 +115,13 @@ export function regenerationAttemptTurns(input) {
 // STORY turn, which the host rows never carry. This list is the durable
 // statement "these native turns used to hold a body that has been replaced":
 // derived from the log, so it survives a reload.
-export function supersededRegenerationTurns({ events = [], nodes = [] } = {}) {
+export function supersededRegenerationTurns({ events = [], nodes = [], keepTurns = [] } = {}) {
   const visible = new Set(nodes.map(Number))
   const turns = new Set()
+  // The replacements that still own the page, one per regenerated round: its body and
+  // the turns it hides. The transcript draws append-origin events only, so the body
+  // tells us which rows are the ones left to show that round.
+  const rounds = []
   for (const event of events) {
     if (event?.type !== 'assistant/message' || event.surfaceOp?.op !== 'replace') continue
     // Only the replacement that is still the current node speaks for the page;
@@ -126,31 +130,98 @@ export function supersededRegenerationTurns({ events = [], nodes = [] } = {}) {
     // Only a regeneration writes a body for round N into a later turn; a seed or
     // repair rewrite carries no story turn and leaves the opening alone.
     if (!(Number(event.data?.message?.source?.tavernStoryTurn) > 0)) continue
-    for (const seq of event.sourceEventSeqs || []) {
-      const original = eventAt(events, seq)
-      if (!original || original.type !== 'assistant/message') continue
-      // Only a turn that actually showed a body leaves a visible row behind; the
-      // empty markers of earlier attempts never drew anything.
-      if (contentText(original.data?.message) === '') continue
-      const turn = Number(original.data?.turn)
-      // A row for the turn that now carries the replacement stays as it is.
-      if (Number.isSafeInteger(turn) && turn > 0 && turn !== Number(event.data?.turn)) turns.add(turn)
+    const story = Number(event.data?.message?.source?.tavernStoryTurn)
+    const currentTurn = Number(event.data?.turn)
+    const round = { body: contentText(event.data?.message), turns: new Set() }
+    const seen = new Set()
+    // A regeneration can leave an append copy in an edit turn and later replace
+    // that copy with another edit turn. The visible replacement names only the
+    // last attempt; follow the projections it superseded, or the copies from two
+    // or three rerolls back stay on the page next to the newest body.
+    function collect(sourceSeqs) {
+      for (const seq of sourceSeqs || []) {
+        if (seen.has(seq)) continue
+        seen.add(seq)
+        const original = eventAt(events, seq)
+        if (!original || original.type !== 'assistant/message') continue
+        const turn = Number(original.data?.turn)
+        if (!Number.isSafeInteger(turn) || turn <= 0 || turn === currentTurn) continue
+        // An earlier projection of the same round carries the next link of the chain.
+        if (original.surfaceOp?.op === 'replace') {
+          if (contentText(original.data?.message) !== '') { turns.add(turn); round.turns.add(turn) }
+          if (Number(original.data?.message?.source?.tavernStoryTurn) === story) collect(original.sourceEventSeqs)
+          continue
+        }
+        // Only a turn that actually showed a body leaves a visible row behind; the
+        // empty markers of earlier attempts never drew anything.
+        if (contentText(original.data?.message) === '') continue
+        turns.add(turn); round.turns.add(turn)
+      }
     }
+    collect(event.sourceEventSeqs)
+    if (round.body !== '' && round.turns.size) rounds.push(round)
   }
+  if (turns.size === 0 || rounds.length === 0) return [...turns].sort((left, right) => left - right)
+  // A round whose body only ever existed as a fold copy has that copy inside the
+  // turn we are about to hide. Hiding it as well erases the only row the
+  // transcript can draw, and the replacement itself stays model-only: the page
+  // then shows the player's input with no reply at all. Keep such a turn unless
+  // another drawable copy survives somewhere outside the hidden set. Judged per
+  // round: another round's surviving copy says nothing about this one, and judging
+  // them together blanked every regenerated round but the earliest.
+  const drawable = new Map()
+  for (const event of events) {
+    if (event?.type !== 'assistant/message' || event.surfaceOp !== 'append') continue
+    const turn = Number(event.data?.turn)
+    if (!Number.isSafeInteger(turn) || turn <= 0) continue
+    const body = contentText(event.data?.message)
+    if (!drawable.has(body)) drawable.set(body, new Set())
+    drawable.get(body).add(turn)
+  }
+  // The row the view maps a round to is the one it will render: an old tool
+  // submission's fold copy carries the previous text, so it never matches the
+  // replacement body, yet it is the only row the page can draw.
+  const mapped = (Array.isArray(keepTurns) ? keepTurns : []).map(Number)
+  const keep = []
+  for (const round of rounds) {
+    const copies = [...(drawable.get(round.body) || [])]
+    if (copies.some(turn => !turns.has(turn))) continue
+    const turn = mapped.find(value => round.turns.has(value)) ?? copies.find(value => round.turns.has(value))
+    if (turn !== undefined) keep.push(turn)
+  }
+  for (const turn of keep) turns.delete(turn)
   return [...turns].sort((left, right) => left - right)
 }
 
-// The native turn the committed body was written into: the projection's own
-// edit turn, not the synthetic generation turn the chat recorded first.
+// The native turn the committed body was written into. The transcript draws
+// append events only, so the round shows where its body is drawable: the range's
+// tail when that tail is an append, otherwise the last append copy of the same
+// body inside the replaced range. An old tool submission folds that copy before
+// the projection learns to add one after the range; pointing such a round at the
+// replacement's own turn leaves the page with no row to draw (#283).
 export function projectedReplyTurns({ events = [], nodes = [] } = {}) {
   const visible = new Set(nodes.map(Number))
+  const bySeq = new Map(events.filter(event => Number.isSafeInteger(event?.seq)).map(event => [event.seq, event]))
   const turns = new Map()
   for (const event of events) {
     if (event?.type !== 'assistant/message' || event.surfaceOp?.op !== 'replace') continue
     if (visible.size && !visible.has(Number(event.seq))) continue
     const story = Number(event.data?.message?.source?.tavernStoryTurn)
     if (!Number.isSafeInteger(story) || story < 1) continue
-    turns.set(story, Number(event.data?.turn))
+    const range = surfaceReplacementRange(event.surfaceOp)
+    const end = bySeq.get(range.end)
+    const drawn = end?.type === 'assistant/message' && end.surfaceOp === 'append' ? Number(end.data?.turn) : NaN
+    if (Number.isSafeInteger(drawn) && drawn > 0) { turns.set(story, drawn); continue }
+    // Inside the range, the last assistant append with text is the row the
+    // transcript drew for this round (the fold copy of a tool submission, or the
+    // attempt's own reply). Its text is the previous body when applying a
+    // replacement, so the row is located by shape, not by matching the new body.
+    const copy = events.findLast(source => source?.type === 'assistant/message' &&
+      source.surfaceOp === 'append' &&
+      Number(source.seq) >= Number(range.start) && Number(source.seq) <= Number(range.end) &&
+      contentText(source.data?.message) !== '' &&
+      Number(source.data?.turn) > 0 && Number(source.data?.turn) !== story)
+    turns.set(story, copy ? Number(copy.data.turn) : Number(event.data?.turn))
   }
   return turns
 }
@@ -188,6 +259,75 @@ export function rolledBackSurfaceTurns(events) {
     for (const seq of event.sourceEventSeqs || []) visit(seq)
   }
   return [...turns].sort((left, right) => left - right)
+}
+
+// Finished turns that a regeneration input opened, read from the log. The save
+// records the same turn by number, but a log the turn repair renumbered leaves
+// that number pointing at the neighbouring turn; the input itself cannot drift.
+export function regenerationInputTurns(events) {
+  const turns = new Set()
+  let open = null, opened = null
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === 'turn/start') { open = Number(event.data?.turn); opened = false }
+    else if (event?.type === 'turn/end') {
+      if (opened && Number.isSafeInteger(open) && open > 0) turns.add(open)
+      open = null
+    } else if (open !== null && event?.type === 'user/message' && event.surfaceOp === 'append' &&
+      isProducerSource(event.data?.source, 'dsh-tavern-regen')) opened = true
+  }
+  return [...turns].sort((left, right) => left - right)
+}
+
+// A round's player input can sit in a different native turn than its reply: a failed
+// input is marked void, then a retry adopts its text and projects the body into another
+// turn. Suppression would hide that whole turn, taking the player's own words with it.
+// The input row of a drawn reply is the nearest human message before it, and the same
+// holds for the attempt currently running. Keep that turn's input visible; its failed
+// residue (error rows, trigger cards) is still hidden by the other lists.
+export function keptPlayerInputTurns(input = {}) {
+  const events = Array.isArray(input.events) ? input.events : []
+  const replyTurns = new Set((Array.isArray(input.replyTurns) ? input.replyTurns : [])
+    .map(Number).filter(turn => Number.isSafeInteger(turn) && turn > 0))
+  const suppressed = new Set((Array.isArray(input.suppressed) ? input.suppressed : [])
+    .map(Number).filter(turn => Number.isSafeInteger(turn) && turn > 0))
+  if (replyTurns.size === 0 || suppressed.size === 0) return []
+  const openTurn = Number(input.openTurn)
+  const bodies = new Map()
+  let turn = null
+  let lastInput = null
+  let queued = []
+  for (const event of events) {
+    if (!event) continue
+    if (event.type === 'turn/start') {
+      turn = Number(event.data?.turn)
+      // A message queued before its turn starts (the inbox splices it in) opens it.
+      for (const item of queued) item.turn = turn
+      queued = []
+      continue
+    }
+    if (event.type === 'turn/end') { turn = null; continue }
+    if (event.type === 'user/message' && event.surfaceOp === 'append' && event.data?.source?.kind === 'user') {
+      if (contentText(event.data) === '') continue
+      const item = { seq: Number(event.seq), turn }
+      // Deliveries before a turn starts still belong to the turn they wake.
+      if (turn === null) queued.push(item)
+      lastInput = item
+      continue
+    }
+    if (event.type !== 'assistant/message' || event.surfaceOp !== 'append') continue
+    if (contentText(event.data?.message) === '') continue
+    const owner = Number(event.data?.turn)
+    if (!Number.isSafeInteger(owner) || owner <= 0) continue
+    bodies.set(owner, { seq: Number(event.seq), input: lastInput })
+  }
+  const kept = new Set()
+  for (const reply of replyTurns) {
+    const body = bodies.get(reply)
+    const source = body ? body.input
+      : Number.isSafeInteger(openTurn) && openTurn > 0 && reply === openTurn ? lastInput : null
+    if (source && suppressed.has(Number(source.turn))) kept.add(Number(source.turn))
+  }
+  return [...kept].sort((left, right) => left - right)
 }
 
 export function foregroundSuppressedTurns(chat, events) {
@@ -482,10 +622,65 @@ export function regenerationProjection(replacement, data, operationId) {
   }
 }
 
-/** Idempotent: each replacement reuses its id and sources, so a retry after a crash writes nothing twice. */
+/**
+ * Idempotent: each replacement reuses its id and sources, so a retry after a crash writes nothing twice.
+ *
+ * The transcript draws append-origin events only; a replacement stays model-only.
+ * A round whose body exists only as a replacement (it was submitted through a tool
+ * call, so it never streamed an answer of its own) therefore renders as nothing
+ * after regenerating. Give it a transcript copy, then shadow the range including
+ * that copy — the same shape the fold writes for a live submission.
+ */
 export function applyRegenerationProjection(session, projection) {
-  replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
-  for (const cleanup of projection.cleanups || []) replaceSessionSurface(session, 'user/message', cleanup.data, cleanup.range)
+  const events = sessionEvents(session)
+  const blocks = Array.isArray(projection.data?.message?.content) ? projection.data.message.content : []
+  const body = blocks.filter(block => block?.type === 'text').map(block => block.text).join('')
+  // Judge by the shape the range ends on, never by the message source: a
+  // projection inherits the source of the reply it replaces, so a source check
+  // silently skips the copy for every ordinary round.
+  const endEvent = events.find(event => Number(event?.seq) === Number(projection.range?.end))
+  const needsTranscriptCopy = body !== '' && endEvent?.type === 'assistant/message' && endEvent.surfaceOp !== 'append'
+  // Only a copy written AFTER the range may be reused. A fold copy inside the
+  // range is the old turn's row: it stays model-only once that turn is hidden as
+  // superseded, so reusing it leaves the round blank. Rewriting it as the
+  // replacement's tail keeps the retry idempotent without that trap.
+  const shown = needsTranscriptCopy
+    ? events.find(event => event?.type === 'assistant/message' && event.surfaceOp === 'append' &&
+        Number(event.seq) > Number(projection.range?.end) &&
+        (event.data?.message?.content || []).some(block => block?.type === 'text' && block.text === body))
+    : undefined
+  const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.map(Number) : []
+  const replaceCleanups = () => {
+    for (const cleanup of projection.cleanups || []) replaceSessionSurface(session, 'user/message', cleanup.data, cleanup.range)
+  }
+  if (!needsTranscriptCopy) {
+    replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
+    replaceCleanups()
+    return
+  }
+  // Retry after a crash: the copy is on the surface already, and the old range
+  // may already be shadowed. Nothing left to write then.
+  const copySeq = shown ? Number(shown.seq) : -1
+  const from = nodes.indexOf(Number(projection.range?.start))
+  if (from < 0) {
+    if (copySeq < 0) replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
+    replaceCleanups()
+    return
+  }
+  const surface = createSessionSurfaceMutator(session)
+  surface.editStep(() => {
+    const shownSeq = copySeq >= 0
+      ? copySeq
+      : Number((entry => (typeof entry === 'number' ? entry : entry.seq))(surface.append('assistant/message', projection.data, { surfaceOp: 'append' })))
+    const to = session.surface.nodes.map(Number).indexOf(shownSeq)
+    if (to < from) return
+    surface.replace('assistant/message', projection.data, {
+      start: projection.range.start,
+      end: shownSeq,
+      sourceEventSeqs: session.surface.nodes.slice(from, to + 1).map(Number),
+    })
+  })
+  replaceCleanups()
 }
 
 /** Turns cut off without ending (the server stopped mid-reply) whose nodes the model still sees. */

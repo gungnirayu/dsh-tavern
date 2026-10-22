@@ -1,20 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
 
-import { buildSettingsBundle, readSettingsBundle, safeExportFileName, SETTINGS_BUNDLE_PARTS } from '../tavern-plugin/lib/domain/settings-bundle.js'
-import { applyTavernSettingsPatch, presentTavernSettings, uniqueName } from '../tavern-plugin/lib/domain/tavern-settings.js'
+import { buildSettingsBundle } from '../tavern-plugin/lib/domain/settings-bundle.js'
+import { applyTavernSettingsPatch, presentTavernSettings } from '../tavern-plugin/lib/domain/tavern-settings.js'
 import { createUserPreferenceProfile } from '../tavern-plugin/lib/domain/user-preference-profile.js'
 
-// Exercise the production bundle functions from index.js with in-memory dependencies.
-const source = readFileSync(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-const bundleBody = source.split('  async function importPresetAsNew(preset) {')[1].split('  let resourceGraph')[0]
-const promptBody = source.split('  function systemPromptSetFromDocument(document, fallbackName) {')[1].split('  const applicationUpdater')[0]
-const DEPS = ['str', 'importPreset', 'presetLibrary', 'readTavernSettings', 'updateTavernSettings', 'userPreferenceProfile', 'prepareTextImport', 'promptFile', 'SYSTEM_PROMPT_NAMES', 'SYSTEM_PROMPT_DEFINITIONS',
-  'readSettingsBundle', 'buildSettingsBundle', 'SETTINGS_BUNDLE_PARTS', 'uniqueName', 'safeExportFileName']
-const factory = new Function(...DEPS, 'function systemPromptSetFromDocument(document, fallbackName) {' + promptBody +
-  '\n  function presentSystemPrompts(settings) {\n    const byName = Object.fromEntries((settings.systemPrompts || []).map(item => [item.name, item]))\n    return { spec: \'dsh-tavern.system-prompts\', version: 1, systemAppendEnabled: settings.systemAppendEnabled === true, prompts: SYSTEM_PROMPT_DEFINITIONS.map(d => Object.assign({}, d, byName[d.name])) }\n  }\n' +
-  'async function importPresetAsNew(preset) {' + bundleBody + '\nreturn { exportSettingsBundle, importSettingsBundle }')
+import { createSettingsTransfer } from '../tavern-plugin/lib/domain/settings-transfer.js'
+import { createSystemPromptDocuments } from '../tavern-plugin/lib/domain/system-prompt-documents.js'
 
 function memoryStore(initial) {
   let value = initial
@@ -30,7 +22,6 @@ function harness() {
   let settings = {}
   const profile = createUserPreferenceProfile({ store: memoryStore(), now: () => 100 })
   const deps = {
-    str: value => value === undefined || value === null ? '' : String(value),
     importPreset: async payload => {
       if (presets.has(payload.name)) throw new Error('文件已存在: ' + payload.name)
       presets.set(payload.name, payload.text)
@@ -45,12 +36,9 @@ function harness() {
     updateTavernSettings: async patch => { settings = applyTavernSettingsPatch(settings, patch); return presentTavernSettings(settings, DEFAULTS) },
     userPreferenceProfile: profile,
     prepareTextImport: payload => ({ ...payload, text: String(payload.text).trim() }),
-    promptFile: name => DEFAULTS[name],
-    SYSTEM_PROMPT_NAMES: NAMES,
-    SYSTEM_PROMPT_DEFINITIONS: NAMES.map(name => ({ name, label: name })),
-    readSettingsBundle, buildSettingsBundle, SETTINGS_BUNDLE_PARTS, uniqueName, safeExportFileName
+    promptDocuments: createSystemPromptDocuments({ definitions: NAMES.map(name => ({ name, label: name })), prompt: name => DEFAULTS[name] })
   }
-  const api = factory(...DEPS.map(name => deps[name]))
+  const api = createSettingsTransfer(deps)
   return { ...api, presets, profile, active: () => activePreset, settings: () => settings }
 }
 
@@ -103,4 +91,14 @@ test('无法识别的文件和空导出给出明确错误', async () => {
   await assert.rejects(h.importSettingsBundle({ payload: { name: 'x.json', text: '{"hello":1}' } }), /无法识别/)
   await assert.rejects(h.exportSettingsBundle({ include: {} }), /至少选择一项/)
   await assert.rejects(h.exportSettingsBundle({ include: { preset: true } }), /没有选中的预设/)
+})
+
+test('系统提示词校验失败时不先导入预设或切换长期偏好', async () => {
+  const h = harness()
+  const bundle = buildSettingsBundle({ name: '错误提示词包', preset: { name: 'new.json', text: '{"prompts":[]}' },
+    systemPrompts: { spec: 'dsh-tavern.system-prompts', version: 1, prompts: { story: '' } } })
+  await assert.rejects(h.importSettingsBundle({ payload: { name: 'bad.json', text: JSON.stringify(bundle) } }), /缺少有效内容/)
+  assert.equal(h.presets.size, 0)
+  assert.equal(h.active(), '')
+  assert.deepEqual(h.settings(), {})
 })

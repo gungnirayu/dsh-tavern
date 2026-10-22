@@ -1,3 +1,0 @@
-# Local, reproducible source checkouts used while auditing. The reports record
-# their repository URLs and locked commits; do not vendor nested Git histories.
-upstreams/

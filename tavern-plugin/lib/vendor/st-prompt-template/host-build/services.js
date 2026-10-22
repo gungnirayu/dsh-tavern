@@ -21,7 +21,7 @@ export function createTemplateServices(context, rpc) {
       return result.text
     },
     getRegexedString(value, placement, options = {}) {
-      const scripts = [...(context()?.dsh?.regexScripts || []), ...(extension_settings.regex || [])]
+      const scripts = [...(extension_settings.regex || []), ...(context()?.dsh?.regexScripts || [])]
       const displayScripts = options.statusBoundaries ? scripts.map((rule, index) => {
         const declaration = statusViewDeclaration(rule)
         if (!declaration || !/<(?:script|iframe|object|embed)\b/i.test(rule.replaceString || '')) return rule

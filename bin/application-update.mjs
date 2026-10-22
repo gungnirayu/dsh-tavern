@@ -6,7 +6,8 @@ import { runInstallationProcess } from './installation-process.mjs'
 import installationState from './installation-state.cjs'
 import { createUpdateState } from './update-state.mjs'
 import { readInstallationReceipt } from './installation-receipt.mjs'
-import { closeSync, copyFileSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import os from 'node:os'
 import path from 'node:path'
 import { INSTALL_HOSTS, SOURCE_ROOT, DSH_ROOT, RUNTIME_HOST, runtimeEnvironment, commandExists, sleep } from './launcher-environment.mjs'
@@ -25,6 +26,66 @@ export function decodeUpdateOutput(value) {
   else text = buffer.toString('utf8')
   return text.replace(/^\uFEFF/, '').replaceAll('\u0000', '')
 }
+
+// The installers already print their steps, but the update only ever wrote them to
+// a log: the sidebar showed “安装程序” from spawn to exit. Turn each step header
+// (android/setup.sh, android/install.sh) and each `DSH_STATUS` line (install.sh,
+// install.ps1, bin/download.cjs) into the stage the user sees.
+const INSTALL_STEP_LINE = /^==\s*\[步骤\s*(\d+)\]\s*(.*?)\s*==$/
+const STEP_ELAPSED = /\s*（已用\s*\d+s）\s*$/
+const PACKAGE_PROGRESS = /^Progress: resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)/
+export function installStageFromLine(line) {
+  const text = String(line ?? '').trim()
+  const step = INSTALL_STEP_LINE.exec(text)
+  if (step) return `第 ${step[1]} 步 · ${step[2].replace(STEP_ELAPSED, '')}`
+  const status = /^DSH_STATUS\s+(.+)$/.exec(text)
+  if (status) return status[1].trim()
+  // 依赖安装往往是最慢的一步：把 pnpm 的计数写进阶段，用户能看出是在下载还是
+  // 从本地 store 复制，而不是只有一个不动的步骤名。
+  const progress = PACKAGE_PROGRESS.exec(text)
+  if (progress) return `安装依赖：已装 ${progress[4]}，复用 ${progress[2]}，下载 ${progress[3]}`
+  return ''
+}
+
+// Decode chunk boundaries safely (a Chinese character may be split across two
+// writes) and report only when the stage changes. Any real output also refreshes
+// progress, so “没有新进展” can actually mean silent.
+export function createInstallStageReporter({ onStage, onProgress, now = Date.now, heartbeatMs = 5000 } = {}) {
+  const decoder = new StringDecoder('utf8')
+  let buffer = ''
+  let lastStage = ''
+  let lastProgress = 0
+  const progress = () => {
+    if (now() - lastProgress < heartbeatMs) return
+    lastProgress = now()
+    onProgress?.()
+  }
+  const consume = line => {
+    if (line.trim() === '') return
+    progress()
+    const stage = installStageFromLine(line)
+    if (stage !== '' && stage !== lastStage) {
+      lastStage = stage
+      onStage?.(stage)
+    }
+  }
+  return {
+    push(chunk) {
+      buffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+      const lines = buffer.split(/\r\n|\r|\n/)
+      buffer = lines.pop() ?? ''
+      for (const line of lines) consume(line)
+      // A stream without line breaks must not grow without bound.
+      if (buffer.length > 8192) { consume(buffer); buffer = '' }
+    },
+    end() {
+      buffer += decoder.end()
+      if (buffer !== '') consume(buffer)
+      buffer = ''
+    },
+  }
+}
+
 
 export function parseUpdateOptions(args) {
   let host = RUNTIME_HOST
@@ -126,10 +187,18 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
     const capture = options.statusFile !== ''
     outputFile = capture ? `${temporary}.log` : ''
     let outputDescriptor = null
+    let stageReporter = null
     let result
     let commandError
+    // Forward the installer's own step lines into the lock so the page shows what it
+    // is doing, and refresh progressAt on real output so a silent hang is visible.
+    const reportStage = patch => { try { lease.update({ ...patch, progressAt: Date.now() }) } catch {} }
+    const writeOutput = chunk => { try { if (outputDescriptor !== null) writeSync(outputDescriptor, chunk) } catch {} }
     try {
-      if (capture) outputDescriptor = openSync(outputFile, 'w')
+      if (capture) {
+        outputDescriptor = openSync(outputFile, 'w')
+        stageReporter = createInstallStageReporter({ onStage: stage => reportStage({ stage }), onProgress: () => reportStage({}) })
+      }
       result = await runInstallationProcess(command, args, {
         // Outside the app being replaced (Windows refuses to rename a directory in use as a cwd).
         cwd: os.tmpdir(),
@@ -150,10 +219,13 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
           ...(options.targetCommit ? { DSH_TAVERN_TARGET_COMMIT: options.targetCommit } : {}),
           ...(capture ? { DSH_TAVERN_NO_OPEN: '1' } : {}),
         },
-        stdio: capture ? ['ignore', outputDescriptor, outputDescriptor] : 'inherit',
+        stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+        onStdout(chunk) { writeOutput(chunk); stageReporter?.push(chunk) },
+        onStderr(chunk) { writeOutput(chunk); stageReporter?.push(chunk) },
         windowsHide: true,
       })
     } catch (error) { commandError = error; result = error } finally {
+      stageReporter?.end()
       if (outputDescriptor !== null) closeSync(outputDescriptor)
     }
     if (capture && existsSync(outputFile)) {

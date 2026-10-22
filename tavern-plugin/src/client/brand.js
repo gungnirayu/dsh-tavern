@@ -1,11 +1,15 @@
 // The tavern shell owns the tab while it is mounted. Brand images reach the
 // stylesheet through custom properties so tavern.css stays a verbatim asset.
+// They live in a stylesheet rule, not the root element's inline style: the host
+// rewrites that style on layout changes, re-parsing every inline property.
 // The icon link is appended last so it wins over the host icon; disposal
 // restores the host icon.
 function installTavernBrand(doc, urls) {
-  const root = doc.documentElement;
   const properties = { '--dsh-tavern-logo': urls.logo, '--dsh-tavern-lockup': urls.lockup, '--dsh-tavern-lockup-dark': urls['lockup-dark'] };
-  for (const [name, url] of Object.entries(properties)) root.style.setProperty(name, 'url("' + url + '")');
+  const style = doc.createElement('style');
+  style.dataset.plugin = 'dsh-tavern-plugin';
+  style.textContent = ':root{' + Object.entries(properties).map(([name, url]) => name + ':url("' + String(url).replace(/["\\\n]/g, encodeURIComponent) + '")').join(';') + '}';
+  doc.head.appendChild(style);
   const link = doc.createElement('link');
   link.rel = 'icon';
   link.type = 'image/svg+xml';
@@ -22,6 +26,6 @@ function installTavernBrand(doc, urls) {
   return function () {
     if (observer) observer.disconnect();
     link.remove();
-    for (const name of Object.keys(properties)) root.style.removeProperty(name);
+    style.remove();
   };
 }

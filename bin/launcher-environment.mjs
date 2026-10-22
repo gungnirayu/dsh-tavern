@@ -80,8 +80,6 @@ export const REQUIRED_SOURCE_FILES = [
   'pnpm-workspace.yaml',
   path.join('tavern-plugin', 'package.json'),
   path.join('tavern-plugin', 'cordis.patch.yml'),
-  path.join('tavern-plugin', 'packages', 'dsh-image-gen', 'src', 'module.js'),
-  path.join('tavern-plugin', 'packages', 'dsh-image-gen', 'src', 'configuration.js'),
   // 0.2.0-rc.2 适配：presets/tavern/preset.yml 已随 preset 容器模型变更移除，
   // preset 定义改由 tavern-plugin/cordis.patch.yml 的声明行承载。
   path.join('tavern-plugin', 'lib', 'user-tools-bridge.js'),
@@ -164,7 +162,8 @@ export function findDshCommand(host = RUNTIME_HOST) {
 // installed elsewhere, so installs run this exact bootstrap instead.
 export function pinnedDesktopDsh(host, env = process.env, platform = process.platform) {
   if (host !== 'desktop') return null
-  const executable = env.DSH_DESKTOP_NODE_EXECUTABLE || env.DSH_DESKTOP_APP_EXECUTABLE
+  // The official runtime pins the DSH entry to its Electron executable.
+  const executable = env.DSH_DESKTOP_DSH_RUNNER || env.DSH_DESKTOP_NODE_EXECUTABLE || env.DSH_DESKTOP_APP_EXECUTABLE
   const bootstrap = env.DSH_DESKTOP_DSH_BOOTSTRAP
   if (!executable || !bootstrap || !existsSync(executable) || (!existsSync(bootstrap) && !bootstrap.includes('app.asar' + path.sep))) return null
   return { executable, bootstrap }

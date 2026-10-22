@@ -29,7 +29,8 @@ function TavernInlineFragment(props) {
         // Zoom only our own wrapper: the card's DOM and styles are never written, and in
         // the host page viewport units cannot feed back into the zoomed size.
         const unbind = bindTavernFontZoom(root, root.ownerDocument.defaultView);
-        return function () { unbind(); root.replaceChildren(); };
+        const colors = installTavernTextColors(root, {}, findTavernQuoteRanges);
+        return function () { colors.dispose(); unbind(); root.replaceChildren(); };
     }, [props.content]);
     return React.createElement('div', {ref, className:'mes_text dsh-tavern-inline-fragment'});
 }

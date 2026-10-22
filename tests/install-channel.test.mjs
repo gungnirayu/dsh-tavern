@@ -48,7 +48,7 @@ test('安装脚本内嵌自己的版本号，jsDelivr 下载不接受比它旧�
   assert.match(ps1, /'runtime', [^\n]*'--min-version', \$InstallerVersion\)/)
 })
 
-test('Windows 桌面探测：社区版终端里的 node.exe 不算桌面程序；卸载项缺 InstallLocation 时从卸载程序路径找（#250）', () => {
+test('Windows 桌面探测：环境变量里的 node.exe 不算桌面程序；卸载项缺 InstallLocation 时从卸载程序路径找（#250）', () => {
   const source = readFileSync(new URL('install.ps1', root), 'utf8')
   const candidates = source.slice(source.indexOf('$DesktopCandidates = '), source.indexOf('$OfficialDesktopExecutable = '))
   assert.match(candidates, /\$DesktopCandidates = @\(\$env:DSH_DESKTOP_APP_EXECUTABLE\)/, 'an explicit app path wins')

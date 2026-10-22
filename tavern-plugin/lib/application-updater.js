@@ -25,7 +25,7 @@ const UPDATE_CHECK_POLICY = 5
 const BUSY_PHASES = new Set(['running', 'cancelling', 'blocked'])
 const CDN_METADATA_URL = 'https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json'
 const RUNTIME_FILES = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml', 'install.ps1', 'install.sh'])
-const RUNTIME_DIRECTORIES = ['bin/', 'config/', 'presets/', 'tavern-plugin/', 'patches/']
+const RUNTIME_DIRECTORIES = ['android/', 'bin/', 'config/', 'presets/', 'tavern-plugin/', 'patches/']
 
 async function localCommitRelation(root, current, latest) {
   const ancestor = async (base, head) => {
@@ -406,8 +406,13 @@ export function createApplicationUpdater(options) {
     }
     if (owner) {
       const active = current?.attemptId === owner.attemptId ? current : {}
-      const elapsed = now() - (Number(owner.startedAt) || Date.parse(owner.startedAt) || Number(active.startedAt) || now())
-      const stale = elapsed >= RUNNING_TIMEOUT_MS || (owner.pid > 0 && !isProcessAlive(owner.pid))
+      // Judge “no progress” by the last write the installer reported, not by when the
+      // update started: a slow but working install must not be labelled stalled, and a
+      // silent one should be.
+      const progressAt = Number(owner.progressAt) || Number(active.progressAt) ||
+        Number(owner.startedAt) || Date.parse(owner.startedAt) || Number(active.startedAt) || Date.parse(active.startedAt) || now()
+      const idleMs = now() - progressAt
+      const stale = idleMs >= RUNNING_TIMEOUT_MS || (owner.pid > 0 && !isProcessAlive(owner.pid))
       const blocked = owner.unsafeToRetry || owner.uncertain || (owner.pid > 0 && !isProcessAlive(owner.pid))
       const cancelling = installationState.cancellationRequested(dshHome, owner.attemptId)
       return { ...active, ...identity, attemptId: owner.attemptId, host: await host(),
@@ -416,7 +421,7 @@ export function createApplicationUpdater(options) {
         progressAt: owner.progressAt || active.progressAt,
         cancellable: !!owner.supervised && !blocked, stalled: stale,
         ...(blocked ? { error: '上次安装的执行链尚未确认停止，已阻止重复安装。请先确认旧安装进程全部退出，再恢复安装。' }
-          : stale ? { error: '更新超过预期时间；尚未确认执行链停止，请勿同时重新安装。' } : {}),
+          : stale ? { error: `更新已经 ${Math.round(RUNNING_TIMEOUT_MS / 60000)} 分钟没有新进展；尚未确认执行链停止，请勿同时重新安装。` } : {}),
       }
     }
     if (current !== undefined) {
@@ -529,7 +534,7 @@ export function createApplicationUpdater(options) {
       if (manifest.dsh?.profile?.bundles?.includes('dsh-profile-tavern')) {
         return {
           phase: 'package-managed', host: await host(), ...await localIdentity(),
-          updateCommand: 'dsh plugin --profile tavern add github:flizzywine/dsh-tavern',
+          updateCommand: 'dsh plugin --profile tavern add @deepseek-ai/dsh-web-app github:flizzywine/dsh-tavern',
         }
       }
     } catch (error) {

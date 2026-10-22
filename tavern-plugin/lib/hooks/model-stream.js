@@ -20,6 +20,7 @@ export function registerModelStreamHooks({
   storyRetention,
   runtimePrompt,
   sessionStateForSession,
+  recentStateForSession,
   sessionStore,
   str,
   updateChat,
@@ -41,16 +42,17 @@ export function registerModelStreamHooks({
       return Math.max(native, Math.ceil((text.length - nonAscii) / 4) + nonAscii * 2 + 8)
     }
   })
+  // Whether a session is a Tavern game: its header answers that, not its history.
+  const isGame = async sessionId => Boolean(await chatHeaderForSession(str(sessionId), []))
   installWorkspaceInstructionPresentation(ctx, async sessionId => {
     if (backgroundAgentRunner.owns(sessionId)) return true
-    const chat = await sessionStateForSession(sessionId)
-    return Boolean(chat)
+    return isGame(sessionId)
   })
-  installCompactionRequestProjection(ctx, async sessionId => backgroundAgentRunner.owns(sessionId) || Boolean(await sessionStateForSession(sessionId)), async request => {
+  installCompactionRequestProjection(ctx, async sessionId => backgroundAgentRunner.owns(sessionId) || await isGame(sessionId), async request => {
     // Story/script chats summarize with the story prompt and keep the latest rounds
     // verbatim after the summary; other sessions keep DSH's prompt.
-    const chat = await chatForSession(str(request.sessionId))
-    if (!usesStoryCompaction(chat)) return { request }
+    const head = await chatHeaderForSession(str(request.sessionId), [])
+    if (!usesStoryCompaction(head)) return { request }
     // An imported game compacts right away: an oversized history is summarized in segments
     // (bounded-compaction.js), so the first-play capacity check is not a precondition.
     // Seam to the plugin layer: plugins may add what the summary must keep.
@@ -60,7 +62,13 @@ export function registerModelStreamHooks({
     const natively = nativelyRetainedRounds(session, request)
     // Which story turns this compaction folds: everything but the rounds kept verbatim.
     const kept = retainRecentStoryRounds(request, retention.rounds - natively, retention).kept || 0
-    const turns = (chat.messages || []).filter(message => message?.role === 'assistant' && Number(message.turn) > 0).map(message => Number(message.turn))
+    // The turn the summary folds through is a few rounds from the end: the latest floors
+    // hold it; the whole history only where storage cannot read those alone.
+    const back = kept + natively
+    const recent = await recentStateForSession(str(request.sessionId), 2 * back + 8)
+    const recentTurns = (recent?.messages || []).filter(message => message?.role === 'assistant' && Number(message.turn) > 0).map(message => Number(message.turn))
+    const turns = recent && (recent.messagesFrom === 0 || recentTurns.length > back) ? recentTurns
+      : ((await chatForSession(str(request.sessionId)))?.messages || []).filter(message => message?.role === 'assistant' && Number(message.turn) > 0).map(message => Number(message.turn))
     const volumes = storyVolumePlan(request, { through: turns[turns.length - 1 - kept - natively], budget: retention.volumeBudget, estimate: retention.estimate })
     const instruction = [runtimePrompt('story-compaction'), volumes.instruction, ...(notes.length ? ['【插件附加的摘要要求】', ...notes.map(note => note.text)] : [])].join('\n\n')
     const story = createStoryCompactionRequest(request, instruction)

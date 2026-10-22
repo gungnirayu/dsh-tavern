@@ -2,18 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { sourceFunction } from './fixtures/source-function.mjs'
 
 const source = readFileSync(new URL('../bin/service-lifecycle.mjs', import.meta.url), 'utf8')
-const alive = source.slice(source.indexOf('function isProcessAlive('), source.indexOf('export function isPortOpen('))
-const state = source.slice(source.indexOf('async function serviceState('), source.indexOf('function findLegacyService('))
-const stop = source.slice(source.indexOf('export async function stopService('), source.indexOf('export async function startService(')).replace('export ', '')
+const alive = sourceFunction(source, 'isProcessAlive')
+const state = sourceFunction(source, 'serviceState')
+const stop = sourceFunction(source, 'stopPermissionMessage') + sourceFunction(source, 'stopService')
 const denied = () => { throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' }) }
 
-function sandbox(identity, portOpen = false) {
+function sandbox(identity, portOpen = false, host = 'android') {
   let removed = 0, signals = 0
   const record = { pid: 27035, source: '/tavern', profile: 'tavern' }
   const context = { process: { platform: 'linux', kill(_pid, signal) { if (signal) signals++; denied() } },
-    RUNTIME_HOST: 'android', SOURCE_ROOT: '/tavern', PROFILE: 'tavern', CLI_PORT: 3088,
+    RUNTIME_HOST: host, SOURCE_ROOT: '/tavern', PROFILE: 'tavern', CLI_PORT: 3088,
+    PID_FILE: '/root/.dsh-tavern/logs/tavern.pid.json',
     readPidRecord: () => record, removePidRecord: () => removed++,
     inspectRecordedProcess: () => identity, isPortOpen: async () => portOpen,
     isServiceReady: async () => portOpen, findLegacyService: () => null,
@@ -71,6 +73,38 @@ test('desktop EPERM behavior does not depend on Linux proc visibility', () => {
   for (const platform of ['win32', 'darwin']) {
     assert.equal(inspectRecordedProcess(record, { ...options(), platform, kill: denied, read() { assert.fail('must not inspect proc') } }), 'owned')
   }
+})
+
+test('Linux hosts identify the service from /proc instead of trusting kill(0)', () => {
+  for (const host of ['cli', 'desktop']) {
+    assert.equal(inspectRecordedProcess(record, { ...options(), platform: 'linux', host, kill: denied }), 'owned',
+      'the recorded service is still ours when kill(0) is denied')
+    const foreign = options({ cmdline: ['/usr/sbin/cron', '-f', ''].join('\0') })
+    assert.equal(inspectRecordedProcess(record, { ...foreign, platform: 'linux', host, kill: denied }), 'foreign',
+      'a PID from outside a sandbox namespace is not ours')
+  }
+})
+
+test('Linux hosts never claim a PID whose /proc entry cannot be read', () => {
+  for (const host of ['cli', 'desktop']) {
+    assert.equal(inspectRecordedProcess(record, { ...options(), platform: 'linux', host, kill: denied,
+      read() { throw Object.assign(new Error('denied'), { code: 'EACCES' }) } }), 'unknown')
+  }
+})
+
+test('Linux permission failure while signaling is reported instead of the raw kill error', async () => {
+  const h = sandbox('owned', false, 'cli')
+  await assert.rejects(vm.runInContext('stopService()', h.context), /权限不足。该 PID 可能已被其他进程复用/)
+  assert.deepEqual(h.counts(), { removed: 0, signals: 1 })
+})
+
+test('a stale record from a separate PID namespace is dropped and the live listener adopted', async () => {
+  const h = sandbox('foreign', true, 'cli')
+  h.context.findLegacyService = () => ({ pid: 4711, port: 3088, profile: 'tavern', source: '/tavern', legacy: true })
+  const state = await vm.runInContext('serviceState()', h.context)
+  assert.equal(h.counts().removed, 1)
+  assert.equal(state.record.pid, 4711)
+  assert.equal(state.ready, true)
 })
 
 test('Android rechecks identity before SIGTERM and tolerates reuse during signaling', async () => {

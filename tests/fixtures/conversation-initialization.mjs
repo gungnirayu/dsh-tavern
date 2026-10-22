@@ -42,7 +42,6 @@ export function initializationFixture(options = {}) {
     const timeline = createStoryTimeline({ id: prefix => prefix + '-' + ++sequence, now: () => 123 })
     const snapshots = createPlayCardSnapshots({
       userPreferenceProfile: options.userPreferenceProfile,
-      captureSceneWorldbook: options.captureSceneWorldbook,
       worldBooks: { bound: async () => ({ view: { entries: [{ constant: true, content: '固定世界书' }, { constant: false, content: '动态世界书' }] } }) },
       planner: createContextPlanner({ prompt: () => '' }), readCard: async () => structuredClone(card), writeChat: write
     })

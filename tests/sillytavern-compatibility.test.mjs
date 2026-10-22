@@ -31,8 +31,7 @@ test('对话示例只识别与当前玩家和角色名匹配的英文冒号前�
   ])
 })
 
-test('兼容编译保留历史图片和本轮纯图片输入，严格角色合并也不丢附件', async () => {
-  const { applySillyTavernStrictTools } = await import('../tavern-plugin/lib/domain/sillytavern-strict-tools.js')
+test('请求编译保留历史图片和本轮纯图片输入', async () => {
   const oldImage = { type: 'image', attachment: { id: 'old-photo' } }
   const newImage = { type: 'image', attachment: { id: 'new-photo' } }
   const result = compileSillyTavernRequest({
@@ -41,9 +40,4 @@ test('兼容编译保留历史图片和本轮纯图片输入，严格角色合�
     input: '', inputAttachments: [newImage], resolveMacros
   })
   assert.deepEqual(result.messages.flatMap(message => message.inputAttachments || []), [oldImage, newImage])
-  const merged = applySillyTavernStrictTools([
-    { role: 'user', content: '第一张', inputAttachments: [oldImage] },
-    { role: 'user', content: '', inputAttachments: [newImage] }
-  ])
-  assert.deepEqual(merged[0].inputAttachments, [oldImage, newImage])
 })

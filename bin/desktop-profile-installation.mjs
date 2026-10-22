@@ -55,7 +55,8 @@ function recover(journalFile, journal) {
 export function beginDesktopProfileInstallation({ home, sourceRoot, checkStopped = () => assertDesktopStopped([home], { requireGuiClosed: true }) }) {
   const profiles = path.join(home, 'profiles'), live = path.join(profiles, 'desktop'), tavern = path.join(profiles, 'tavern')
   const interrupted = (() => { try { return JSON.parse(readFileSync(path.join(home, 'profile-bridge', 'install.json'), 'utf8')).phase === 'preparing' } catch { return false } })()
-  if (!interrupted && present(live) && lstatSync(live).isSymbolicLink() && present(tavern) && realpathSync(live) === realpathSync(tavern)) return null
+  const linkedToTavern = present(live) && lstatSync(live).isSymbolicLink() && present(tavern) && realpathSync(live) === realpathSync(tavern)
+  if (!interrupted && linkedToTavern) return null
   checkStopped()
   const state = path.join(home, 'profile-bridge')
   mkdirSync(state, { recursive: true })

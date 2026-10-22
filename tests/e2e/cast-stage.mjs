@@ -151,7 +151,7 @@ export async function castCardFileChecks({ page, step, report, savedChat }) {
     assert.deepEqual(imported.card.assets, { sprites: 1, backgrounds: 1, avatars: 0, kept: 1, unmatched: ['thinking'], skipped: 0 })
     const listed = (await call('listCards', {})).cards.find(item => item.path === imported.card.path)
     assert.equal(listed.hasImage, true, 'PNG 卡面当作人物卡封面')
-    const exported = await page.request.get(new URL('/api/dsh-tavern/card-charx?path=' + encodeURIComponent(imported.card.path), page.url()).href)
+    const exported = await page.request.get(new URL('/api/dsh-tavern/card-export?path=' + encodeURIComponent(imported.card.path), page.url()).href)
     assert.equal(exported.status(), 200)
     const entries = readZipEntries(await exported.body())
     const written = JSON.parse(entries.get('card.json').toString('utf8'))

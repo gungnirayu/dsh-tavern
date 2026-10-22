@@ -22,7 +22,10 @@ test('诊断文件保留会话日志结构、抹掉正文和路径，坏档按�
   await mkdir(directory, { recursive: true })
   await writeFile(path.join(directory, 'session.v3.jsonl.zstd'), encodeMigratedSessionLog(JSON.stringify(parsed.header), parsed.events))
   await writeFile(path.join(directory, 'session.v4.jsonl.zstd'), 'damaged')
-  const report = await exportSessionDiagnostics({ sessionsRoot: root, sessionIds: [sessionId, '019a0000-0000-7000-8000-000000000002'], errorOf: id => id === sessionId ? 'step/start does not match' : undefined, tavernVersion: '3.0.0' })
+  const body = '秘密剧情'.repeat(20)
+  const chat = { id: 'c', sessionId, mode: 'story', suppressedDshTurns: [3], regeneratedDshTurns: { 2: 3 }, secretNote: '秘密',
+    messages: [{ role: 'user', text: '秘密输入' }, { role: 'assistant', turn: 2, text: body, sourceText: body, variables: [{ 秘密: 1 }] }] }
+  const report = await exportSessionDiagnostics({ sessionsRoot: root, sessionIds: [sessionId, '019a0000-0000-7000-8000-000000000002'], errorOf: id => id === sessionId ? 'step/start does not match' : undefined, tavernVersion: '3.0.0', chat })
   const text = JSON.stringify(report)
   assert.doesNotMatch(text, /秘密|私密路径/)
   const [session, missing] = report.sessions
@@ -36,4 +39,10 @@ test('诊断文件保留会话日志结构、抹掉正文和路径，坏档按�
   assert.equal(v4.file, 'session.v4.jsonl.zstd')
   assert.ok(v4.unreadable)
   assert.ok(missing.missing)
+  // The save's visibility fields come along for a replay; long texts keep a fingerprint.
+  assert.deepEqual(report.chat.regeneratedDshTurns, { 2: 3 })
+  assert.deepEqual(report.chat.messages.map(message => [message.role, message.turn ?? null]), [['user', null], ['assistant', 2]])
+  assert.equal(report.chat.messages[0].text, '«4 chars»')
+  assert.match(report.chat.messages[1].text, /^«80 chars #[0-9a-f]{8}»$/)
+  assert.equal(report.chat.secretNote, undefined)
 })

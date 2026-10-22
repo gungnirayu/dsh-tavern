@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSceneImageNativeRuntime } from './fixtures/scene-image-native-runtime.mjs'
+import { createBackgroundNativeRuntime } from './fixtures/background-native-runtime.mjs'
 
 test('native JSONL idle release unloads Agent and Session, then restores history under the same ID', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async t => {
   let time = 0
-  const runtime = await createSceneImageNativeRuntime(process.env.DSH_BOOT_MODULE, { residentOptions: { now: () => time, residentIdleMs: 1000 } })
+  const runtime = await createBackgroundNativeRuntime(process.env.DSH_BOOT_MODULE, { residentOptions: { now: () => time, residentIdleMs: 1000 } })
   t.after(() => runtime.dispose())
   const run = text => runtime.runBackground({ sessionId: 'scene-parent', task: 'candidate', persistent: true,
     selection: { provider: 'scene-fixture', model: 'fixture-text' },
@@ -23,7 +23,7 @@ test('native JSONL idle release unloads Agent and Session, then restores history
 test('native stalled model times out, releases the queue and retries on a new session', {skip:!process.env.DSH_BOOT_MODULE,timeout:30000}, async t=>{
   let release, first=true
   const gate=new Promise(resolve=>{release=resolve})
-  const runtime=await createSceneImageNativeRuntime(process.env.DSH_BOOT_MODULE,{
+  const runtime=await createBackgroundNativeRuntime(process.env.DSH_BOOT_MODULE,{
     residentOptions:{modelIdleTimeoutMs:500},
     beforeModelRequest:async()=>{if(first){first=false;await gate}}
   })

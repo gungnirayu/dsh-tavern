@@ -138,5 +138,22 @@ export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.di
     })
     return removed
   }
-  return Object.freeze({ describe, removeLeftovers, readSceneFiles, readSceneWorldbook, deferSessionDeletion, processDeferredDeletions })
+  // Games deleted before deletion cleaned by this list (2026-10-07) left their scene image
+  // records behind. Remove each record folder whose game no longer has a save; when the
+  // saves cannot be listed, nothing is removed.
+  async function sweepDeletedGameImages() {
+    let entries
+    try { entries = await readdir(file('chats'), { withFileTypes: true }) } catch { return 0 }
+    const live = new Set(entries.map(entry => entry.isDirectory() ? entry.name : entry.name.endsWith('.json') ? entry.name.slice(0, -5) : '')
+      .filter(id => id.startsWith('chat-')).map(sha))
+    let folders
+    try { folders = await readdir(file('scene-images'), { withFileTypes: true }) } catch { return 0 }
+    let removed = 0
+    for (const folder of folders) {
+      if (!folder.isDirectory() || !/^[0-9a-f]{64}$/.test(folder.name) || live.has(folder.name)) continue
+      try { await rm(file('scene-images/' + folder.name), { recursive: true, force: true }); removed++ } catch {}
+    }
+    return removed
+  }
+  return Object.freeze({ describe, removeLeftovers, readSceneFiles, readSceneWorldbook, deferSessionDeletion, processDeferredDeletions, sweepDeletedGameImages })
 }

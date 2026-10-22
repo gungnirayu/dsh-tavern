@@ -15,7 +15,7 @@ export function referencedBackgroundSessionIds(chat) {
   for (const checkpoint of chat?.timeline?.checkpoints || []) add(checkpoint.participants?.background?.sessionId)
   for (const operation of Object.values(chat?.timeline?.operations || {})) {
     add(operation.beforeParticipants?.background?.sessionId)
-    if (operation.kind === 'agent' && ['settlement', 'candidate', 'worldbook-filter'].includes(operation.role) && !['running', 'pending'].includes(operation.status)) add(operation.startedSessionId)
+    if (operation.kind === 'agent' && ['settlement', 'candidate', 'worldbook-filter', 'style-reference'].includes(operation.role) && !['running', 'pending'].includes(operation.status)) add(operation.startedSessionId)
   }
   return [...ids]
 }

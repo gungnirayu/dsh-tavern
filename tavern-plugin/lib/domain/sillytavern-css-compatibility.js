@@ -1,4 +1,3 @@
-export const SILLYTAVERN_CSS_COMPAT_VERSION = '1.18.0'
 export const SILLYTAVERN_CSS_COMPAT_REVISION = '8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8'
 
 export const SILLYTAVERN_CSS_COMPAT_PATHS = Object.freeze([

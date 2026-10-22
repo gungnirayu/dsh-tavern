@@ -138,8 +138,7 @@
 					setBusy(true); setError("");
 					try {
 						const result = await rpc("exportPreset", { path: item.path }, props.scope.sessionId);
-						const blob = new Blob([result.text], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a");
-						link.href = url; link.download = result.name || "preset.json"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+						downloadTavernBlob(new Blob([result.text], { type: "application/json" }), result.name || "preset.json");
 					} catch (err) { setError(String(err && err.message || err)); } finally { setBusy(false); }
 				}
 				async function remove(item) {

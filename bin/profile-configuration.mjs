@@ -230,25 +230,6 @@ export function migrateLegacyProfilePatch(currentText, legacyManagedText) {
   return removed ? current.toString() : String(currentText)
 }
 
-// First official-desktop install retains both profiles' user additions. The
-// old Tavern profile is read-only; the caller publishes desktop transactionally.
-export function mergeDesktopLegacyProfile(current, legacy) {
-  return { ...legacy, ...current, name: current.name || 'dsh-profile-desktop',
-    dependencies: { ...object(legacy.dependencies), ...object(current.dependencies) },
-    dsh: { ...object(legacy.dsh), ...object(current.dsh), profile: {
-      ...object(legacy.dsh?.profile), ...object(current.dsh?.profile),
-      bundles: uniqueStrings([...(legacy.dsh?.profile?.bundles || []), ...(current.dsh?.profile?.bundles || [])]) } },
-    dshTavern: { ...object(legacy.dshTavern), ...object(current.dshTavern) } }
-}
-
-export function mergeProfilePatchTexts(legacyText, currentText) {
-  const legacy = parsedSequence(legacyText, '旧 Tavern 用户配置')
-  const current = parsedSequence(currentText, '官方 Desktop 用户配置')
-  const known = new Set(current.contents.items.map(semanticKey))
-  current.contents.items.unshift(...legacy.contents.items.filter(row => !known.has(semanticKey(row))))
-  return current.toString()
-}
-
 function defaultTimestamp() {
   const date = new Date()
   const pad = (value) => String(value).padStart(2, '0')

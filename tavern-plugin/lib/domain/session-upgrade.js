@@ -8,6 +8,7 @@ import { encodeCurrentGeneration, parseSessionLog } from './session-log-codec.js
 
 import { SESSION_UPGRADE_EVENT } from './session-upgrade-references.js'
 import { findSessionDirectory } from './session-log-repair.js'
+import { isCompactionCheckpoint, STRAY_CHECKPOINT_FORM } from './compaction-checkpoint.js'
 
 const generationName = /^session(?:\.v(\d+))?\.jsonl(\.zstd)?$/
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -180,6 +181,26 @@ function normalizeHistoricalCompaction(artifact) {
 // compaction/start without an end. V4 refuses a turn that crosses it. Record the
 // interruption as a failed compaction just before the next turn boundary (or at
 // the end of the log); a failed compaction changes no context.
+// v4 accepts a replacement carrying the checkpoint source only inside the
+// compaction that wrote it. Older Tavern template sync did not recognize the
+// summary node and rewrote it on later turns with that source copied (hundreds of
+// such rows in one save). Keep each rewrite and its content exactly — the context
+// stays as the old version left it — under Tavern's own source instead.
+function normalizeStrayCheckpoints(artifact) {
+  let open = null, changed = false
+  const events = artifact.events.map(event => {
+    if (event.type === 'compaction/start') open = event.data?.compactionId ?? null
+    else if (event.type === 'compaction/end' || event.type === 'session/end-seed') open = null
+    if (event.type !== 'user/message' || event.surfaceOp?.op !== 'replace' || !isCompactionCheckpoint(event)) return event
+    const source = event.data.source
+    if (open !== null && source.compactionId === open) return event
+    changed = true
+    return { ...event, data: { ...event.data, source: { kind: 'plugin', plugin: 'dsh-tavern', form: STRAY_CHECKPOINT_FORM,
+      ...(source.compactionId === undefined ? {} : { compactionId: source.compactionId }) } } }
+  })
+  return changed ? { ...artifact, events } : artifact
+}
+
 function closeInterruptedCompactions(artifact) {
   const events = [], synthetic = { next: -1 }
   let open = null
@@ -231,7 +252,7 @@ export function prepareSessionUpgrade(parsed, migration, children = []) {
   let normalized = historical
   try { artifact = convert(historical) }
   catch (originalError) {
-    normalized = normalizeHistoricalEdits(normalizeHistoricalOpening(normalizeHistoricalCompaction(closeInterruptedCompactions(historical))))
+    normalized = normalizeHistoricalEdits(normalizeHistoricalOpening(normalizeHistoricalCompaction(closeInterruptedCompactions(normalizeStrayCheckpoints(historical)))))
     if (normalized === historical) throw locateFailure(convert, historical, originalError)
     try { artifact = convert(normalized) }
     catch (error) { throw locateFailure(convert, normalized, error) }
@@ -341,9 +362,32 @@ function normalizeHistoricalEdits(artifact) {
     if (event.type === 'step/end') step = null
     if (event.type === 'turn/end') turn = null
     if (!['assistant/message', 'system/message'].includes(event.type) || event.surfaceOp?.op !== 'replace' || step !== null) continue
-    const nextStep = events.slice(index + 1).find(row => row.type === 'step/start')
-    const nextTurn = nextStep && events.slice(index + 1, events.indexOf(nextStep)).find(row => row.type === 'turn/start')
-    const end = nextStep ? events.indexOf(nextStep) : events.length
+    const followingStep = events.slice(index + 1).find(row => row.type === 'step/start')
+    // The edit's own rows run up to the next step, whichever turn that step is in.
+    const end = followingStep ? events.indexOf(followingStep) : events.length
+    let nextStep = followingStep
+    const nextTurn = turn === null ? events.slice(index + 1, end).find(row => row.type === 'turn/start') : undefined
+    // The edit lands in the open turn, or else in the next one. A turn that never
+    // opened a step (an interrupted compaction was all it did) must not borrow the
+    // first step of a later turn: give it an edit step of its own instead.
+    const owner = turn ?? nextTurn?.data.turn
+    if (nextStep && owner !== undefined && nextStep.data.turn !== owner) nextStep = undefined
+    // Pulling the next turn up to this edit would wrap turn-less rows between them
+    // (an idle compaction, a fork seed, a command) inside that turn. When the edit
+    // directly follows the turn it belongs after, keep that turn open over it.
+    const turnEnd = events[index - 1], stepEnd = events[index - 2]
+    if (turn === null && nextTurn && turnEnd?.type === 'turn/end' && stepEnd?.type === 'step/end' && stepEnd.data.turn === turnEnd.data.turn
+      && events.slice(index + 1, events.indexOf(nextTurn)).some(row => (row.type === 'compaction/start' && (row.data?.turn ?? null) === null)
+        || row.type === 'session/end-seed' || row.type === 'command/run')) {
+      let last = index
+      while (['assistant/message', 'system/message'].includes(events[last + 1]?.type) && events[last + 1].surfaceOp?.op === 'replace') last++
+      for (const row of events.slice(index, last + 1)) { row.data.turn = turnEnd.data.turn; row.data.step = stepEnd.data.step }
+      events.splice(index - 2, 2)
+      events.splice(last - 1, 0, stepEnd, turnEnd)
+      changed = true
+      index = last
+      continue
+    }
     const replacements = events.slice(index, end).filter(row => (['assistant/message', 'system/message'].includes(row.type) && row.surfaceOp?.op === 'replace') || row.type === 'tool/result')
     const restoredCalls = []
     // Undo replay wrote an empty tool-result placeholder, followed immediately
@@ -365,8 +409,8 @@ function normalizeHistoricalEdits(artifact) {
       restoredCalls.push(restoredCall)
       events.splice(at, 0, restoredCall)
     }
-    const assignedTurn = nextStep?.data.turn ?? (turn ?? Math.max(0, ...events.filter(row => row.type === 'turn/start').map(row => row.data.turn)) + 1)
-    const assignedStep = nextStep?.data.step ?? (turn === null ? 1 : Math.max(0, ...events.filter(row => row.type === 'step/start' && row.data.turn === turn).map(row => row.data.step)) + 1)
+    const assignedTurn = nextStep?.data.turn ?? (owner ?? Math.max(0, ...events.filter(row => row.type === 'turn/start').map(row => row.data.turn)) + 1)
+    const assignedStep = nextStep?.data.step ?? (owner === undefined ? 1 : Math.max(0, ...events.filter(row => row.type === 'step/start' && row.data.turn === owner).map(row => row.data.step)) + 1)
     for (const replacement of [...replacements, ...restoredCalls]) { replacement.data.turn = assignedTurn; replacement.data.step = assignedStep }
     const boundaries = []
     if (turn === null) boundaries.push(nextTurn || { seq: synthetic--, time: event.time, type: 'turn/start', data: { turn: assignedTurn } })
@@ -381,7 +425,7 @@ function normalizeHistoricalEdits(artifact) {
       const closingStep = { seq: synthetic--, time: events.at(-1).time, type: 'step/end', data: { turn: assignedTurn, step: assignedStep } }
       if (closingTurn >= 0) events.splice(closingTurn, 0, closingStep)
       else events.push(closingStep)
-      if (turn === null) events.push({ seq: synthetic--, time: events.at(-1).time, type: 'turn/end', data: { turn: assignedTurn, reason: { kind: 'completed' } } })
+      if (turn === null && !nextTurn) events.push({ seq: synthetic--, time: events.at(-1).time, type: 'turn/end', data: { turn: assignedTurn, reason: { kind: 'completed' } } })
     }
     changed = true
     index-- // Process the moved boundaries through the same state machine.

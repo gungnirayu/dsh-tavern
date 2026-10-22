@@ -14,7 +14,8 @@ export function projectFullPromptTemplateState(chat) {
   return {
     chatId: chat.id, sessionId: chat.sessionId,
     stateRevision: helper.stateRevision, lifecycleRevision: helper.lifecycleRevision,
-    chat: helper.messages.map(projectTemplateMessage),
+    // A fresh, unshared projection: the template rows take its values over.
+    chat: helper.messages.map(message => projectTemplateMessage(message, { owned: true })),
     chat_metadata: { ...structuredClone(helper.chatMetadata), variables: structuredClone(helper.chatVariables) }
   }
 }
@@ -54,7 +55,7 @@ export function validateFullPromptTemplateSave(request) {
 }
 
 /** Merge only changed template state against an authoritative persisted baseline. */
-export function applyFullPromptTemplateState(current, baseline, request) {
+export function applyFullPromptTemplateState(current, baseline, request, projection = {}) {
   validateFullPromptTemplateSave(request)
   if (!baseline || baseline.id !== request.chatId || baseline._storageRevision !== request.stateRevision
     || current.id !== request.chatId || current.sessionId !== baseline.sessionId
@@ -72,7 +73,7 @@ export function applyFullPromptTemplateState(current, baseline, request) {
     if (!Array.isArray(desired.swipes) || !desired.swipes.length || desired.swipes.some(text => typeof text !== 'string') || !Number.isSafeInteger(desired.swipe_id) || desired.swipe_id < 0 || desired.swipe_id >= desired.swipes.length) conflict('模板回复版本无效')
     if (before.mes !== desired.mes || !isDeepStrictEqual(before.swipes, desired.swipes) || before.swipe_id !== desired.swipe_id) {
       next.messages[index].swipes = structuredClone(desired.swipes)
-      replaceTavernHelperMessages(next, [{ message_id: index, swipe_id: desired.swipe_id, message: desired.mes }])
+      replaceTavernHelperMessages(next, [{ message_id: index, swipe_id: desired.swipe_id, message: desired.mes }], projection)
       next.messages[index].swipes = structuredClone(desired.swipes)
       next.messages[index].swipes[desired.swipe_id] = desired.mes
     }

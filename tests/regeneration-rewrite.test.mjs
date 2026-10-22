@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { regenerationInputText } from '../tavern-plugin/lib/domain/round-history.js'
 import { projectRegenerationRequestMessages } from '../tavern-plugin/lib/domain/foreground-orchestration-strategies.js'
-
-const client = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
 
 test('不填意见是重新来一次，不带旧正文', () => {
   assert.equal(regenerationInputText('继续', '', '旧正文'), '继续')
@@ -33,8 +29,3 @@ test('请求里旧回复照样被去掉，旧正文只经由改写输入出现�
   assert.equal(JSON.stringify(projected).split('旧正文').length - 1, 1)
 })
 
-test('面板只有一个按钮，不再传 rewrite', () => {
-  assert.doesNotMatch(client, /按意见改写"|secondaryLabel|dsh-tavern-regen-secondary/)
-  assert.match(client, /rpc\("regenBody", \{ guidance: String\(guidance \|\| ""\)\.trim\(\) \}/)
-  assert.match(server, /regenBody\(args && args\.chatId, args && args\.guidance, args && args\.sessionId\)/)
-})

@@ -1,4 +1,5 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
+import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
+import { bounded, untilAborted } from './domain/plugin-callback.js'
 import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
 import { normalizeGameSettings, coerceSetting, settingValues } from './domain/plugin-game-settings.js'
@@ -25,32 +26,21 @@ const POOL_TIMEOUT_MS = 5000
 const POOL_ENTRY_ID = /^[A-Za-z0-9._-]{1,64}$/
 const PLUGIN_TIMEOUT_MS = 30000
 const REPLACEMENT_TIMEOUT_MS = 120000
-const MAX_ERRORS_PER_GAME = 30
 const MAX_VARIABLES = 1024 * 1024
 const MAX_EDIT_TEXT = 200000
 const MAX_HISTORY_TURNS = 50
-const MAX_TASK_PROMPT = 20000
-const MAX_TASK_TOOLS = 8
-const MAX_TOOL_CALLS_PER_TASK = 16
-const TASK_TIMEOUT_MS = 600000
-const SETTLEMENT_TASK_TIMEOUT_MS = 300000
-const MANUAL_TASK_TIMEOUT_MS = 600000
 const MAX_TASK_TITLE = 40
 const MAX_TASK_DESCRIPTION = 500
 const MAX_CARD_OPERATIONS = 200
 const MAX_CARD_VALUE = 2 * 1024 * 1024
 const TOOL_MODES = ['play', 'card']
-const MAX_TASK_INPUT = 4000
 const TASK_PHASES = Object.freeze({ before: '结算前', parallel: '与结算同时', after: '结算后' })
-const MAX_VERSION_WATCHES = 2000
 const MAX_PUBLISHED_STATE = 256 * 1024
 const MAX_PUBLISHED_ENTRIES = 2000
 const MAX_PACK_FILES = 5000
 // Card files Tavern reads itself; a plugin importer never takes these.
 const NATIVE_CARD_EXTENSIONS = new Set(['.png', '.json', '.charx', '.dshcard'])
 const CARD_EXTENSION = /^\.[a-z0-9][a-z0-9._-]{0,19}$/
-// Stages a plugin may replace, and what a replacement must hand back (docs/plugin-design.md).
-const REPLACEABLE_STAGES = Object.freeze({ settlement: '结算' })
 
 function ownerOf(service) {
   const ctx = service && service.ctx
@@ -70,22 +60,6 @@ function positiveTurn(value) {
   const turn = Number(value)
   if (!Number.isSafeInteger(turn) || turn < 1) throw new Error('turn 必须是正整数')
   return turn
-}
-
-/** A plugin callback, bounded in time: a hung plugin must never hold up a turn. */
-function bounded(promise, label, ms = PLUGIN_TIMEOUT_MS) {
-  let timer
-  return Promise.race([Promise.resolve(promise), new Promise((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(label + ' 超过 ' + ms / 1000 + ' 秒未返回')), ms)
-  })]).finally(() => clearTimeout(timer))
-}
-
-function untilAborted(promise, signal) {
-  let abort
-  return Promise.race([Promise.resolve(promise), new Promise((_resolve, reject) => {
-    abort = () => reject(signal.reason)
-    signal.addEventListener('abort', abort, { once: true })
-  })]).finally(() => signal.removeEventListener('abort', abort))
 }
 
 function textOrFunction(text) {
@@ -134,67 +108,34 @@ export function createTavernPluginApi(deps) {
   const settlementTasks = new Map()
   const manualTasks = new Map()
   const toolScopes = new Map()
-  // The plugin task running in each game (one at a time), and settlement phases already run per text version.
-  const taskRuns = new Map()
-  const taskContext = new AsyncLocalStorage()
-  const phasesRan = new Set()
-  const attachedOwners = new Set()
-  const errors = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
   const notified = new Set()
-  // Signals handed out by versionSignal: aborted once their text version stops being shown.
-  const versionWatches = new Set()
   // The latest state each plugin published for its page side, per game and name (memory only).
   const publishedStates = new Map()
   const log = deps.logger || console
 
-  function staleVersion() { return Object.assign(new Error('这一轮的正文版本已不是当前显示的版本'), { code: 'TAVERN_PLUGIN_STALE_VERSION' }) }
+  const taskExecution = createPluginTaskExecution({
+    runTask: deps.runTask, currentKey: deps.currentKey,
+    readLatestSettledTurn: deps.readLatestSettledTurn, readPendingTurn: deps.readPendingTurn,
+    requireGame, choicesFor, snapshotOf, recordError, reservedToolNames, settlementTasks, manualTasks,
+  })
+  const { runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, checkVersions } = taskExecution
 
-  /** A watch on (game, turn, textVersion): its controller aborts when that version is no longer current. */
-  function watchVersion(gameId, turn, textVersion, owner) {
-    const watch = { gameId, turn, textVersion, owner, controller: new AbortController() }
-    versionWatches.add(watch)
-    watch.controller.signal.addEventListener('abort', () => versionWatches.delete(watch), { once: true })
-    if (versionWatches.size > MAX_VERSION_WATCHES) versionWatches.delete(versionWatches.values().next().value)
-    return watch
-  }
-
-  /** Abort the watches of a game whose text version is no longer the shown one (or all of them). */
-  async function checkVersions(gameId, { all = false } = {}) {
-    const watches = Array.from(versionWatches).filter(watch => watch.gameId === gameId)
-    const keys = new Map()
-    for (const watch of watches) {
-      if (!all) {
-        if (!keys.has(watch.turn)) keys.set(watch.turn, await deps.currentKey(gameId, watch.turn).catch(() => undefined))
-        const key = keys.get(watch.turn)
-        if (key === undefined || key === watch.textVersion) continue
-      }
-      watch.controller.abort(staleVersion())
-    }
-  }
-
-  /** Remember a plugin failure for the game's plugin panel, newest last. */
-  function recordError(gameId, owner, stage, error) {
+  /** Log a plugin failure; Tavern carries on with its own behaviour. */
+  function recordError(_gameId, owner, stage, error) {
     const message = String(error?.message || error).slice(0, 500)
     log.warn?.('dsh-tavern: 插件 ' + owner + ' 在「' + stage + '」出错: ' + message)
-    if (!gameId) return
-    const list = errors.get(gameId) || []
-    list.push({ at: Date.now(), plugin: owner, stage, message })
-    errors.set(gameId, list.slice(-MAX_ERRORS_PER_GAME))
-    if (errors.size > 200) errors.delete(errors.keys().next().value)
   }
 
-  /** The player's per-game choices. A game Tavern cannot resolve has everything enabled. */
+  /**
+   * Which plugins take part in a game. Installed plugins take part in every game (players
+   * switch them off globally, not per game); a card's own plugins only in that card's games.
+   * Per-game switches, replacement choices and task order saved by older versions are ignored.
+   */
   async function choicesFor(gameId) {
     const game = gameId ? await deps.resolveGame(String(gameId)).catch(() => null) : null
-    const settings = game && deps.data?.readSettings ? await deps.data.readSettings(game.chatId).catch(() => null) : null
-    // A card's own plugins exist only in that card's games, and there they are part of the
-    // game: always on, not listed among the plugins the player switches per game.
     const { elsewhere, own } = await cardPluginsFor(game)
-    const disabled = new Set((settings?.disabled || []).filter(name => !own.has(name)))
-    for (const name of elsewhere) disabled.add(name)
-    return { game, disabled, elsewhere, own, replacements: settings?.replacements || {},
-      disabledTasks: new Set((settings?.disabledTasks || []).filter(key => !own.has(String(key).split(':')[0]))), taskOrder: settings?.taskOrder || [] }
+    return { game, disabled: new Set(elsewhere), elsewhere, own, replacements: {}, disabledTasks: new Set(), taskOrder: [] }
   }
 
   /** Card plugins (card-plugins.js): those of another card than this game's, and this card's own. */
@@ -430,6 +371,18 @@ export function createTavernPluginApi(deps) {
       return game ? deps.data.readGame({ chatId: game.chatId, owner }) : null
     },
 
+    // The plugin's own data, not tied to a game: kept outside its folder, so updates keep it.
+    async savePluginData({ data } = {}) {
+      const owner = ownerOf(this)
+      if (!deps.pluginData) throw new Error('当前 Tavern 不支持插件数据')
+      await deps.pluginData.save(owner, data)
+    },
+
+    async readPluginData() {
+      const owner = ownerOf(this)
+      return deps.pluginData ? deps.pluginData.read(owner) : null
+    },
+
     // Options of this plugin in each game's settings: Tavern draws them in 本局设置 and keeps the values with the game.
     gameSettings(input) {
       const owner = ownerOf(this)
@@ -486,10 +439,10 @@ export function createTavernPluginApi(deps) {
       const game = await requireGame(gameId)
       const at = positiveTurn(turn)
       if (typeof textVersion !== 'string' || !textVersion) throw new TypeError('textVersion 必须是 onTurnSettled 或 getTurn 给出的值')
-      if (await deps.currentKey(game.sessionId, at) !== textVersion) return AbortSignal.abort(staleVersion())
-      const watch = watchVersion(game.sessionId, at, textVersion, owner)
+      if (await deps.currentKey(game.sessionId, at) !== textVersion) return taskExecution.staleSignal()
+      const watch = taskExecution.watchVersion(game.sessionId, at, textVersion, owner)
       // A plugin that unloads lets go of its watches.
-      owned(this, () => () => versionWatches.delete(watch), 'tavern.versionSignal()')
+      owned(this, () => () => watch.release(), 'tavern.versionSignal()')
       return watch.controller.signal
     },
 
@@ -710,17 +663,7 @@ export function createTavernPluginApi(deps) {
       if (variables === null || typeof variables !== 'object' || Array.isArray(variables)) throw new TypeError('variables 必须是对象')
       const json = JSON.stringify(variables)
       if (json.length > MAX_VARIABLES) throw new Error('variables 不能超过 1 MB')
-      const task = taskContext.getStore()
-      // Captured async context is not authority: stopped/finished callbacks must
-      // not regain write access once the game becomes idle or a new task starts.
-      const taskOperation = () => {
-        if (!task) return null
-        if (task.owner !== owner || task.gameId !== material.sessionId || task.textVersion !== material.key
-          || task.phase !== 'after' && task.phase !== undefined || task.signal.aborted || taskRuns.get(task.gameId) !== task.run || !task.operationId) {
-          throw Object.assign(new Error('插件任务已结束或不属于这一轮'), { code: 'TAVERN_PLUGIN_STALE_VERSION' })
-        }
-        return task.operationId
-      }
+      const taskOperation = taskExecution.writeGuard(owner, material)
       taskOperation()
       await deps.writeVariables(material, JSON.parse(json), { taskOperation })
       await changed(material.sessionId)
@@ -740,7 +683,7 @@ export function createTavernPluginApi(deps) {
     // A one-off task in a fresh background session of this game: same background model,
     // card background and world book as Tavern's own tasks, never Tavern's resident session.
     async runTask(input = {}) {
-      return await runTaskAs(ownerOf(this), input)
+      return await taskExecution.runAgent(ownerOf(this), input)
     },
 
     // A task of this plugin run after each turn, before or after Tavern's own settlement.
@@ -787,7 +730,6 @@ export function createTavernPluginApi(deps) {
       const material = await requireTurn(gameId, turn)
       if (typeof textVersion !== 'string' || textVersion === '') throw new Error('textVersion 必须是 onTurnSettled 或 getTurn 给出的值')
       const record = await deps.media.attach({ chatId: material.chatId, sessionId: material.sessionId, owner, turn: material.turn, key: textVersion, currentKey: material.key, item })
-      attachedOwners.add(owner)
       await changed(material.sessionId)
       return { id: record.id }
     },
@@ -901,149 +843,6 @@ export function createTavernPluginApi(deps) {
     }
   }
   Object.defineProperty(service, TRACKER, { value: { associate: 'tavern', property: 'ctx' } })
-
-  // A one-off task in a fresh background session of this game: same background model,
-  // card background and world book as Tavern's own tasks, never Tavern's resident session.
-  async function runTaskAs(owner, { gameId, prompt, tools = [], signal } = {}) {
-    const game = await requireGame(gameId)
-    if ((await choicesFor(game.sessionId)).disabled.has(owner)) throw new Error('玩家在本局关闭了插件 ' + owner)
-    if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt 必须是非空字符串')
-    if (prompt.length > MAX_TASK_PROMPT) throw new Error('prompt 不能超过 20000 字')
-    if (!Array.isArray(tools) || tools.length > MAX_TASK_TOOLS) throw new Error('tools 最多 8 个')
-    const byName = new Map()
-    for (const tool of tools) {
-      if (!tool || typeof tool.name !== 'string' || !TOOL_NAME.test(tool.name)) throw new Error('工具名只能用小写字母、数字和下划线，以字母开头，3–48 个字符')
-      if (reservedToolNames.has(tool.name) || byName.has(tool.name)) throw new Error('工具名 ' + tool.name + ' 已被占用')
-      if (typeof tool.description !== 'string' || !tool.description.trim()) throw new Error('工具 ' + tool.name + ' 需要 description')
-      if (!tool.parameters || typeof tool.parameters !== 'object' || tool.parameters.type !== 'object') throw new Error('工具 ' + tool.name + ' 的 parameters 必须是 type 为 object 的 JSON Schema')
-      if (typeof tool.execute !== 'function') throw new TypeError('工具 ' + tool.name + ' 需要 execute 函数')
-      byName.set(tool.name, tool)
-    }
-    let calls = 0
-    const call = async (name, args) => {
-      const tool = byName.get(name)
-      if (!tool) return JSON.stringify({ ok: false, error: '没有这个工具：' + name })
-      if (++calls > MAX_TOOL_CALLS_PER_TASK) return JSON.stringify({ ok: false, error: '工具调用次数已达上限，请直接给出结果' })
-      try {
-        const value = await bounded(tool.execute(structuredClone(args ?? {})), '插件工具 ' + name)
-        return (typeof value === 'string' ? value : JSON.stringify(value ?? { ok: true })).slice(0, MAX_TOOL_RESULT)
-      } catch (error) {
-        recordError(game.sessionId, owner, '后台任务工具 ' + name, error)
-        return JSON.stringify({ ok: false, error: String(error?.message || error).slice(0, 500) })
-      }
-    }
-    try {
-      const result = await bounded(deps.runTask({ gameId: game.sessionId, owner, prompt: prompt.trim(),
-        tools: Array.from(byName.values()).map(tool => ({ name: tool.name, description: tool.description.trim(), parameters: structuredClone(tool.parameters) })),
-        call, signal }), '后台任务', TASK_TIMEOUT_MS)
-      return { text: String(result?.text || '') }
-    } catch (error) {
-      if (!signal?.aborted) recordError(game.sessionId, owner, '后台任务', error)
-      throw error
-    }
-  }
-
-  /** One plugin task under Tavern's watch: bounded, stoppable, its failure recorded for the panel. */
-  async function executeTask(entry, kind, context, signal, onStart, operationId) {
-    const controller = new AbortController()
-    // A settlement task also stops once its text version is replaced (rollback, regenerate, edit).
-    const version = kind === 'settlement' && context.textVersion ? watchVersion(context.gameId, context.turn, context.textVersion, entry.owner) : null
-    const combined = AbortSignal.any([controller.signal, ...(signal ? [signal] : []), ...(version ? [version.controller.signal] : [])])
-    const run = { plugin: entry.owner, task: entry.name, title: entry.title, kind, startedAt: Date.now(), controller }
-    taskRuns.set(context.gameId, run)
-    const finish = onStart?.(entry.owner + ' · ' + entry.title)
-    const stage = (kind === 'manual' ? '手动任务 ' : '结算任务 ') + entry.title
-    const runAgent = (input = {}) => runTaskAs(entry.owner, { ...input, gameId: context.gameId, signal: combined })
-    try {
-      combined.throwIfAborted()
-      const scope = { owner: entry.owner, gameId: context.gameId, textVersion: context.textVersion, phase: context.phase, run, signal: combined, operationId }
-      const work = taskContext.run(scope, () => entry.run({ ...structuredClone(context), signal: combined, runAgent }))
-      await bounded(untilAborted(work, combined), stage,
-        kind === 'manual' ? MANUAL_TASK_TIMEOUT_MS : SETTLEMENT_TASK_TIMEOUT_MS)
-      return true
-    } catch (error) {
-      if (!combined.aborted) recordError(context.gameId, entry.owner, stage, error)
-      return false
-    } finally {
-      // A finished, failed or stopped task: whatever it left running is stopped too.
-      controller.abort()
-      if (version) versionWatches.delete(version)
-      if (taskRuns.get(context.gameId) === run) taskRuns.delete(context.gameId)
-      finish?.()
-    }
-  }
-
-  function orderedTasks(phase, choices) {
-    const rank = key => { const at = choices.taskOrder.indexOf(key); return at < 0 ? Infinity : at }
-    return Array.from(settlementTasks.values()).filter(entry => entry.phase === phase && !choices.disabled.has(entry.owner))
-      .sort((a, b) => rank(taskKey(a.owner, a.name)) - rank(taskKey(b.owner, b.name)) || a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
-  }
-
-  /**
-   * Seam: run a game's settlement tasks of one phase, once per text version, one after another.
-   * `around(work)` lets Tavern wrap the run (only called when there is something to run).
-   */
-  async function runSettlementTasks({ gameId, phase, signal, onStart, around }) {
-    if (!settlementTasks.size) return
-    const choices = await choicesFor(gameId)
-    const tasks = orderedTasks(phase, choices).filter(entry => !choices.disabledTasks.has(taskKey(entry.owner, entry.name)))
-    if (!tasks.length) return
-    // Before and alongside Tavern's settlement the turn is still pending; after it, settled.
-    const read = () => phase === 'after' ? deps.readLatestSettledTurn(gameId) : deps.readPendingTurn(gameId)
-    const material = await read()
-    if (!material || material.greeting) return
-    const id = phase + '\u0000' + material.chatId + '\u0000' + material.key
-    if (phasesRan.has(id)) return
-    phasesRan.add(id)
-    if (phasesRan.size > 2000) phasesRan.delete(phasesRan.values().next().value)
-    let started = false
-    const work = async operationId => {
-      started = true
-      for (const entry of tasks) {
-        if (signal?.aborted) return
-        // Read again for each task: an earlier one may have changed the variables.
-        const current = await read()
-        if (!current || current.key !== material.key) return
-        await executeTask(entry, 'settlement', { ...(await snapshotOf(current)), phase }, signal, onStart, operationId)
-      }
-    }
-    try { await (around ? around(work) : work()) }
-    catch (error) {
-      if (!started) phasesRan.delete(id)
-      throw error
-    }
-  }
-
-  /** The manual task `key` as the player may start it in this game; throws when it can't run. */
-  async function manualTaskFor(gameId, key, input) {
-    const entry = manualTasks.get(String(key || ''))
-    if (!entry) throw Object.assign(new Error('没有这个插件任务（插件未加载，或没有用 tavern.manualTask 注册）'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
-    if ((await choicesFor(gameId)).disabled.has(entry.owner)) throw new Error('玩家在本局关闭了插件 ' + entry.owner)
-    if (input !== undefined && input !== null && typeof input !== 'string') throw new TypeError('input 必须是字符串')
-    if (typeof input === 'string' && input.length > MAX_TASK_INPUT) throw new Error('input 不能超过 ' + MAX_TASK_INPUT + ' 字')
-    if (taskRuns.has(gameId)) throw new Error('插件任务「' + taskRuns.get(gameId).title + '」正在运行，请等它完成')
-    return entry
-  }
-
-  /** Seam: run a manual task Tavern has admitted (see manualTaskFor); resolves true when it succeeded. */
-  async function runManualTask({ gameId, key, input, signal, onStart, operationId }) {
-    const entry = await manualTaskFor(gameId, key, input)
-    const material = await deps.readLatestSettledTurn(gameId)
-    const context = material ? await snapshotOf(material) : { gameId, turn: null, textVersion: null, text: '', rawText: '', card: null, variables: null }
-    return executeTask(entry, 'manual', { ...context, input: typeof input === 'string' ? input.trim() : '' }, signal, onStart, operationId)
-  }
-
-  function stopTasks(gameId) {
-    const run = taskRuns.get(gameId)
-    if (!run) return false
-    run.controller.abort(new Error('玩家停止了插件任务'))
-    return true
-  }
-
-  function runningTask(gameId) {
-    const run = taskRuns.get(gameId)
-    return run ? { plugin: run.plugin, task: run.task, title: run.title, kind: run.kind, startedAt: run.startedAt } : null
-  }
 
   /** A browser half calling a host handler; JSON in, JSON out. */
   async function callHandler(name, args) {
@@ -1221,91 +1020,35 @@ export function createTavernPluginApi(deps) {
     }
   }
 
-  /** The game's plugin panel: what each plugin uses here, the player's choices, recent errors. */
+  /** A game's manual plugin tasks and the options plugins add to its settings. */
   async function gamePlugins(gameId) {
     const choices = await choicesFor(gameId)
-    const { game, disabled, replacements: chosen } = choices
+    const { game, disabled } = choices
     if (!game) return null
-    const uses = new Map()
-    const use = (owner, stage, mode) => {
-      const list = uses.get(owner) || []
-      if (!list.some(item => item.stage === stage && item.mode === mode)) list.push({ stage, mode })
-      uses.set(owner, list)
-    }
-    for (const entry of settledHandlers) use(entry.owner, '生命周期', '观察')
-    for (const entry of timelineHandlers) use(entry.owner, '生命周期', '观察')
-    for (const entry of removedHandlers) use(entry.owner, '生命周期', '观察')
-    for (const entry of castHandlers) use(entry.owner, '演出', '观察')
-    for (const entry of cardHandlers) use(entry.owner, '人物卡', '观察')
-    for (const entry of castSources.values()) use(entry.owner, '演出', '添加')
-    for (const entry of speechProviders.values()) use(entry.owner, '配音', '添加')
-    for (const entry of [...sections.values(), ...turnSections.values(), ...worldbookSources.values()]) use(entry.owner, '上下文', '添加')
-    for (const entry of worldbookPools.values()) use(entry.owner, '世界书', '添加')
-    for (const entry of [...settlementSections.values(), ...settlementTools.values()]) use(entry.owner, '结算', '添加')
-    for (const entry of candidateSections.values()) use(entry.owner, '候选', '添加')
-    for (const entry of compactionSections.values()) use(entry.owner, '压缩', '添加')
-    for (const owner of attachedOwners) use(owner, '界面', '添加')
-    for (const entry of settlementTasks.values()) use(entry.owner, '结算', '任务')
-    for (const entry of manualTasks.values()) use(entry.owner, '手动任务', '添加')
-    const stages = {}
-    for (const [stage, registry] of Object.entries(replacements)) {
-      for (const entry of registry.values()) use(entry.owner, REPLACEABLE_STAGES[stage], '替换')
-      const candidates = Array.from(registry.keys()).sort()
-      if (!candidates.length) continue
-      const active = await replacementFor(stage, gameId)
-      stages[stage] = { label: REPLACEABLE_STAGES[stage], candidates, chosen: Object.hasOwn(chosen, stage) ? chosen[stage] : null, active: active ? active.owner : '',
-        conflict: !Object.hasOwn(chosen, stage) && candidates.filter(owner => !disabled.has(owner)).length > 1 }
-    }
     const tasks = {
-      settlement: Object.keys(TASK_PHASES).flatMap(phase => orderedTasks(phase, choices).filter(entry => !choices.own.has(entry.owner)).map(entry => ({ key: taskKey(entry.owner, entry.name), plugin: entry.owner,
-        title: entry.title, phase, phaseLabel: TASK_PHASES[phase], enabled: !choices.disabledTasks.has(taskKey(entry.owner, entry.name)) }))),
       manual: Array.from(manualTasks.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
         .map(entry => ({ key: taskKey(entry.owner, entry.name), plugin: entry.owner, title: entry.title, description: entry.description, input: entry.input })),
       running: runningTask(game.sessionId)
     }
-    // Options plugins add to this game's settings: this card's own plugins and the plugins switched on here.
     const stored = deps.data?.readSettings ? (await deps.data.readSettings(game.chatId).catch(() => null))?.values || {} : {}
     const settings = Array.from(gameSettingDefs.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner))
       .map(entry => ({ plugin: entry.owner, title: entry.title || entry.owner, card: choices.own.has(entry.owner), fields: structuredClone(entry.fields), values: settingValues(entry, stored[entry.owner]) }))
-    for (const entry of gameSettingDefs.values()) use(entry.owner, '本局设置', '添加')
-    return { plugins: Array.from(uses.keys()).filter(name => !choices.elsewhere.has(name) && !choices.own.has(name)).sort().map(name => ({ name, enabled: !disabled.has(name), uses: uses.get(name) })),
-      replacements: stages, tasks, settings, errors: [...(errors.get(game.sessionId) || [])].reverse() }
+    return { tasks, settings }
   }
 
-  async function setGamePlugin(gameId, { name, enabled, replace, task, taskOrder, setting } = {}) {
-    const { game, own, disabled } = await choicesFor(gameId)
+  /** Change one option a plugin added to this game's settings. */
+  async function setGamePlugin(gameId, { setting } = {}) {
+    const { game, disabled } = await choicesFor(gameId)
     if (!game) throw new Error('这一局不存在或不是游玩对话')
-    let changedValues = null
-    if (setting && typeof setting === 'object') {
-      const entry = gameSettingDefs.get(String(setting.plugin))
-      const field = entry?.fields.find(item => item.key === setting.key)
-      if (!entry || !field || disabled.has(entry.owner)) throw new Error('这一局没有这个插件配置项')
-      const value = coerceSetting(field, setting.value)
-      if (value === undefined) throw new Error('「' + field.label + '」的值不符合要求')
-      await deps.data.updateSettings(game.chatId, settings => { settings.values[entry.owner] = { ...settings.values[entry.owner], [field.key]: value } })
-      changedValues = { owner: entry.owner, values: settingValues(entry, (await deps.data.readSettings(game.chatId)).values[entry.owner]) }
-    }
-    if (typeof name === 'string' && own.has(name) || task && typeof task.key === 'string' && own.has(task.key.split(':')[0])) throw new Error('卡内插件是这张卡的一部分，不能在本局单独关闭')
-    await deps.data.updateSettings(game.chatId, settings => {
-      if (typeof name === 'string' && typeof enabled === 'boolean') {
-        settings.disabled = settings.disabled.filter(item => item !== name)
-        if (!enabled) settings.disabled.push(name)
-      }
-      if (task && typeof task.key === 'string' && typeof task.enabled === 'boolean') {
-        settings.disabledTasks = settings.disabledTasks.filter(item => item !== task.key)
-        if (!task.enabled) settings.disabledTasks.push(task.key)
-      }
-      if (Array.isArray(taskOrder)) settings.taskOrder = [...new Set(taskOrder.filter(item => typeof item === 'string'))].slice(0, 200)
-      if (replace && Object.hasOwn(REPLACEABLE_STAGES, replace.stage)) {
-        // null: back to the default rule; '' : Tavern's own; a name: that plugin.
-        if (replace.plugin === null) delete settings.replacements[replace.stage]
-        else settings.replacements[replace.stage] = String(replace.plugin)
-      }
-    })
-    if (changedValues) {
-      dispatch(Array.from(settingHandlers).filter(entry => entry.owner === changedValues.owner), { gameId: game.sessionId, values: changedValues.values }, '本局配置项', disabled)
-      deps.settingsChanged?.(game.sessionId, changedValues.owner)
-    }
+    const entry = setting && typeof setting === 'object' ? gameSettingDefs.get(String(setting.plugin)) : undefined
+    const field = entry?.fields.find(item => item.key === setting.key)
+    if (!entry || !field || disabled.has(entry.owner)) throw new Error('这一局没有这个插件配置项')
+    const value = coerceSetting(field, setting.value)
+    if (value === undefined) throw new Error('「' + field.label + '」的值不符合要求')
+    await deps.data.updateSettings(game.chatId, settings => { settings.values[entry.owner] = { ...settings.values[entry.owner], [field.key]: value } })
+    const values = settingValues(entry, (await deps.data.readSettings(game.chatId)).values[entry.owner])
+    dispatch(Array.from(settingHandlers).filter(item => item.owner === entry.owner), { gameId: game.sessionId, values }, '本局配置项', disabled)
+    deps.settingsChanged?.(game.sessionId, entry.owner)
     return gamePlugins(gameId)
   }
 

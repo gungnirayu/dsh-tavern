@@ -202,6 +202,8 @@ export function statusPayload(paths) {
     linkTargetName: linkTarget === undefined ? undefined : basename(linkTarget),
     appExe,
     appKind: basename(paths.activeDir) === 'desktop' ? 'desktop' : 'cli',
+    // Only the Desktop app's own host can switch; a standalone `dsh --profile …` (e.g. the DSH 酒馆 shortcut) cannot.
+    desktopApp: Boolean(process.versions.electron && typeof process.send === 'function' && process.ppid > 1),
     profiles,
     backups: listBackups(paths),
     logPath: join(paths.stateDir, 'last-run.log'),

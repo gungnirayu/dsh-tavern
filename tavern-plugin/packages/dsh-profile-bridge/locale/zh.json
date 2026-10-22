@@ -1,4 +1,4 @@
 {
-  "title": "Profile 切换",
-  "description": "让 DeepSeek Harness 桌面版直接使用你已经装好插件的 profile：一键把 profiles/desktop 链接到目标 profile，原目录自动备份，随时可还原。"
+  "title": "原版 DSH / DSH 酒馆切换",
+  "description": "在原版 DSH 和 DSH 酒馆之间切换：在酒馆的设置里叫「原版DSH」，在原版 DSH 的设置里叫「DSH酒馆」。切换时应用重启一次，原版配置自动备份。"
 }

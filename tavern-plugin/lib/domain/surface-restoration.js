@@ -27,6 +27,10 @@ export function restoreSurface(session, targetNodes, formatVersion = 4) {
   const markerIndex = sources.findLastIndex(event => event.type !== 'tool/result')
   const shadowed = nodes.slice(prefix)
   const mutations = createSessionSurfaceMutator(session, events)
+  // One edit step for the whole restore: a tool-result placeholder and its
+  // replacement must land in the same turn/step, or the host rejects the
+  // replacement ("tool/result surface replacement may change only content").
+  mutations.editStep(() => {
   for (let i = 0; i < sources.length; i++) {
     const original = sources[i]
     const data = structuredClone(original.data)
@@ -45,6 +49,7 @@ export function restoreSurface(session, targetNodes, formatVersion = 4) {
     if (i === markerIndex) data.tavernRestoredSurfaceSeqs = shadowed
     mutations.replace(original.type, data, { start: replaced[0], end: replaced.at(-1), sourceEventSeqs: [...new Set([...replaced, original.seq])] })
   }
+  })
 }
 
 export function preflightSurfaceRestore(session, nodes, formatVersion = 4) {

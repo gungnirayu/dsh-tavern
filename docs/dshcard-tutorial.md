@@ -355,4 +355,4 @@ for (const item of beats.slice(0, index + 1)) if (figure && item.kind === 'line'
 5. 改预设，写清楚你的舞台需要正文怎么写。
 6. 打包、导入、玩几轮，按上面的自检过一遍。
 
-各接口的完整参数见[插件开发：接口参考](plugin-api.md)，`dsh.json` 各字段见 [DSH 人物卡制作](dshcard-guide.md)。
+各接口的完整参数见[插件开发：接口总览](plugin-api.md)，`dsh.json` 各字段见 [DSH 人物卡制作](dshcard-guide.md)。

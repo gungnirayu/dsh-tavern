@@ -1,5 +1,6 @@
 		function createTavernShellFeatureModule() {
 		// @include modules/host-compatibility.js
+		// @include modules/auto-open-tabs.js
 		// Entering a game opens its settings and status tabs (the 「进入游戏时打开酒馆状态」 setting, on by default).
 		// Only a switch to another game reopens them: readiness flickers while the session list refreshes
 		// (after the first turn, when the sidebar remounts), and reopening then would cover the tab the
@@ -47,8 +48,6 @@
 			const organization = useCardOrganization(cards, busy, refresh, error => setError(error), cardBatch);
 			const [error, setError] = usePersistentError("左侧栏操作");
 			const [uiMode, setUiMode] = React.useState("play");
-			const [requestMode, setRequestMode] = React.useState("dsh");
-			const compatibilityAvailable = false;
 			const [trustedCardMode, setTrustedCardMode] = React.useState(true);
 			const [cardEntry, setCardEntry] = React.useState("");
 			const [openingPicker, setOpeningPicker] = React.useState(null);
@@ -59,6 +58,14 @@
 				openingSettingsManual.current = false;
 				setOpeningSettingsCollapsed(false);
 			}, [openingPicker && openingPicker.card.path]);
+			// 选卡/开局准备页展开时收起卡片自带的悬浮应用（外置小手机挂在宿主 body 上，
+			// 会盖住开场白预览和 letter 列表）；进入对局后由「人物卡应用」面板停靠显示。
+			const pickerOpen = picking && uiMode === "play";
+			React.useEffect(function () {
+				if (!pickerOpen) return;
+				document.body.classList.add("dsh-tavern-picker-open");
+				return function () { document.body.classList.remove("dsh-tavern-picker-open"); };
+			}, [pickerOpen]);
 			React.useEffect(function () {
 				const dialog = openingLayoutRef.current;
 				if (!openingPicker || !dialog || typeof ResizeObserver === "undefined") return;
@@ -82,7 +89,7 @@
 			const [managing, setManaging] = React.useState(false);
 			const [selectedChats, setSelectedChats] = React.useState([]);
 			const [deleteNotice, setDeleteNotice] = React.useState("");
-			React.useEffect(function () { setSelectedChats([]); setManaging(false); setDeleteNotice(""); }, [uiMode, requestMode]);
+			React.useEffect(function () { setSelectedChats([]); setManaging(false); setDeleteNotice(""); }, [uiMode]);
 			const removedChatsHandler = React.useRef(null);
 			React.useEffect(function () {
 				function onRemoved(event) { if (removedChatsHandler.current) removedChatsHandler.current(event.detail && event.detail.sessionIds || []); }
@@ -114,35 +121,18 @@
 				} catch (error) { setError(String(error.message || error)); await refresh(); }
 				finally { setBusy(false); }
 			}
-			const [updateStatus, setUpdateStatus] = React.useState({ phase: "loading", host: "cli" });
-			const updateStatusRef = React.useRef(updateStatus);
-			const updateActionRef = React.useRef({ pending: false, generation: 0 });
-			function publishUpdateStatus(next) {
-				updateStatusRef.current = next;
-				// Polls return fresh objects; unchanged status must not re-render the sidebar.
-				setUpdateStatus(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
-			}
-			function isUpdateBusy(status) {
-				return ["loading", "checking", "running", "cancelling", "blocked"].includes(status.phase);
-			}
-			async function callUpdate(method) {
-				const controller = new AbortController();
-				let timer;
-				try {
-					// Stop waiting for a lost response, never replay a mutation. The next status read reconciles it.
-					const timeout = new Promise(function (_resolve, reject) {
-						timer = window.setTimeout(function () {
-							const error = new Error("更新服务请求超时，正在核实状态");
-							error.retryable = true;
-							reject(error);
-							controller.abort();
-						}, 30000);
-					});
-					return await Promise.race([call(method, undefined, { signal: controller.signal }), timeout]);
-				} finally { window.clearTimeout(timer); }
-			}
-			const updateStartedAtRef = React.useRef(0);
-			const updateRecoveryRef = React.useRef({ sawOffline: false, reloading: false });
+            const [updateStatus, setUpdateStatus] = React.useState({ phase: "loading", host: "cli" });
+            const updater = React.useRef(null);
+            React.useEffect(function () {
+                const controller = createUpdateStatusController({ call, confirm: askConfirm, errors: tavernErrorHub, browser: window });
+                updater.current = controller;
+                const unsubscribe = controller.subscribe(() => setUpdateStatus(controller.getSnapshot()));
+                controller.start();
+                return () => { unsubscribe(); controller.stop(); updater.current = null; };
+            }, []);
+            const checkUpdate = () => updater.current?.check();
+            const performUpdate = () => updater.current?.perform();
+            const cancelUpdate = () => updater.current?.cancel();
 			const lastModeSession = React.useRef(null);
 			const fileRef = React.useRef(null);
 			const saveImportFile = React.useRef(null);
@@ -192,9 +182,6 @@
 					|| (latest.message && latest.message.indexOf("已不在宿主列表中") >= 0 && latest.message.indexOf(current) >= 0)) setError("");
 			}, [current, summaries]);
 			function call(method, args, requestOptions) { return rpc(method, args, undefined, requestOptions); }
-			function isMissingUpdateApiError(error) {
-				return String(error && error.message || error || "").indexOf("未知方法: getUpdateStatus") >= 0;
-			}
 			function notifyDataChanged(kinds) {
 				notifyTavernDataChanged(kinds, "sidebar");
 			}
@@ -207,9 +194,6 @@
 					(!kinds || kinds.indexOf("sessions") >= 0) && call("listSessions").then(function (result) {
 						const sessions = result.sessions || [];
 						setHistory(sessions); setTrustedCardMode(!result.capabilities || result.capabilities.trustedCardMode !== false); publishSessionModes(sessions);
-						if (!sessions.some(function (entry) { return entry.sessionId === current && isPlayMode(entry.mode); })) {
-							setRequestMode(result.capabilities?.compatibilityMode === true && window.localStorage.getItem("dsh-tavern-request-mode") === "sillytavern" ? "sillytavern" : "dsh");
-						}
 						tavernErrorHub.resolve("左侧栏历史");
 					}, function (err) { tavernErrorHub.report("左侧栏历史", err); })
 				]);
@@ -233,63 +217,6 @@
 				return function () { playPrewarmRef.current.cancel(); };
 			}, []);
 			React.useEffect(function () {
-				let stopped = false;
-				let received = false;
-				let pending = false;
-				let failures = 0;
-				async function refreshUpdateStatus() {
-					if (stopped || pending || updateActionRef.current.pending) return;
-					const generation = updateActionRef.current.generation;
-					pending = true;
-					try {
-						const result = await callUpdate("getUpdateStatus");
-						if (!stopped && generation === updateActionRef.current.generation && !updateActionRef.current.pending && result && result.status) {
-							received = true;
-							failures = 0;
-							tavernErrorHub.resolve("更新状态");
-							const status = result.status;
-							const completedInThisPage = status.phase === "completed" && updateStartedAtRef.current > 0 && Number(status.completedAt || 0) >= updateStartedAtRef.current;
-							const next = status.phase === "completed" && !completedInThisPage ? { ...status, phase: "idle", host: status.host || "cli" } : status;
-							// Ignore reads begun before an update action, even if they finish afterward.
-							publishUpdateStatus(next);
-						}
-					} catch (err) {
-							if (stopped || generation !== updateActionRef.current.generation || updateActionRef.current.pending) return;
-							failures += 1;
-							// Only this read-only poll gets a startup grace period. Never replay startUpdate.
-							if ((err && err.retryable || err instanceof TypeError) && failures < 3) return;
-							if (isMissingUpdateApiError(err)) {
-								if (!received) publishUpdateStatus({ phase: "restart-required", host: "desktop" });
-							} else {
-								if (!received && !["running", "cancelling", "blocked"].includes(updateStatusRef.current.phase)) publishUpdateStatus({ phase: "failed", host: "cli", error: String(err && err.message || err) });
-								tavernErrorHub.report("更新状态", err);
-							}
-						} finally { pending = false; }
-				}
-				refreshUpdateStatus();
-				const timer = window.setInterval(refreshUpdateStatus, 2500);
-				return function () { stopped = true; window.clearInterval(timer); };
-			}, []);
-			React.useEffect(function () {
-				if (updateStatus.phase !== "running" || updateStatus.host === "desktop") return;
-				let stopped = false;
-				const recovery = updateRecoveryRef.current;
-				async function probeRestartedService() {
-					try {
-						const response = await window.fetch(window.location.origin + "/?tavern-update-probe=" + Date.now(), { cache: "no-store" });
-						if (!stopped && response.ok && recovery.sawOffline && !recovery.reloading) {
-							recovery.reloading = true;
-							window.location.reload();
-						}
-					} catch (error) {
-						if (!stopped) recovery.sawOffline = true;
-					}
-				}
-				probeRestartedService();
-				const timer = window.setInterval(probeRestartedService, 400);
-				return function () { stopped = true; window.clearInterval(timer); };
-			}, [updateStatus.phase, updateStatus.host]);
-			React.useEffect(function () {
 				if (!currentSummary || currentSummary.blank) return;
 				notifyDataChanged(["sessions"]);
 			}, [current, currentSummary && currentSummary.blank]);
@@ -299,18 +226,17 @@
 				if (!item) return;
 				lastModeSession.current = current;
 				setUiMode(groupOfMode(item.mode));
-				if (isPlayMode(item.mode)) setRequestMode(compatibilityAvailable && item.requestMode === "sillytavern" ? "sillytavern" : "dsh");
-			}, [current, history, compatibilityAvailable]);
+			}, [current, history]);
 			React.useEffect(function () {
 				if (!openingPicker || !openingPicker.card || openingPicker.preparing) return;
 				let stopped = false;
 				const cardPath = openingPicker.card.path;
 				const userName = String(openingPicker.userName || "你").trim() || "你";
-				const preparedKey = JSON.stringify([userName, compatibilityAvailable && (openingPicker.requestMode || requestMode) === "sillytavern" ? "sillytavern" : "dsh"]);
+				const preparedKey = JSON.stringify([userName]);
 				if (openingPicker.preparedKey === preparedKey) return;
 				const timer = window.setTimeout(async function () {
 					try {
-						const response = await initializeFullOpeningTemplate(await call("getCardOpenings", { previewTransport: "deferred-v1", path: cardPath, userName: userName, requestMode: compatibilityAvailable && (openingPicker.requestMode || requestMode) === "sillytavern" ? "sillytavern" : "dsh" }));
+						const response = await initializeFullOpeningTemplate(await call("getCardOpenings", { previewTransport: "deferred-v1", path: cardPath, userName: userName }));
 						if (stopped) return;
 						setOpeningPicker(function (current) {
 							if (!current || current.card.path !== cardPath || (String(current.userName || "你").trim() || "你") !== userName) return current;
@@ -322,10 +248,18 @@
 					} catch (err) { if (!stopped) setError(String(err && err.message || err)); }
 				}, 250);
 				return function () { stopped = true; window.clearTimeout(timer); };
-			}, [openingPicker && openingPicker.card && openingPicker.card.path, openingPicker && openingPicker.userName, openingPicker && openingPicker.preparing, requestMode, compatibilityAvailable]);
+			}, [openingPicker && openingPicker.card && openingPicker.card.path, openingPicker && openingPicker.userName, openingPicker && openingPicker.preparing]);
 			// Leaving the game (for another game, a card-design chat or the start page) lets coming back open the tabs again.
+			// An empty `current` is not a leave: the session list is refreshing or the sidebar remounted, and the
+			// mark would be cleared on that flicker — the next snapshot then reopens the panel over the story.
+			// Only a blank that outlives the flicker means the player really left (start page, another workspace).
 			React.useEffect(function () {
-				if (current !== tavernSettingsTabsShownFor) tavernSettingsTabsShownFor = "";
+				if (current) {
+					if (tavernAutoOpenClearedBy(tavernSettingsTabsShownFor, current)) tavernSettingsTabsShownFor = "";
+					return;
+				}
+				const timer = window.setTimeout(function () { tavernSettingsTabsShownFor = ""; }, TAVERN_AUTO_OPEN_BLANK_MS);
+				return function () { window.clearTimeout(timer); };
 			}, [current]);
 			React.useEffect(function () {
 				if (!readyTavernSession || typeof props.openConversationSettingsTab !== "function") return;
@@ -351,7 +285,6 @@
 			function openPicker() {
 				setMenuSession(null);
 				setCardEntry("");
-				if (uiMode === "play" && openingPicker) setRequestMode(openingPicker.requestMode || "dsh");
 				setError("");
 				setPicking(true);
 				// Agent tools and external file edits do not emit browser-local data events.
@@ -512,7 +445,7 @@
 						openingId: request.openingId || "",
 						preparationId: request.preparationId || "",
 						userName: request.userName || "你",
-						requestMode: compatibilityAvailable && request.requestMode === "sillytavern" ? "sillytavern" : "dsh"
+						requestMode: "dsh"
 					});
 				},
 				rememberPending: setPendingOpen,
@@ -673,7 +606,7 @@
 					let preparedWorkspaceId = "";
 					try { preparedWorkspaceId = await timing.measure("claimPrewarm", () => playPrewarmRef.current.claim(card && card.path)); }
 					catch (prewarmError) { console.warn("dsh-tavern: 工作区预热不可用，改为正常创建", prewarmError); }
-					created = await conversationLifecycle.start({ kind: "play", targetMode: targetMode, card: card, preparationId: previousOpeningPicker && previousOpeningPicker.preparationId || "", openingId: openingId || "", userName: resolvedUserName, requestMode: compatibilityAvailable && requestMode === "sillytavern" ? "sillytavern" : "dsh", preparedWorkspaceId: preparedWorkspaceId });
+					created = await conversationLifecycle.start({ kind: "play", targetMode: targetMode, card: card, preparationId: previousOpeningPicker && previousOpeningPicker.preparationId || "", openingId: openingId || "", userName: resolvedUserName, preparedWorkspaceId: preparedWorkspaceId });
 					if (initialMessage) await timing.measure("submitInitialMessage", () => props.executeSlash("/send " + substituteTavernIdentityMacros(initialMessage, { playerName: resolvedUserName, characterName: card && card.name }) + "|/trigger", created.sessionId));
 					if (targetMode !== "card") window.localStorage.setItem("dsh-tavern-player-name", resolvedUserName);
 					successful = true;
@@ -689,11 +622,11 @@
 				try {
 					const globalSettings = await rpc("getTavernSettings");
                     const userName = globalSettings.settings?.defaultPlaySettings?.playerName || "你";
-					const preparedKey = JSON.stringify([userName, compatibilityAvailable && requestMode === "sillytavern" ? "sillytavern" : "dsh"]);
-					setOpeningPicker({ card: card, requestMode: requestMode, openings: [], index: 0, userName: userName, preparing: true });
-					const response = await initializeFullOpeningTemplate(await call("getCardOpenings", { previewTransport: "deferred-v1", path: card.path, userName: userName, requestMode: compatibilityAvailable && requestMode === "sillytavern" ? "sillytavern" : "dsh" }));
+					const preparedKey = JSON.stringify([userName]);
+					setOpeningPicker({ card: card, openings: [], index: 0, userName: userName, preparing: true });
+					const response = await initializeFullOpeningTemplate(await call("getCardOpenings", { previewTransport: "deferred-v1", path: card.path, userName: userName }));
 					const openings = response.openings || [];
-					setOpeningPicker({ card: card, requestMode: requestMode, preparing: false, preparedKey: preparedKey, preparationId: response.preparationId || "", openings: openings, index: 0, userName: userName, trustedCardMode: response.trustedCardMode });
+					setOpeningPicker({ card: card, preparing: false, preparedKey: preparedKey, preparationId: response.preparationId || "", openings: openings, index: 0, userName: userName, trustedCardMode: response.trustedCardMode });
 				successful = true;
 				} catch (err) { setOpeningPicker(null); playPrewarmRef.current.cancel(); setError(String(err && err.message || err)); }
 				finally { if (timing) timing.finish(successful); setBusy(false); }
@@ -765,7 +698,7 @@
 				const first = history.filter(function (item) {
 					if (groupOfMode(item.mode) !== nextMode) return false;
 					if (nextMode !== "play") return true;
-					return (item.requestMode === "sillytavern" ? "sillytavern" : "dsh") === requestMode;
+					return item.requestMode !== "sillytavern";
 				}).reduce(function (best, item) { return !best || tavernHistoryActivity(item, summaries) > tavernHistoryActivity(best, summaries) ? item : best; }, null);
 				if (first) {
 					try { await openSessionWhenReady(first.sessionId); }
@@ -774,18 +707,15 @@
 				else if (nextMode === "card") openPicker();
 				else openPicker();
 			}
-			async function switchPlayRequestMode(nextRequestMode) {
-				if (!compatibilityAvailable && nextRequestMode === "sillytavern") return;
+			async function switchToPlay() {
 				playPrewarmRef.current.cancel();
 				setUiMode("play"); setPicking(false); setMenuSession(null); setBusy(true); setError("");
-				setRequestMode(nextRequestMode);
-				window.localStorage.setItem("dsh-tavern-request-mode", nextRequestMode);
-                if (openingPicker && (openingPicker.requestMode || "dsh") === nextRequestMode) {
+                if (openingPicker) {
                     setPicking(true); setBusy(false); return;
                 }
 				try {
 					const target = history.filter(function (item) {
-						return isPlayMode(item.mode) && (item.requestMode === "sillytavern" ? "sillytavern" : "dsh") === nextRequestMode;
+						return isPlayMode(item.mode) && item.requestMode !== "sillytavern";
 					})[0];
 					if (!target) { props.sessions.clear(); openPicker(); return; }
 					if (target.sessionId !== current) await openSessionWhenReady(target.sessionId);
@@ -837,7 +767,7 @@
 						const next = history.filter(function (entry) {
 							if (entry.sessionId === item.sessionId || groupOfMode(entry.mode) !== uiMode) return false;
 							if (uiMode !== "play") return true;
-							return (entry.requestMode === "sillytavern" ? "sillytavern" : "dsh") === requestMode;
+							return entry.requestMode !== "sillytavern";
 						})[0];
 						if (next) await openSessionWhenReady(next.sessionId);
 						else { await openBlankConversation(); openPicker("cards"); }
@@ -885,65 +815,6 @@
 					return forkConversation(item, title, request.turn);
 				});
 			}, [history, summaries, busy]);
-			async function checkUpdate() {
-				const status = updateStatusRef.current;
-				if (updateActionRef.current.pending || isUpdateBusy(status) || ["restart-required", "installed-restart-required", "package-managed"].includes(status.phase)) return;
-				updateActionRef.current.pending = true;
-				updateActionRef.current.generation += 1;
-				publishUpdateStatus({ ...status, phase: "checking", host: status.host || "cli", checkedAt: Date.now(), error: "" });
-				try {
-					const result = await callUpdate("checkUpdate");
-					if (result && result.status) publishUpdateStatus(result.status);
-				} catch (err) {
-					publishUpdateStatus({ ...status, phase: "check-failed", host: status.host || "cli", error: String(err && err.message || err) });
-					tavernErrorHub.report("检查更新", err);
-				} finally {
-					updateActionRef.current.pending = false;
-					updateActionRef.current.generation += 1;
-				}
-			}
-			async function performUpdate() {
-				const status = updateStatusRef.current;
-				if (updateActionRef.current.pending || !["update-available", "repair-required"].includes(status.phase)) return;
-				// Lock before opening the confirmation so repeated clicks cannot launch two requests.
-				updateActionRef.current.pending = true;
-				updateActionRef.current.generation += 1;
-				try {
-					const repairing = status.phase === "repair-required";
-					if (!await askConfirm(repairing
-						? "将重新安装当前构建以修复上次未完成的更新，期间会短暂断开。人物卡、资料和对话数据会保留。\n确定修复安装吗？"
-						: "更新期间会短暂断开，人物卡、资料和对话数据不会受到影响。\n确定更新到 GitHub 最新版吗？")) return;
-					updateStartedAtRef.current = Date.now();
-					updateRecoveryRef.current = { sawOffline: false, reloading: false };
-					publishUpdateStatus({ ...status, phase: "running", host: status.host || "cli", startedAt: updateStartedAtRef.current, cancellable: false, error: "" });
-					const result = await callUpdate("startUpdate");
-					if (result && result.status) publishUpdateStatus(result.status);
-				} catch (err) {
-					// A lost response does not prove that the installer stopped. Let the read-only poll reconcile it.
-					publishUpdateStatus({ ...updateStatusRef.current, error: "更新请求结果尚未确认，正在核实状态：" + String(err && err.message || err) });
-					tavernErrorHub.report("插件更新", err);
-				} finally {
-					updateActionRef.current.pending = false;
-					updateActionRef.current.generation += 1;
-				}
-			}
-			async function cancelUpdate() {
-				const status = updateStatusRef.current;
-				if (updateActionRef.current.pending || status.phase !== "running" || status.cancellable !== true) return;
-				updateActionRef.current.pending = true;
-				updateActionRef.current.generation += 1;
-				publishUpdateStatus({ ...status, phase: "cancelling", error: "" });
-				try {
-					const result = await callUpdate("cancelUpdate");
-					if (result && result.status) publishUpdateStatus(result.status);
-				} catch (err) {
-					publishUpdateStatus({ ...updateStatusRef.current, error: "取消请求结果尚未确认，正在核实状态：" + String(err && err.message || err) });
-					tavernErrorHub.report("取消更新", err);
-				} finally {
-					updateActionRef.current.pending = false;
-					updateActionRef.current.generation += 1;
-				}
-			}
 			const h = React.createElement;
 			const collapsedSidebar = collapsed ? h(React.Fragment, null,
 				h("div", { className: "dsh-tavern-sidebar collapsed" },
@@ -953,7 +824,7 @@
 			const visibleHistory = history.filter(function (item) {
 				if (groupOfMode(item.mode) !== uiMode) return false;
 				if (uiMode !== "play") return true;
-				return (item.requestMode === "sillytavern" ? "sillytavern" : "dsh") === requestMode;
+				return item.requestMode !== "sillytavern";
 			});
 			// Deleting a card elsewhere may remove the chat open here; never leave it on screen.
 			removedChatsHandler.current = function (sessionIds) {
@@ -1031,6 +902,7 @@
 				selectedOpening ? h("div", {
 					key: selectedOpening.id,
 					className: "dsh-tavern-greeting-preview",
+                    "data-dsh-tavern-preview-busy": busy ? "true" : undefined,
                     style: { pointerEvents: busy ? "none" : undefined },
 					role: "region",
 					"aria-label": openingPicker.card.name + "开场白预览"
@@ -1166,10 +1038,10 @@
 				: updateStatus.phase === "installed-restart-required"
 					? (updateStatus.error || "程序文件已更新，但自动重启失败。请手动重启 DSH Tavern。")
 				: updateStatus.phase === "restart-required"
-					? "请重启 DSH Desktop 以加载新版插件。"
+					? "请重启 DeepSeek Harness 以加载新版插件。"
 				: updateStatus.phase === "completed"
 					? (updateStatus.host === "desktop"
-						? "更新完成，请重启 DSH Desktop。"
+						? "更新完成，请重启 DeepSeek Harness。"
 						: updateStatus.host === "android"
 							? "Android 更新完成，3088 服务已重启；如移动端界面未更新，请重启 DSHA。"
 							: "更新完成，请刷新页面。")
@@ -1181,7 +1053,7 @@
 			const updateHostLabel = updateStatus.phase === "package-managed" ? "插件安装版" : updateStatus.host === "desktop" ? "Desktop 版" : (updateStatus.host === "android" ? "Android 版" : "命令行版");
 			// 已是最新且无警告时，结果直接写在按钮上，不再单占一行（手机侧栏高度紧张）。
 			const upToDateQuiet = updateStatus.phase === "up-to-date" && !updateStatus.checkWarning;
-			const checkingOrRunning = isUpdateBusy(updateStatus);
+			const checkingOrRunning = updater.current?.isBusy(updateStatus) ?? true;
 			const cancelSupported = ["running", "cancelling"].includes(updateStatus.phase) && updateStatus.cancellable === true;
 			const updateActions = updateStatus.phase === "package-managed"
 				? h("details", { className: "dsh-tavern-update-actions" },
@@ -1196,22 +1068,18 @@
 					cancelSupported ? h("button", { className: "dsh-tavern-update-button", disabled: updateStatus.phase === "cancelling", onClick: cancelUpdate }, updateStatus.phase === "cancelling" ? "正在取消…" : "取消更新") : null);
 			return h(React.Fragment, null, h(TavernErrorCenter), collapsedSidebar, h("div", { className: "dsh-tavern-sidebar", style: { display: collapsed ? "none" : undefined, position: "relative", width: props.embedded ? "100%" : props.width + "px" } },
 				h("div", { className: "dsh-tavern-side-head" }, h("div", { className: "dsh-tavern-side-brand dsh-tavern-lockup", role: "img", "aria-label": "DSH Tavern" }), props.embedded ? null : h("button", { className: "dsh-tavern-side-icon", title: "收起侧栏", onClick: props.toggleSidebar }, "◧")),
-				h("div", { className: "dsh-tavern-mode-switch" + (compatibilityAvailable ? " compatibility-enabled" : "") },
-					h("button", { className: uiMode === "play" && requestMode === "dsh" ? "active" : "", disabled: busy, onClick: function () { switchPlayRequestMode("dsh"); } }, "游玩"),
+				h("div", { className: "dsh-tavern-mode-switch" },
+					h("button", { className: uiMode === "play" ? "active" : "", disabled: busy, onClick: function () { switchToPlay(); } }, "游玩"),
 					h("button", { className: uiMode === "card" ? "active" : "", disabled: busy, onClick: function () { switchMode("card"); } }, "卡片")
 				),
-				h("button", { className: "dsh-tavern-side-new", disabled: busy, onClick: function () { openPicker(); } }, uiMode === "play" ? (openingPicker ? "继续开局 · " + openingPicker.card.name : requestMode === "sillytavern" ? "＋ 选择人物卡 · 新开silly 对话" : "＋ 选择人物卡 · 新开游玩") : "＋ 新建卡片工作台对话"),
-				uiMode === "play" && requestMode === "sillytavern" ? h("div", { className: "dsh-tavern-compatibility-notice" },
-					h("strong", null, "silly 模式"),
-					h("div", null, "按 SillyTavern 方式组织对话。未选择酒馆预设时使用内置纯净预设；选择后使用整份酒馆预设。对话与普通游玩分别保存。")
-				) : null,
+				h("button", { className: "dsh-tavern-side-new", disabled: busy, onClick: function () { openPicker(); } }, uiMode === "play" ? (openingPicker ? "继续开局 · " + openingPicker.card.name : "＋ 选择人物卡 · 新开游玩") : "＋ 新建卡片工作台对话"),
 				h("div", { className: "dsh-tavern-side-title dsh-tavern-history-heading" },
-					h("span", null, uiMode === "play" ? (requestMode === "sillytavern" ? "silly 对话" : "游玩历史") : "卡片历史"),
+					h("span", null, uiMode === "play" ? "游玩历史" : "卡片历史"),
 					h("button", { className: "dsh-tavern-history-action", disabled: busy, onClick: function () { setManaging(!managing); setSelectedChats([]); setMenuSession(null); setDeleteNotice(""); } }, managing ? "取消" : "管理")),
 				managing ? h("div", { className: "dsh-tavern-history-selection" },
 					h("button", { className: "dsh-tavern-history-action", disabled: busy || !visibleHistory.length, onClick: function () { setSelectedChats(visibleHistory.map(function (item) { return item.chatId; })); } }, "全选"),
 					h("span", null, "已选 " + visibleHistory.filter(function (item) { return selectedChats.includes(item.chatId); }).length)) : null,
-				h("div", { className: "dsh-tavern-side-list" }, rows.length ? rows : h("div", { className: "dsh-tavern-side-empty" }, uiMode === "play" ? (requestMode === "sillytavern" ? "还没有silly 对话。\n选择人物卡开始；未选择酒馆预设时自动使用内置纯净预设。" : "还没有游玩对话。\n选择人物卡开始；绑定剧本的卡会按剧本推进。") : "还没有卡片工作台对话。\n可以空白开始，再按需添加人物卡和剧本。")),
+				h("div", { className: "dsh-tavern-side-list" }, rows.length ? rows : h("div", { className: "dsh-tavern-side-empty" }, uiMode === "play" ? "还没有游玩对话。\n选择人物卡开始；绑定剧本的卡会按剧本推进。" : "还没有卡片工作台对话。\n可以空白开始，再按需添加人物卡和剧本。")),
 				managing ? h("button", { className: "dsh-tavern-btn", style: { flexShrink: 0, margin: "8px 12px", color: "#e57373" }, disabled: busy || !visibleHistory.some(function (item) { return selectedChats.includes(item.chatId); }), onClick: deleteSelectedConversations }, busy ? "正在删除…" : "删除所选（" + visibleHistory.filter(function (item) { return selectedChats.includes(item.chatId); }).length + "）") : null,
 				deleteNotice ? h("div", { role: "status", style: { padding: "4px 12px" } }, deleteNotice) : null,
 				!picking && error ? h("div", { className: "dsh-tavern-dock-error", role: "alert" }, error) : null,
@@ -1315,8 +1183,13 @@
 					openConversationSettingsTab: async function (sessionId) {
 						if (narrowLayout()) return closeNarrowSidebar();
 						if (tavernSettingsTabsShownFor === sessionId) return;
+						// Claim before awaiting the setting, so a second call during the read cannot open twice.
 						tavernSettingsTabsShownFor = sessionId;
-						if (!await tavernAutoOpenStatus.read()) return;
+						// The setting is off: release the claim, so turning it on later still opens the tabs.
+						if (!await tavernAutoOpenStatus.read()) { if (tavernSettingsTabsShownFor === sessionId) tavernSettingsTabsShownFor = ""; return; }
+						// The column already shows one of these pages (it was never closed, or the sidebar remounted):
+						// opening again expands the column and focuses the page, pulling it over the story for nothing.
+						if (tavernRightColumnShowing(ctx, ["dsh-tavern:conversation-settings", "dsh-tavern:status"])) return;
 						const opened = await openTavernSidebarTab(ctx, { type: "dsh-tavern:conversation-settings" }, { sessionId: sessionId }) && await openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId: sessionId });
 						// Not opened (the player already moved on, or the host refused): try again next time this game is entered.
 						if (!opened) { if (tavernSettingsTabsShownFor === sessionId) tavernSettingsTabsShownFor = ""; return; }

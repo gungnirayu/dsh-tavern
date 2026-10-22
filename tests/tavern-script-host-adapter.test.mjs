@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createTavernScriptHostAdapter } from '../tavern-plugin/lib/domain/tavern-script-host-adapter.js'
+import { applyMvuSettlementEffect } from '../tavern-plugin/lib/domain/mvu-settlement-effect.js'
 
 function chat() {
   return {
@@ -134,4 +135,26 @@ for(const type of ['global','character'])test(type+' variable writes validate Ch
  const result=await adapter.updateVariables('session-1',{type},{hp:8},2)
  assert.equal(result.updated,true)
  assert.deepEqual(saved,{hp:8})
+})
+
+test('变量结算不改正文：存档 text 仍是提示词正则投影，不被换回模型原文（#306）', async () => {
+  const value = chat()
+  value.messages.unshift({ role: 'user', text: '行动', variables: [{ stat_data: { hp: 4 }, schema: {} }] })
+  const raw = '<thinking>想一想 `<branches>`</thinking>正文<branches>x</branches>'
+  Object.assign(value.messages[1], { text: '<thinking>想一想 `', sourceText: raw, projectionText: raw, swipes: [raw],
+    displayText: '<div>正文</div>', variables: [{ stat_data: { hp: 7 }, schema: {} }] })
+  let adapter
+  adapter = harness(value, { scriptDispatch: { async dispatch(_session, _event, _args, _context, work) {
+    await adapter.updateMessages('session-1', [{ message_id: 1, data: { stat_data: { hp: 6 }, schema: {} } }], 2, work.eventId)
+    return { handled: true }
+  } } }).adapter
+  const result = await adapter.settleMvuUpdate({ operationId: 'settle', sessionId: 'session-1', messageId: 1, swipeId: 0,
+    expectedLifecycleRevision: 2, storyText: '正文', command: '<UpdateVariable/>' })
+  applyMvuSettlementEffect(value, result.effect)
+  assert.equal(value.messages[1].variables[0].stat_data.hp, 6)
+  assert.equal(value.messages[1].text, '<thinking>想一想 `')
+  assert.equal(value.messages[1].sourceText, raw)
+  assert.deepEqual(value.messages[1].swipes, [raw])
+  assert.equal(value.messages[1].displayText, '<div>正文</div>')
+  assert.equal(Object.hasOwn(value.messages[1], 'sessionText'), false)
 })

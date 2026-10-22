@@ -35,7 +35,7 @@ for(const full of [false,true])test(`adapter transaction edits old floors and re
  adapter=createTavernScriptHostAdapter({resolveChat:async()=>{reads++;throw Error('full Chat read')},writeChat:db.write,
   resolveSettlementBase:async()=>{const base=await db.readSettlementBase('c'),ensure=base.ensure;return {...base,ensure:async indices=>{if(indices===undefined)materializations++;return ensure(indices)}}},
   resolveChatSlice:(_s,indices,fields)=>db.readSlice('c',indices,fields),readCard:async()=>({}),worldBooks:{bound:async()=>null},scriptDispatch:dispatch})
- const result=await adapter.settleMvuUpdate({sessionId:'s',operationId:'op',branchId:'b',basedOnRevision:1,messageId:255,swipeId:0,expectedLifecycleRevision:0,command:'update',compactResult:true,compactContext:true,preserveForeground:true})
+ const result=await adapter.settleMvuUpdate({sessionId:'s',operationId:'op',branchId:'b',basedOnRevision:1,messageId:255,swipeId:0,expectedLifecycleRevision:0,command:'update',compactResult:true,compactContext:true})
  assert.equal(reads,0)
  assert.equal(materializations,full?1:0)
  assert.ok(result.effect.changes.some(change=>change.path[0]==='messages'&&change.path[1]===20))

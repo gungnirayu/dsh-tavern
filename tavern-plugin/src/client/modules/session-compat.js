@@ -27,11 +27,6 @@ function tavernMainSessionId(sessions) {
 	return mainSessionId(snapshot);
 }
 
-function isBlankRow(row) {
-	if (!row) return false;
-	return row.blank === true;
-}
-
 // createSessionCompat(sessions) -> 兼容后的 sessions 视图
 // 返回的新对象保留 list/binding/scope/create/fork/refresh 原样，并补回：
 //   current    —— 主会话 id（0.1.5 语义，随列表快照推导）

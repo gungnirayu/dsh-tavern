@@ -42,3 +42,18 @@ test('存档漏了一轮：可补记；回退没传到模型上下文：可重�
   assert.deepEqual(strange.mismatch, { native: [2], story: [2, 9] })
   assert.equal(inspectStoryAlignment({ session, header: { regenInProgress: true }, storyTurns: [2] }).state, 'regenerating')
 })
+
+test('只有模型回复的回合结束后才对账：回退、撤销回退、编辑这类 Tavern 自己的回合不触发', async () => {
+  const { turnRepliedByModel } = await import('../tavern-plugin/lib/domain/story-alignment.js')
+  const model = { kind: 'model', provider: 'fixture', model: 'fixture' }
+  const reply = (seq, turn, source, surfaceOp = 'append', text = '正文') => ({ seq, type: 'assistant/message', surfaceOp, data: { turn, step: 1, message: { role: 'assistant', content: [{ type: 'text', text }], source } } })
+  const start = (seq, turn) => ({ seq, type: 'turn/start', data: { turn } })
+  const events = [
+    start(0, 2), reply(1, 2, model),
+    start(2, 3), reply(3, 3, { kind: 'model', provider: 'dsh-tavern', model: 'body-edit', tavernStoryTurn: 2 }, { op: 'replace', startSeq: 1, endSeq: 1 }),
+    start(4, 4), { seq: 5, type: 'user/message', surfaceOp: 'append', data: { role: 'user', content: [], source: { kind: 'plugin:dsh-tavern-surface-restore' } } },
+    start(6, 5), reply(7, 5, { ...model, tavernStoryTurn: 2 }),
+    start(8, 6), reply(9, 6, model, 'append', '')
+  ]
+  assert.deepEqual([2, 3, 4, 5, 6].map(turn => turnRepliedByModel(events, turn)), [true, false, false, false, false])
+})

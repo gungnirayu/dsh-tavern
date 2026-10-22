@@ -61,3 +61,15 @@ for (const fields of [undefined, ['openingWorldbookSnapshot'], ['cardDefinitionS
   assert.equal(view.cardResourceAccess.revision, 2)
   assert.equal(f.calls.dirty, 0)
 })
+
+test('新客户端只接收一份世界书；旧客户端与缓存原视图保留兼容字段', async () => {
+  const f = fixture()
+  const worldbook = { name: '世界书', entries: [{ content: '长内容'.repeat(1000) }] }
+  f.deps.project.full = async () => ({ tavernHelper: { messages: [], worldbook }, tavernHelperWorldbook: worldbook })
+  const modern = await f.reader.response({ sessionId: 's', helperWorldbookSync: 1 })
+  assert.equal(modern.view.tavernHelper.worldbook, worldbook)
+  assert.equal(Object.hasOwn(modern.view, 'tavernHelperWorldbook'), false)
+  const old = await f.reader.response({ sessionId: 's' })
+  assert.equal(old.view.tavernHelperWorldbook, worldbook)
+  assert.ok(JSON.stringify(old).length > JSON.stringify(modern).length + 2000)
+})

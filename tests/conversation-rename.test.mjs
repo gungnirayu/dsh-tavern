@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { createConversationHandlers } from '../tavern-plugin/lib/rpc/conversations.js'
 import { createTavernConversationRegistry } from '../tavern-plugin/lib/domain/tavern-conversation-registry.js'
 
 const client = readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-const server = readFileSync(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
 const renameSource = client.match(/renameSession: (async function \(sessionId, title\) \{[\s\S]*?\n\s*\}),/)[1]
 function fixture() {
   let chat = { id: 'chat', sessionId: 'session', title: '旧标题', messages: ['正文'], updatedAt: 1 }
@@ -17,18 +17,18 @@ function fixture() {
     readChat: async () => structuredClone(chat), writeChat: async () => {}, removeChat: async () => {}
   }
   const registry = createTavernConversationRegistry({ store })
-  const start = server.indexOf("      case 'renameConversation':")
-  const end = server.indexOf("      case 'markConversationOpened':", start)
-  const invoke = new Function('chatForSession', 'updateChat', 'conversationRegistry', 'str',
-    'return async (method, args) => { switch (method) {' + (start < 0 ? '' : server.slice(start, end)) + '} }')(
-    async id => id === 'session' ? structuredClone(chat) : undefined,
-    async (id, mutate) => {
+  const handlers = createConversationHandlers({
+    chatForSession: async id => id === 'session' ? structuredClone(chat) : undefined,
+    async updateChat(id, mutate) {
       if (failSave) throw Error('存档保存失败')
       chat = mutate({ ...chat, messages: [...chat.messages, '并发剧情'] })
       // Match updateChat: normal summary sync is best effort.
       try { await registry.sync(chat) } catch {}
       return structuredClone(chat)
-    }, registry, value => String(value ?? ''))
+    },
+    conversationRegistry: registry, str: value => String(value ?? '')
+  })
+  const invoke = (method, args) => handlers[method](args)
   const session = { title: '旧标题', async rename(title) { this.title = title; return { ok: true } } }
   let notifications = 0
   const rename = vm.runInNewContext('(' + renameSource + ')', {

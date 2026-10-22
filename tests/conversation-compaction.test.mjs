@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {createChatJournalStore} from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import {createChatPersistence} from '../tavern-plugin/lib/domain/chat-persistence.js'
-import {retainedRevisions,forkRevisionsByChat} from '../tavern-plugin/lib/domain/conversation-retention.js'
+import {retainedRevisions} from '../tavern-plugin/lib/domain/conversation-retention.js'
 
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'compact-chat-'))
@@ -59,8 +59,6 @@ test('retention follows checkpoints, undo, regeneration recovery and forks trans
   return states[revision]
  }
  const chat={id:'a',_storageRevision:20,timeline:{checkpoints:[{beforeRevision:9}]},rollbackUndo:{beforeRevision:7},regenRecovery:{beforeRevision:6}}
- const forks=forkRevisionsByChat([{forkedFrom:{chatId:'a',storageRevision:11,stateChatId:'a',stateRevision:11}},{forkedFrom:{chatId:'b',storageRevision:3}}])
- assert.deepEqual([...forks.get('b')],[3])
- const retained=await retainedRevisions(chat,read,forks.get('a'))
+ const retained=await retainedRevisions(chat,read,[11])
  assert.deepEqual([...retained].sort((x,y)=>x-y),[2,4,6,7,9,10,11])
 })

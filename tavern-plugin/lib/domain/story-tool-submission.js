@@ -96,7 +96,9 @@ export function foldStorySubmission(session, result, bodyText) {
   // of the newest projection event, so two ids here hide the fork action.
   const reply = {
     ...data.message,
-    id: randomUUID(),
+    // The client marks a tool-submitted body by this prefix: it arrives whole in
+    // one commit, so the reader must land on its first line instead of its end.
+    id: 'tavern-tool-reply:' + randomUUID(),
     source: { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' },
     content: [{ type: 'text', text: bodyText }]
   }

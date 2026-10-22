@@ -35,7 +35,6 @@ test('standard package ships runtime resources without local links, host copies 
     'tavern-plugin/lib/user-tools-bridge.js',
     'tavern-plugin/packages/dsh-tavern-card-memory/index.js',
     'tavern-plugin/packages/dsh-tavern-card-memory/package.json',
-    'tavern-plugin/packages/dsh-image-gen/src/module.js',
     'tavern-plugin/packages/dsh-tavern-remote/lib/typert.host.js',
     'tavern-plugin/packages/dsh-better-sidebar/lib/client-mermaid.js',
     'tavern-plugin/packages/dsh-dream-skin/lib/index.js',

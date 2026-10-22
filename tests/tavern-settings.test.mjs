@@ -11,6 +11,18 @@ const serverSource = await readFile(new URL('../tavern-plugin/lib/index.js', imp
 
 const settingsModuleSource = await readFile(new URL('../tavern-plugin/src/client/modules/global-settings.js', import.meta.url), 'utf8')
 
+test('retired mode flags cannot be enabled and are removed on settings save', () => {
+  const previous = { compatibilityMode: true, sillyModeEnabled: true, unknown: 'preserved' }
+  const saved = applyTavernSettingsPatch(previous, {})
+  assert.equal(saved.unknown, 'preserved')
+  for (const key of ['compatibilityMode', 'sillyModeEnabled']) {
+    assert.equal(Object.hasOwn(saved, key), false)
+    assert.equal(Object.hasOwn(presentTavernSettings(previous, {}), key), false)
+    assert.throws(() => applyTavernSettingsPatch(previous, { [key]: true }), /silly 模式已停用/)
+  }
+  assert.equal(previous.compatibilityMode, true)
+})
+
 test('全局写作 Skill 逐项保存，恢复开启不改动其他 Skill', () => {
   let document = applyTavernSettingsPatch({}, { defaultWritingSkill: { name: 'one', enabled: false } })
   document = applyTavernSettingsPatch(document, { defaultWritingSkill: { name: 'two', enabled: false } })

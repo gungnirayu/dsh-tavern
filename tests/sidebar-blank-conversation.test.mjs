@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
+import { sourceFunction } from './fixtures/source-function.mjs'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
@@ -22,7 +23,7 @@ function blankFixture(options = {}) {
     openSessionWhenReady: async id => { calls.push(['open', id]) },
     setError: message => { errors.push(message) },
   })
-  vm.runInContext(source.slice(source.indexOf('async function openBlankConversation()'), source.indexOf('// A turn the live Agent')), ctx)
+  vm.runInContext(sourceFunction(source, 'openBlankConversation'), ctx)
   return { ctx, calls, errors }
 }
 

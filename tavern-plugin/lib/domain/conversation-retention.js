@@ -36,20 +36,3 @@ export async function retainedRevisions(chat, readRevision, forkRevisions = [], 
   }
   return retained
 }
-
-/** Revisions of each parent Chat that its forks still read through forkedFrom. */
-export function forkRevisionsByChat(chats) {
-  const result = new Map()
-  const add = (chatId, revision) => {
-    if (!chatId || !Number.isSafeInteger(revision)) return
-    if (!result.has(chatId)) result.set(chatId, new Set())
-    result.get(chatId).add(revision)
-  }
-  for (const chat of chats) {
-    const from = chat?.forkedFrom
-    if (!from) continue
-    add(from.stateChatId, Number(from.stateRevision))
-    add(from.chatId, Number(from.storageRevision))
-  }
-  return result
-}

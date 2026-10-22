@@ -1,17 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
-import { generateHelper, generateHelperRaw, generateHelperCompletion, defaultOrderedRawConfig } from "../tavern-plugin/lib/domain/helper-generation.js"
-import { compileHelperGenerate, validateHelperGenerateConfig, resolveHelperGenerationPreset, helperGenerationHistory } from '../tavern-plugin/lib/domain/helper-generation-prompts.js'
+import { createTemplateHandlers } from '../tavern-plugin/lib/rpc/template.js'
+import { generateHelper, generateHelperRaw, generateHelperCompletion } from "../tavern-plugin/lib/domain/helper-generation.js"
+import { compileHelperGenerate, resolveHelperGenerationPreset } from '../tavern-plugin/lib/domain/helper-generation-prompts.js'
 import { createHelperGenerationTasks } from '../tavern-plugin/lib/domain/helper-generation-tasks.js'
 import { createCleanCompatibilityPreset } from '../tavern-plugin/lib/domain/sillytavern-compatibility.js'
 
-const pluginSource = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-const generationCases = pluginSource.slice(pluginSource.indexOf("      case 'generateTavernHelper':"), pluginSource.indexOf("      case 'callOpeningRuntime':"))
 function generationRpc(dependencies) {
-  return new Function('dependencies', 'globalDefaultOrder', `const { helperGenerationTasks, chatForSession, callModel, generateHelper, generateHelperRaw, generateHelperCompletion,
-    helperGenerationHistory, validateHelperGenerateConfig, readChatCard, helperGenerationPreset, worldBooks, readCardExtensions, defaultOrderedRawConfig } = { defaultOrderedRawConfig: globalDefaultOrder, ...dependencies };
-    return async (method, args) => { switch (method) { ${generationCases} } }`)(dependencies, defaultOrderedRawConfig)
+  const handlers = createTemplateHandlers(dependencies)
+  return (method, args) => handlers[method](args, method)
 }
 
 function generationContext() {
@@ -83,7 +80,6 @@ test('generation RPC resolves named presets without changing selection and scope
   let heldSignal, started
   const ready = new Promise(resolve => { started = resolve })
   const invoke = generationRpc({ helperGenerationTasks: tasks, chatForSession: async id => id === 'story' ? chat : null,
-    generateHelper, generateHelperRaw, generateHelperCompletion, helperGenerationHistory, validateHelperGenerateConfig,
     callModel: async options => {
       requests.push(options)
       if (options.messages.some(message => message.content[0].text === 'hold')) { heldSignal = options.signal; started(); return new Promise(() => {}) }

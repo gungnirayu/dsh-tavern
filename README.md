@@ -1,6 +1,6 @@
 <p align="center">
 
-> **当前版本适配 DSH 0.2.1-rc.2**（官方 DeepSeek Harness、DSH NEXT、DSHA v0.2.0-rc2 或独立命令行），安装见[快速开始](#快速开始)。还在用 DSH 0.1.5 的，请用[稳定版](#稳定版dsh-015)。
+> **当前版本适配 DSH 0.2.1-rc.2**（官方 DeepSeek Harness 或独立命令行；Android 使用独立 APK），安装见[快速开始](#快速开始)。还在用 DSH 0.1.5 的，请用[稳定版](#稳定版dsh-015)。
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/docs/assets/brand/dsh-tavern-lockup-on-dark.svg">
     <img src="docs/assets/brand/dsh-tavern-lockup.svg" width="360" alt="DSH 酒馆">
@@ -101,6 +101,8 @@
 
 以上均为社区作者开发，更多插件见[讨论区的 Show and tell](https://github.com/flizzywine/dsh-tavern/discussions/categories/show-and-tell)。
 
+**安装酒馆插件**：设置 → DSH Tavern → 插件，粘贴插件的 GitHub 地址，点「安装」，刷新页面即可；有新版时显示「更新到 x.y.z」，更新后重启 DSH 生效；也可以随时「停用」或「启用」插件；连不上 GitHub 时，下载插件 ZIP 后在同一处上传。插件作者见[发布与一键安装](docs/plugin-publishing.md)。
+
 ## 看看实际效果
 
 **MVU 状态栏**：人物状态随剧情变化，正文下方可查看本轮更新了什么。
@@ -115,11 +117,13 @@
 
 ## 快速开始
 
+**桌面版仅支持官方 DeepSeek Harness，不再支持社区 DSH Desktop 或 DSH NEXT。** 从社区版迁移前请备份数据，再按[数据导入说明](docs/data-import.md)导入；Android 和独立命令行版继续支持。
+
 当前版本适配 **DSH 0.2.1**。还在用 DSH 0.1.5（DSH Desktop 2.0.13、旧一键安装包）的，请用[稳定版](#稳定版dsh-015)。安装前建议备份 `.dsh` 目录。
 
 ### Windows
 
-1. 安装 [DeepSeek Harness 0.2.1-rc.2](https://deepseek.com/harness/)（或社区版 [DSH NEXT](https://github.com/anywhere-labs/dsh-desktop/releases)），打开一次后从托盘退出。
+1. 安装 [DeepSeek Harness 0.2.1-rc.2](https://deepseek.com/harness/)，打开一次后从托盘退出。
 2. 安装酒馆，以下两种方式**任选其一**：
    - **方式 A：双击安装**。[下载安装程序](https://github.com/flizzywine/dsh-tavern/releases/download/v3.0/dsh-tavern-install.cmd)，双击运行（安全提示点「更多信息 → 仍要运行」）。
    - **方式 B：命令安装**。打开 PowerShell，粘贴下面这行并按回车执行：
@@ -132,14 +136,7 @@
 
 ### Android
 
-1. 安装 [DSHA v0.2.0-rc2](https://github.com/DSH-APP/DSHA/releases/tag/v0.2.0-rc2)，打开一次。
-2. 打开底部 **终端**，粘贴下面这行并按回车执行：
-
-   ```sh
-   curl -fsSL 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/android/setup.sh' -o /tmp/dsh-tavern-setup.sh && bash /tmp/dsh-tavern-setup.sh
-   ```
-
-3. 看到 **全部完成** 后重启 DSHA，点 **启动** → **进入** → **酒馆工作台**。
+Android 仅提供 **独立 APK**（Android 11+ / ARM64）：[下载 DSH Tavern Android APK](https://github.com/flizzywine/dsh-tavern/releases/latest/download/dsh-tavern-android-release.apk)。它内置 DSHA v0.2.0-rc2 与 DSH 0.2.0-rc.2，只运行酒馆自己的 `tavern` Profile，手机上只有一个 DSH 服务，内存和电量开销最低。首次按引导完成环境部署后自动安装并进入；酒馆更新在应用内完成。包名独立，可与旧版 v2.1 APK、原版 DSHA 并存，旧包数据需先导出再导入。详见 [Android 安装说明](docs/android-install.md)。
 
 ### macOS
 
@@ -185,7 +182,7 @@ curl -fsSL 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/install
 
 - 在酒馆里点「检查更新」即可更新，也可以重新运行上面的安装命令；只替换程序，人物卡、聊天和设置都会保留。
 - 旧版本的存档：打开后在「酒馆状态」里点「迁移存档」。正文、变量、分支和历史版本都会保留。迁移后的数据目录不要再让旧宿主直接读取。
-- 桌面版切回原版 DSH：设置 → Profile 切换 → 选「原版 DSH」→ 立即重启。不要删除 `.dsh/backups` 和 `profiles/desktop.fresh-*`。细节见[桥接插件说明](tavern-plugin/packages/dsh-profile-bridge/README.md)。
+- 桌面版切回原版 DSH：设置 → 原版DSH → 切到原版 DSH 并重启。之后在原版 DSH 的设置 → DSH酒馆，就能切回酒馆。不要删除 `.dsh/backups` 和 `profiles/desktop.fresh-*`。细节见[桥接插件说明](tavern-plugin/packages/dsh-profile-bridge/README.md)。
 - 旧酒馆在自定义目录、需要继承数据时，见[数据继承说明](docs/data-import.md)。
 
 ### 稳定版（DSH 0.1.5）

@@ -24,4 +24,4 @@ node tests/browser/frame-viewport-height-browser-smoke.mjs
 node tests/performance/variable-write-benchmark.mjs output/variable-write-check --compact --count=20
 ```
 
-临时产物写入被 Git 忽略的 `output/`。该目录可能被清理，正式验收结论放入 `docs/verification/`。
+临时产物写入被 Git 忽略的 `output/`。该目录可能被清理，正式验收结论写进提交说明。

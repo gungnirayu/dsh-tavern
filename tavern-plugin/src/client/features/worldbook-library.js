@@ -329,7 +329,7 @@
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}
-			async function exportFile() { if (!record) return; try { const result = await rpc("exportWorldBook", { source: record.source }, props.scope.sessionId); const item = result.worldBook; const blob = new Blob([JSON.stringify(item.document, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = (item.name || "世界书") + ".json"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); } catch (err) { setError(String(err && err.message || err)); } }
+			async function exportFile() { if (!record) return; try { const result = await rpc("exportWorldBook", { source: record.source }, props.scope.sessionId); const item = result.worldBook; downloadTavernBlob(new Blob([JSON.stringify(item.document, null, 2)], { type: "application/json" }), (item.name || "世界书") + ".json"); } catch (err) { setError(String(err && err.message || err)); } }
 			async function bindCard() {
 				if (!record || !selectedCardPath || !associations) return;
 				const target = (associations.cards || []).find(function (card) { return card.path === selectedCardPath; });

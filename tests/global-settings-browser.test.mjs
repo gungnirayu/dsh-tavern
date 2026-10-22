@@ -5,11 +5,11 @@ import { openTavernSettings } from './fixtures/tavern-settings-browser.mjs'
 function fixture() {
   let fail = false
   let settings = { defaultForegroundModel: null, defaultBackgroundModel: null,
-    defaultPlaySettings: { playerName: '你', statusBarPlacement: 'sidebar', backgroundTasks: { variables: true, posture: true }, webSearchEnabled: false, sceneImagesEnabled: false } }
+    defaultPlaySettings: { playerName: '你', statusBarPlacement: 'sidebar', backgroundTasks: { variables: true, posture: true }, webSearchEnabled: false } }
   return {
     setFail(value) { fail = value },
     respond(method, args) {
-      if (method === 'getTavernSettings') return { settings, modelCatalog: [{ provider: 'p', models: [{ id: 'm' }] }], releaseCapabilities: { sceneImages: false } }
+      if (method === 'getTavernSettings') return { settings, modelCatalog: [{ provider: 'p', models: [{ id: 'm' }] }], releaseCapabilities: {} }
       if (method === 'getBackgroundModelReasoning') return { reasoning: { efforts: [{ id: 'low', name: 'Low' }] } }
       if (method === 'updateTavernSettings') {
         if (fail) throw Error('保存失败测试')
@@ -24,7 +24,7 @@ function fixture() {
 
 test('registered settings preserves model selection after rejected saves', async t => {
   const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { sceneImages: false, respond: backend.respond })
+  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
   const model = page.getByLabel('默认前台模型', { exact: true })
   await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
   const choice = JSON.stringify({ provider: 'p', model: 'm' })
@@ -46,7 +46,7 @@ test('registered settings preserves model selection after rejected saves', async
 
 test('saving opening defaults preserves sibling values without reloading catalogs', async t => {
   const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { sceneImages: false, respond: backend.respond })
+  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
   const toggle = page.getByRole('switch', { name: '联网搜索', exact: true })
   await page.waitForFunction(() => document.querySelector('[aria-label="联网搜索"]')?.disabled === false)
   const reads = Object.fromEntries(["getTavernSettings", "listPresets", "getUserPreferenceProfile"].map(method => [method, calls.filter(c => c.method === method).length]))
@@ -64,7 +64,7 @@ test('saving opening defaults preserves sibling values without reloading catalog
 
 test('卡片工作台默认模型可单独保存，留空表示跟随前台', async t => {
   const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { sceneImages: false, respond: backend.respond })
+  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
   const model = page.getByLabel('卡片工作台默认模型', { exact: true })
   await page.waitForFunction(() => document.querySelector('[aria-label="卡片工作台默认模型"]')?.disabled === false)
   assert.equal(await model.locator('option[value=""]').textContent(), '跟随前台')

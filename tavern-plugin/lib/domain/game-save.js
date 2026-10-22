@@ -182,3 +182,9 @@ function newerVersion(left, right) {
   for (let index = 0; index < Math.max(a.length, b.length); index++) if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) > (b[index] || 0)
   return false
 }
+
+/** Last native title shared by save export naming and imported game naming. */
+export function sessionTitleOf(events) {
+  const title = [...(events || [])].reverse().find(event => event?.type === 'session/title')?.data?.title
+  return title == null ? '' : String(title).trim()
+}

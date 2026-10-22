@@ -3,6 +3,17 @@
 			let nextId = 1;
 			const pending = Object.create(null);
             let contextReady = null;
+			const waitingEvents = new Set();
+			function deliverEvent(data) {
+				if (!contextReady) { onEvent(data); return; }
+				const eventId = String(data.eventId || "");
+				waitingEvents.add(eventId);
+				contextReady.then(function () { waitingEvents.delete(eventId); onEvent(data); }, function (error) {
+					waitingEvents.delete(eventId);
+					// Without a usable context the handlers must not run; say so instead of going silent.
+					post({ type: "dsh-tavern-helper-event-complete", eventId: eventId, error: "上下文同步失败：" + String(error && error.message || error), errorCode: "TAVERN_HELPER_CONTEXT_FAILED", args: copy(data.args || []) });
+				});
+			}
 			function post(message) { parent.postMessage(Object.assign({}, message, { token: token }), "*"); }
 			function request(method, args) {
 				// A card may replace its document; DOM listeners must be restored before RPC.
@@ -18,7 +29,15 @@
 				const data = event && event.data;
 				if (event.source !== parent || !data || data.token !== token) return;
 				if (data.type === "dsh-tavern-helper-context") { const ready = Promise.resolve(onContext(data.contextDelta ? {contextDelta:data.contextDelta} : { context: data.context || {} })); contextReady = ready; ready.then(function () { if (contextReady === ready) contextReady = null; }, function (error) { console.error(error); }); return; }
-				if (data.type === "dsh-tavern-helper-event" || data.type === "dsh-tavern-helper-event-ack" || data.type === "dsh-tavern-helper-event-query") { if (contextReady) contextReady.then(function () { onEvent(data); }, function (error) { console.error(error); }); else onEvent(data); return; }
+				// Probes and receipt acks only read event bookkeeping, so a slow context sync must
+				// not make a live sandbox look lost; only the event itself waits for its context.
+				if (data.type === "dsh-tavern-helper-event-ack") { onEvent(data); return; }
+				if (data.type === "dsh-tavern-helper-event-query") {
+					if (waitingEvents.has(String(data.eventId || ""))) post({ type: "dsh-tavern-helper-event-state", eventId: String(data.eventId || ""), phase: "queued" });
+					else onEvent(data);
+					return;
+				}
+				if (data.type === "dsh-tavern-helper-event") { deliverEvent(data); return; }
 				if (data.type !== "dsh-tavern-helper-response") return;
 				const task = pending[data.requestId];
 				if (!task) return;

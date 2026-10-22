@@ -8,7 +8,20 @@ export function processStartToken(pid, read = readFileSync) {
   } catch { return null }
 }
 
-/** Android/proot may expose an unrelated, inaccessible Android PID after reuse. */
+/**
+ * A PID record is only usable while the PID still names the process this
+ * installation started. `kill(pid, 0)` alone cannot prove that: it also succeeds
+ * for a same-user process that reused the PID, and fails with EPERM for a foreign
+ * one. A record written inside a sandbox's temporary PID namespace becomes that
+ * second case once the sandbox is gone: the PID then belongs to an unrelated
+ * process outside it, often a root-owned one.
+ *
+ * Linux /proc carries the command line, the startup environment and the start
+ * token, so ownership is decided from those once a denied signal (or Android's
+ * proot reuse) makes the bare probe doubtful. Without /proc a live but
+ * unsignalable PID stays "owned", so callers refuse to force-stop it instead of
+ * forgetting the service.
+ */
 export function inspectRecordedProcess(record, { platform = process.platform, host, home,
   kill = process.kill.bind(process), read = readFileSync } = {}) {
   let denied = false
@@ -17,7 +30,12 @@ export function inspectRecordedProcess(record, { platform = process.platform, ho
     if (error?.code !== 'EPERM') return 'unknown'
     denied = true
   }
-  if (host !== 'android' || platform !== 'linux') return 'owned'
+  if (platform !== 'linux') return 'owned'
+  // Android/proot can hand out an unrelated, accessible PID after reuse, so it always
+  // compares /proc. Other Linux hosts only need a second opinion when the probe is
+  // denied: that is where the PID belongs to another user or to a record left behind
+  // by a process that ran in its own PID namespace (a sandbox).
+  if (!denied && host !== 'android') return 'owned'
   try {
     const args = read(`/proc/${record.pid}/cmdline`, 'utf8').split('\0').filter(Boolean)
     const option = name => {

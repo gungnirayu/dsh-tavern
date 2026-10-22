@@ -409,3 +409,50 @@ test('a log the upgrader still refuses names the original event that fails', () 
   old.events = [...old.events, { type: 'turn/start', data: { turn: 2 } }, { type: 'step/start', data: { turn: 2, step: 3 } }].map((row, seq) => ({ time: 1, ...row, seq }))
   assert.throws(() => prepareSessionUpgrade(old, migration), /step\/start[^]*原第 10 条事件 step\/start/)
 })
+
+// #281：真实存档里升级器拒绝的三种形状。
+const v3Rows = rows => rows.map((row, seq) => ({ time: 1, ...row, seq }))
+const checkpoint = (text, range, refs, compactionId = 'c1') => ({ type: 'user/message', surfaceOp: { op: 'replace', startSeq: range[0], endSeq: range[1] }, sourceEventSeqs: refs,
+  data: { id: 'checkpoint-' + text, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'compact', compactionId } } })
+const storyTurn = turn => [
+  { type: 'turn/start', data: { turn } }, { type: 'step/start', data: { turn, step: 1 } },
+  { type: 'user/message', data: message('user', '输入' + turn), surfaceOp: 'append' },
+  { type: 'assistant/message', data: { turn, step: 1, stream: [], message: message('assistant', '正文' + turn) }, surfaceOp: 'append' },
+  { type: 'step/end', data: { turn, step: 1 } }, { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } },
+]
+const compaction = (range, shadowed, at) => [
+  { type: 'compaction/start', data: { compactionId: 'c1', turn: null } },
+  { type: 'compaction/summary', data: { compactionId: 'c1', summary: [{ type: 'text', text: '摘要' }], shadowedRange: { start: range[0], end: range[1] }, shadowedSeqs: shadowed, shadowedTokenCount: 10, provider: 'fixture', model: 'fixture' } },
+  checkpoint('摘要', range, [...shadowed, at + 1]),
+  { type: 'compaction/end', data: { compactionId: 'c1', turn: null } },
+]
+
+test('压缩结束后仍带检查点来源的摘要改写：保留内容，改挂酒馆来源后可升级', async () => {
+  const { isCompactionCheckpoint } = await import('../tavern-plugin/lib/domain/compaction-checkpoint.js')
+  const old = { header: header('stray-checkpoint'), events: v3Rows([...storyTurn(1), ...compaction([2, 3], [2, 3], 6), checkpoint('玩家原文', [8, 8], [8]), ...storyTurn(2)]) }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  const rewrite = artifact.events.find(row => row.type === 'user/message' && row.data.content?.[0]?.text === '玩家原文')
+  assert.notEqual(rewrite.data.source.kind, 'compact-checkpoint')
+  assert.ok(isCompactionCheckpoint(rewrite), '酒馆仍把它当作压缩摘要节点，模板同步不会再改写它')
+  assert.ok(texts(openSession(artifact)).includes('玩家原文'), '上下文与旧版完全一致')
+})
+
+test('回合结束后的正文编辑，下一回合没有任何步骤时不借用更后面回合的步骤', () => {
+  const edit = { type: 'assistant/message', data: { turn: 1, step: 1, stream: [], message: message('assistant', '编辑后的正文') }, surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 }, sourceEventSeqs: [3] }
+  const old = { header: header('stepless-turn'), events: v3Rows([...storyTurn(1), edit,
+    { type: 'turn/start', data: { turn: 2 } }, interruptedCompaction(2), { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+    ...storyTurn(3)]) }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(texts(openSession(artifact)).filter(text => text.startsWith('编辑') || text.startsWith('正文')), ['编辑后的正文', '正文3'])
+  assert.deepEqual(artifact.events.filter(row => row.type === 'turn/start').map(row => row.data.turn), [1, 2, 3], '回合号不变')
+})
+
+test('回合结束后的正文编辑紧跟一次空闲压缩时，编辑并入上一回合，压缩仍在回合之外', () => {
+  const edit = { type: 'assistant/message', data: { turn: 1, step: 1, stream: [], message: message('assistant', '编辑后的正文') }, surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 }, sourceEventSeqs: [3] }
+  const old = { header: header('edit-before-compaction'), events: v3Rows([...storyTurn(1), edit, ...compaction([2, 6], [2, 6], 7), ...storyTurn(2)]) }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  const moved = artifact.events.find(row => row.type === 'assistant/message' && row.data.message.content[0].text === '编辑后的正文')
+  assert.equal(moved.data.turn, 1)
+  assert.equal(artifact.events.find(row => row.type === 'compaction/start').data.turn, null)
+  assert.deepEqual(artifact.events.filter(row => row.type === 'turn/start').map(row => row.data.turn), [1, 2])
+})

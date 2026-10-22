@@ -69,7 +69,6 @@ const entries = {
   'background-trace': ['后台 Agent 工具记录', '从顶部子代理菜单打开“酒馆后台 Agent”的轨迹，可按轮查看人物姿势、变量和候选的工具调用。'+simulated],
   'style-analysis-draft': ['从素材创建写作 Skill', '选择“创建写作 Skill”并引用原创大纲作为参考素材，再说明要提炼的写法与适用边界。'+draft],
   'skill-draft': ['整理可复用 Skill', '明确适用范围、先看草稿、确认后保存为技能文件。'+draft],
-  'tool-plugin-draft': ['讨论自定义工具与插件', '先限定只读权限和输入输出，再讨论实现与启用。'+draft],
   'history-menu': ['继续与整理对话', '游玩历史条目的“⋯”菜单提供重命名、存档救援和删除；删除对话不等于删除人物卡。'],
   'export-controls': ['导出存档、日志与故事正文', '顶部“导出”菜单提供存档（.dshsave，可导入为新游戏继续玩）、日志（用于排查错误）和故事正文（Markdown，有配图时为 zip）；分享日志前需要检查隐私。'],
   'version-check': ['版本与检查更新', '左下角显示当前版本、构建号与“检查更新”入口。图中未执行检查或更新安装，也不表示已经是最新版。'],
@@ -93,6 +92,6 @@ export const featurePages = {
   j01:['worldbook-library'], j02:['worldbook-files'], j03:['worldbook'], j04:['worldbook-triggers'], j05:['worldbook-binding'], j06:['worldbook-advanced'],
   k01:['script-library'], k02:['script','script-edit-draft'], k03:['script-binding','script-bound'], k04:['script-library'],
   l01:['preset-library'], l02:['preset-file-actions'], l03:['preset'], l04:['preset-regex'], l05:['system-prompt-editor'], l06:['system-prompts'],
-  m01:['tavern-settings','background-trace'], m02:['advanced-network'], m03:['background-trace'], m04:['style-analysis-draft'], m05:['skill-draft','library-skills'], m06:['tool-plugin-draft'], m07:[],
+  m01:['tavern-settings','background-trace'], m02:['advanced-network'], m03:['background-trace'], m04:['style-analysis-draft'], m05:['skill-draft','library-skills'], m07:[],
   n01:['history-menu'], n02:['export-controls','card-picker'], n03:['export-controls','debug-workbench'], n04:['export-controls'], n05:['version-check'], n06:[], n07:['resource-files'], n08:['settlement-retry','debug-workbench'],
 }

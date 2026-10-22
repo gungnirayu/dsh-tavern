@@ -18,11 +18,6 @@ test('全屏顶部安全区与输入卡描边回归', { skip: !process.env.TAVER
   await t.test('手机与平板进入原生全屏后贴顶，侧栏显隐不改变主顶栏位置', async () => {
     for (const width of [390, 1024, 1280]) {
       await page.setViewportSize({ width, height: 900 }); await install(page)
-      if (width >= 1024) await page.evaluate(() => {
-        const frame = document.querySelector('#frame'), root = document.createElement('div')
-        root.dataset.slot = 'root'; root.style.display = 'contents'
-        frame.before(root); root.append(frame); frame.classList.add('host_frame'); frame.removeAttribute('data-mobile-nav')
-      })
       await page.locator('[aria-label="全屏"]').evaluate(button => {
         button.onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()
       })

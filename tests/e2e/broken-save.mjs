@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { parseSessionLog } from '../../tavern-plugin/lib/domain/session-log-codec.js'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createChatPersistence } from '../../tavern-plugin/lib/domain/chat-persistence.js'
+import { currentSessionLogs } from './session-files.mjs'
 
 // A save damaged the #196 way, by the released plugin that had the bug, then
 // opened with the current plugin: it must heal and regenerate normally.
@@ -23,8 +24,8 @@ export async function brokenSaveChecks({ page, step, savedChat, output, report, 
   })
   async function nativeTurns(sessionId) {
     const dir = join(root, 'profile-data/tavern/sessions')
-    for (const file of await readdir(dir, { recursive: true })) if (file.endsWith('session.v3.jsonl.zstd')) {
-      const parsed = parseSessionLog(await readFile(join(dir, file)))
+    for (const { path: file } of await currentSessionLogs(dir)) {
+      const parsed = parseSessionLog(await readFile(file))
       if (parsed.header.id === sessionId) return parsed.events.filter(event => event.type === 'turn/end' && event.data?.reason?.kind !== 'error').map(event => event.data.turn)
     }
     return []

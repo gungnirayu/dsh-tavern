@@ -151,8 +151,7 @@
                 return { display: input.display === "icon" ? "icon" : "icon-text", items: input.items.filter(item => typeof item === "string").slice(0, 24) };
             }
             function apply(settings) {
-                value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings),
-                    renderDepth: Number.isSafeInteger(settings.renderDepth) ? settings.renderDepth : 3 };
+                value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings) };
                 document.documentElement.classList.toggle("dsh-tavern-hide-process", value.hideContextAndReasoning);
                 listeners.forEach(listener => listener());
             }
@@ -197,15 +196,8 @@
                     h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: preferences === null || busy, onChange: event => save(patch(event.target.checked)) }));
             }
             return h("section", { className: "dsh-tavern-settings-group dsh-tavern-display-preferences" },
-                row("隐藏上下文注入和思考过程", "隐藏对话中的上下文注入、上下文压缩记录、已思考和思考过程。仅影响显示，正文、模型请求和存档内容不变。",
+                row("隐藏上下文注入和思考过程", "隐藏对话中的上下文注入、上下文压缩记录、收到执行请求的提示、已思考和思考过程。仅影响显示，正文、模型请求和存档内容不变。",
                     preferences?.hideContextAndReasoning === true, value => ({ hideContextAndReasoning: value })),
-                h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" },
-                    h("div", { className: "dsh-tavern-settings-copy" }, h("strong", { className: "dsh-tavern-settings-title" }, "渲染深度"),
-                        h("p", { className: "dsh-tavern-settings-desc" }, "只有最近几轮渲染人物卡的 HTML 界面（状态栏、美化面板等），更早的轮次只显示文字，可点「渲染此轮」单独打开。重美化的卡渲染太多轮会很卡。")),
-                    h("select", { "aria-label": "渲染深度", value: String(preferences?.renderDepth ?? 3), disabled: preferences === null || busy,
-                        onChange: event => save({ renderDepth: Number(event.target.value) }) },
-                        [1, 2, 3, 5, 10, 20].map(depth => h("option", { key: depth, value: String(depth) }, "最近 " + depth + " 轮")),
-                        h("option", { value: "0" }, "不限"))),
                 notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null);
         }
 
@@ -369,9 +361,146 @@
                     h("span", { className: "dsh-tavern-settings-desc" }, notice)) : null);
         }
 
+        // 设置 → DSH Tavern → 插件：粘贴 GitHub 地址或上传 ZIP 安装，列出已装插件与加载情况。
+        function TavernUserPluginsSettings() {
+            const h = React.createElement;
+            const [data, setData] = React.useState(null);
+            const [legacy, setLegacy] = React.useState(null);
+            const [updates, setUpdates] = React.useState(null);
+            const [checking, setChecking] = React.useState(false);
+            const [url, setUrl] = React.useState("");
+            const [busy, setBusy] = React.useState(false);
+            const [notice, setNotice] = React.useState("");
+            const [error, setError] = React.useState("");
+            const zipInput = React.useRef(null);
+            async function checkUpdates() {
+                setChecking(true);
+                try {
+                    const result = await rpc("checkUserPluginUpdates");
+                    const next = {};
+                    (result && result.plugins || []).forEach(function (item) { next[item.folder] = item; });
+                    setUpdates(next);
+                } catch (_error) { setUpdates({}); }
+                finally { setChecking(false); }
+            }
+            async function refresh() {
+                try {
+                    const next = await rpc("listUserPlugins");
+                    setData(next);
+                    if ((next.plugins || []).some(function (plugin) { return plugin.source && plugin.source.kind === "github"; })) await checkUpdates();
+                    else setUpdates({});
+                } catch (err) { setError(String(err && err.message || err)); }
+            }
+            async function refreshLegacy() {
+                try { setLegacy(await rpc("listLegacyPlugins")); }
+                catch (_error) { setLegacy(null); }
+            }
+            React.useEffect(function () { void refresh(); void refreshLegacy(); }, []);
+            async function run(work, done) {
+                setBusy(true); setError(""); setNotice("");
+                try { const result = await work(); setNotice(done(result)); await refresh(); }
+                catch (err) { setError(String(err && err.message || err)); }
+                finally { setBusy(false); }
+            }
+            const installed = function (result) {
+                const plugin = result.plugin;
+                return (plugin.replaced ? "已更新 " : "已安装 ") + plugin.name + (plugin.version ? " " + plugin.version : "") + (plugin.replaced ? "，重启 DSH 后生效。" : "，刷新页面后生效。");
+            };
+            function installUrl() {
+                if (!url.trim()) return;
+                void run(function () { return rpc("installUserPlugin", { url: url.trim() }); }, function (result) { setUrl(""); return installed(result); });
+            }
+            function installZip(event) {
+                const file = event.target.files && event.target.files[0];
+                event.target.value = "";
+                if (!file) return;
+                void run(async function () {
+                    const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+                    let reply = null;
+                    try { reply = await response.json(); } catch (_error) {}
+                    if (!reply || !reply.ok) throw new Error(reply && reply.error || "上传失败（HTTP " + response.status + "）");
+                    return rpc("installUserPluginUpload", { uploadId: reply.uploadId, name: file.name });
+                }, installed);
+            }
+            async function remove(plugin) {
+                const ok = await askTavernConfirm("删除插件 " + plugin.name + "？插件文件夹会移到 plugin-backups 备份目录，可以手动找回。", { confirmText: "删除" });
+                if (!ok) return;
+                void run(function () { return rpc("removeUserPlugin", { folder: plugin.folder }); }, function () { return "已删除 " + plugin.name + "，刷新页面后生效。"; });
+            }
+            function toggle(plugin) {
+                const enable = plugin.enabled === false;
+                void run(function () { return rpc(enable ? "enableUserPlugin" : "disableUserPlugin", { folder: plugin.folder }); }, function () { return (enable ? "已启用 " : "已停用 ") + plugin.name + "，刷新页面后生效。"; });
+            }
+            // 「已是最新」是插件状态，放在名称和「已加载」旁边，不占按钮区。
+            function updateBadge(plugin) {
+                const info = updates && updates[plugin.folder];
+                if (checking && !info) return h("span", { className: "dsh-tavern-user-plugin-update is-checking" }, "检查更新…");
+                if (info && info.status === "latest") return h("span", { className: "dsh-tavern-user-plugin-update is-latest", title: "已安装最新版本" + (info.current ? " " + info.current : "") }, "已是最新");
+                return null;
+            }
+            // Only offer an update when the latest Release is actually newer than what is installed.
+            function updateAction(plugin) {
+                const info = updates && updates[plugin.folder];
+                if (checking && !info) return null;
+                if (info && info.status === "latest") return null;
+                const latest = info && info.status === "available" ? String(info.latest || "").replace(/^v(?=\d)/i, "") : "";
+                const title = info && info.status === "branch" ? "这个插件没有 Release，更新会重新下载默认分支的最新代码"
+                    : info && info.status === "ref" ? "这个插件固定在分支或标签上，更新会重新下载同一个分支或标签"
+                        : info && info.status === "error" ? "检查更新失败：" + info.reason
+                            : info && info.status === "unknown" ? "无法比较版本号（最新 Release：" + (info.latest || "未标注") + "），仍可手动更新" : undefined;
+                return h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, title: title, onClick: function () { void run(function () { return rpc("updateUserPlugin", { folder: plugin.folder }); }, installed); } }, latest ? "更新到 " + latest : "更新");
+            }
+            const stateLabel = { loaded: "已加载", pending: "刷新后生效", restart: "重启 DSH 后生效", failed: "加载失败", skipped: "未加载", disabled: "已停用" };
+            const sourceLabel = function (source) { return source.kind === "github" ? "GitHub · " + source.repo + (source.resolved ? " · " + source.resolved : "") : source.kind === "zip" ? "ZIP 上传" : source.kind === "card" ? "人物卡自带" : "手动放入"; };
+            const plugins = data ? data.plugins || [] : [];
+            return h("div", { className: "dsh-tavern-settings-group dsh-tavern-user-plugins" },
+                h("div", { className: "dsh-tavern-user-plugins-install" },
+                    h("input", { className: "dsh-tavern-settings-select", value: url, disabled: busy, placeholder: "粘贴插件的 GitHub 地址，例如 https://github.com/作者/仓库",
+                        onChange: function (event) { setUrl(event.target.value); }, onKeyDown: function (event) { if (event.key === "Enter") installUrl(); } }),
+                    h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || !url.trim(), onClick: installUrl }, busy ? "处理中…" : "安装"),
+                    h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { if (zipInput.current) zipInput.current.click(); } }, "上传 ZIP"),
+                    h("input", { ref: zipInput, type: "file", accept: ".zip,application/zip", style: { display: "none" }, onChange: installZip })),
+                h("p", { className: "dsh-tavern-settings-desc" }, "插件会运行在你的电脑上，只装信任的作者发布的插件。有 Release 时安装最新 Release，否则安装默认分支；连不上 GitHub 时，可以在仓库页面下载 ZIP 后上传。"),
+                notice ? h("p", { className: "dsh-tavern-user-plugins-notice", role: "status" }, notice) : null,
+                error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null,
+                data && plugins.length === 0 ? h("p", { className: "dsh-tavern-settings-desc" }, "还没有装插件。") : null,
+                plugins.length ? h("ul", { className: "dsh-tavern-user-plugins-list" }, plugins.map(function (plugin) {
+                    const canToggle = plugin.source.kind !== "card" || plugin.enabled === false;
+                    return h("li", { key: plugin.folder, className: "dsh-tavern-user-plugin is-" + plugin.state },
+                        h("div", { className: "dsh-tavern-user-plugin-copy" },
+                            h("strong", null, plugin.name, plugin.version ? h("small", null, " " + plugin.version) : null,
+                                h("span", { className: "dsh-tavern-user-plugin-state", title: plugin.state === "restart" ? "插件文件已更新，重启 DSH 后会加载新版本，这里自动变回「已加载」" : undefined }, stateLabel[plugin.state] || plugin.state),
+                                plugin.source.kind === "github" ? updateBadge(plugin) : null),
+                            plugin.description ? h("span", null, plugin.description) : null,
+                            h("span", { className: "dsh-tavern-user-plugin-source" }, sourceLabel(plugin.source)),
+                            plugin.reason ? h("span", { className: "dsh-tavern-settings-error" }, plugin.reason) : null),
+                        h("div", { className: "dsh-tavern-user-plugin-actions" },
+                            canToggle ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { toggle(plugin); } }, plugin.enabled === false ? "启用" : "停用") : null,
+                            plugin.source.kind === "github" ? updateAction(plugin) : null,
+                            plugin.source.kind === "card" ? null : h("button", { type: "button", className: "dsh-tavern-btn danger", disabled: busy, onClick: function () { void remove(plugin); } }, "删除")));
+                })) : null,
+                legacy && legacy.plugins && legacy.plugins.length ? h("div", { className: "dsh-tavern-legacy-plugins" },
+                    h("div", { className: "dsh-tavern-settings-row" },
+                        h("span", { className: "dsh-tavern-settings-copy" },
+                            h("strong", null, "已装的旧版插件"),
+                            h("p", { className: "dsh-tavern-settings-desc", title: legacy.profile }, "由 Profile 加载，此处只读；安装、更新请走各插件自己的入口。"))),
+                    h("ul", { className: "dsh-tavern-user-plugins-list" }, legacy.plugins.map(function (plugin) {
+                        const status = plugin.status === "bundle" ? "Profile bundle" : plugin.status === "dependency" ? "仅依赖" : "缺失";
+                        return h("li", { key: plugin.name, className: "dsh-tavern-user-plugin" },
+                            h("div", { className: "dsh-tavern-user-plugin-copy" },
+                                h("strong", null, plugin.name, plugin.version ? h("small", null, " " + plugin.version) : null,
+                                    h("span", { className: "dsh-tavern-user-plugin-state", title: plugin.status === "bundle" ? "已登记在 dsh.profile.bundles 中，由 Profile 加载" : plugin.status === "dependency" ? "已安装，但不在 dsh.profile.bundles 中" : "Profile 里找不到这个已安装的包" }, status)),
+                                plugin.description ? h("span", null, plugin.description) : null,
+                                plugin.kind ? h("span", { className: "dsh-tavern-user-plugin-source" }, plugin.kind) : null));
+                    }))) : null,
+                h("div", { className: "dsh-tavern-user-plugins-folder" },
+                    h("span", { className: "dsh-tavern-settings-desc", title: data ? data.dir : "" }, data ? "插件文件夹：" + data.dir : ""),
+                    h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void rpc("openUserPluginsFolder").catch(function (err) { setError(String(err && err.message || err)); }); } }, "打开插件文件夹")));
+        }
+
         // @include modules/global-settings.js
-        const { TavernSettingsSection } = createGlobalSettingsModule({
+        const { TavernSettingsSection, TavernPluginsSettingsSection } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")),
             TavernDefaultModelSetting, TavernConversationWritingSkills, DisplayPreferencesSettings, HeaderItemsSettings,
-            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings
+            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings
         });

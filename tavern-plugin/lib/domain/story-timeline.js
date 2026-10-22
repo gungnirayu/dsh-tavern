@@ -20,7 +20,7 @@ function sameBasedOn(left, right) {
 }
 
 function participantRole(role) {
-  return role === 'candidate' || role === 'settlement' || role === 'character-design' || role === 'ledger' || role === 'worldbook-filter' ? 'background' : role
+  return role === 'candidate' || role === 'settlement' || role === 'character-design' || role === 'ledger' || role === 'worldbook-filter' || role === 'style-reference' ? 'background' : role
 }
 
 function participantLifetime(value) {
@@ -517,6 +517,7 @@ export function createStoryTimeline(options = {}) {
       if (index !== chat.messages.length - 1 || chat.messages[index]?.greeting || Number(chat.messages[index]?.turn) !== Number(intent.turn)) throw new Error('只能编辑最后一轮正文')
       Object.assign(chat.messages[index], intent.patch)
       delete chat.messages[index].displayRuntime
+      delete chat.messages[index].sessionText // retired copy of text (reply-prose.js)
       chat.timeline.revision++
       // Editing keeps the same committed round, but its next settlement must
       // bind to the edited revision. Old in-flight work still fails basedOn.

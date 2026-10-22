@@ -84,6 +84,83 @@ function tavernHeaderFold(ids, widthOf, available, options) {
 	return folded;
 }
 
+// 手机上一行放不下所有快捷入口：固定最多 3 个，其余进 ⋮ 菜单。
+// 上限与当前标题长短无关，所以不会出现「按钮随标题内容忽隐忽现」。
+const TAVERN_HEADER_MOBILE_LIMIT = 3;
+// 一格按钮的占宽：40px 按钮 + 2px 间距；标题行剩余宽度按它折算槽位。
+const TAVERN_HEADER_MOBILE_SLOT = 42;
+
+// 导出是独立下拉菜单，折进 ⋮ 里点不到，所以优先保留它。
+function tavernHeaderMobileFold(ids, limit) {
+	const list = Array.isArray(ids) ? ids : [];
+	const max = Math.max(1, Number(limit) || TAVERN_HEADER_MOBILE_LIMIT);
+	if (list.length <= max) return [];
+	const keep = new Set();
+	if (list.includes("header:export")) keep.add("header:export");
+	for (const id of list) {
+		if (keep.size >= max) break;
+		keep.add(id);
+	}
+	return list.filter(id => !keep.has(id));
+}
+
+// 手机上一行能留几个快捷入口。**只做一次预算，不看当前渲染结果**：
+//   槽位数 = 标题行内容宽 / 42
+//   全部放得下（且 ≤ 上限 3）→ 全显示，不出现 ⋮
+//   放不下                    → 留 slots-1 个图标，最后一个槽位给 ⋮
+// 「标题行内容宽」不随当前保留数量变化，所以不会收一个→标题变宽→又想放回。
+function tavernHeaderMobileCapacity(itemCount, rowWidth, options) {
+	const slot = Number(options && options.slot) > 0 ? Number(options.slot) : TAVERN_HEADER_MOBILE_SLOT;
+	const limit = Number(options && options.limit) > 0 ? Number(options.limit) : TAVERN_HEADER_MOBILE_LIMIT;
+	const count = Math.max(0, Number(itemCount) || 0);
+	const slots = Math.max(1, Math.floor(Math.max(0, Number(rowWidth) || 0) / slot));
+	// 读数是「这一行放得下几个」，不随当前条目数缩水，便于夹具与排查。
+	const fits = Math.min(limit, slots);
+	if (count <= fits) return fits;
+	// 需要 ⋮：最后一个格位留给它。极端窄屏（约 320px）只剩 1 个位置时，
+	// 优先给导出——它是独立下拉，折进 ⋮ 里点不到；其余条目都在 ⋮ 里可达。
+	return Math.max(1, Math.min(limit, slots - 1));
+}
+
+// 标题行里「不归快捷入口」的固定开销，实测值（390px 视口）：
+//   内边距 40 + 4、三处间距 4 + 4 + 4、角落按钮 40 + 外边距 8、
+//   标题至少留 16、宿主右侧动作组（子智能体触发器 + 全屏）80。
+// 窄屏会把宿主的触发器藏掉，届时 CSS 变量 --dsh-tavern-header-fixed 给出更小的值。
+const TAVERN_HEADER_MOBILE_CHROME = 196;
+function tavernHeaderMobileChrome(row) {
+	if (!row) return TAVERN_HEADER_MOBILE_CHROME;
+	const raw = window.getComputedStyle(row).getPropertyValue("--dsh-tavern-header-fixed");
+	const value = Number.parseFloat(raw);
+	return Number.isFinite(value) && value > 0 ? value : TAVERN_HEADER_MOBILE_CHROME;
+}
+
+// 手机判定：窄屏、触屏，或安卓壳注入的 frame 容器。
+function tavernMobileHeader() {
+	if (typeof window === "undefined") return false;
+	const coarse = Boolean(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+	const narrow = window.innerWidth <= 767;
+	const frame = typeof document !== "undefined" && document.querySelector('[data-mobile-nav="frame"]');
+	return narrow || coarse || Boolean(frame);
+}
+function useTavernMobileHeader() {
+	const [mobile, setMobile] = React.useState(tavernMobileHeader);
+	React.useEffect(function () {
+		if (typeof window === "undefined" || !window.matchMedia) return undefined;
+		const query = window.matchMedia("(max-width: 767px)");
+		const onChange = function () { setMobile(tavernMobileHeader()); };
+		if (query.addEventListener) query.addEventListener("change", onChange);
+		else if (query.addListener) query.addListener(onChange);
+		window.addEventListener("resize", onChange);
+		onChange();
+		return function () {
+			if (query.removeEventListener) query.removeEventListener("change", onChange);
+			else if (query.removeListener) query.removeListener(onChange);
+			window.removeEventListener("resize", onChange);
+		};
+	}, []);
+	return mobile;
+}
+
 // The catalog follows `sidebarRightTabs`: every guide entry becomes a page the
 // top bar can show. Entries are rebuilt only when the registry changes, so the
 // snapshot stays reference-stable for useSyncExternalStore.

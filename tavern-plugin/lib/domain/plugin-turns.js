@@ -6,15 +6,21 @@ const storyTurnOf = message => Number(message?.turn || (message?.greeting ? 1 : 
 const isPlay = chat => ['story', 'script'].includes(chat?.mode || 'story')
 
 /**
- * Read-only turn material for the public plugin API. Uses the bounded session
+ * Read-only turn material for the public plugin API. Uses the latest floors'
  * summaries and indexed scene targets, so a per-turn notification never reads
  * the complete history of a long save.
  */
+// The latest floors answer every per-turn read (the latest turn, the stage's last ten).
+export const RECENT_FLOORS = 32
+
 export function createPluginTurnReader(deps) {
-  async function resolveGame(sessionId) {
-    const state = await deps.sessionState(sessionId)
+  // The latest floors' summaries, with `from` the absolute index of the first; the whole
+  // summary list (`from` 0) only where storage cannot read the latest floors alone.
+  async function resolveGame(sessionId, { whole = false } = {}) {
+    const recent = !whole && deps.recentState ? await deps.recentState(sessionId, RECENT_FLOORS) : null
+    const state = recent || await deps.sessionState(sessionId)
     if (!state || !isPlay(state)) return null
-    return { chatId: state.id, sessionId: state.sessionId || sessionId, state }
+    return { chatId: state.id, sessionId: state.sessionId || sessionId, state, from: recent ? recent.messagesFrom : 0 }
   }
 
   async function currentTarget(sessionId, turn) {
@@ -32,24 +38,31 @@ export function createPluginTurnReader(deps) {
   // once no settlement is pending or running for it. An edit or a rollback
   // leaves it 'idle': its text is final, no settlement is coming.
   async function material(sessionId, turn, { requireLatest = false, allowPending = false } = {}) {
-    const game = await resolveGame(sessionId)
+    let game = await resolveGame(sessionId)
     if (!game) return null
-    const messages = Array.isArray(game.state.messages) ? game.state.messages : []
+    let messages = Array.isArray(game.state.messages) ? game.state.messages : []
+    // An older turn than the latest floors hold: read the whole summary list for it.
+    if (turn !== undefined && game.from > 0 && !messages.some(message => message?.role === 'assistant' && storyTurnOf(message) === turn)) {
+      game = await resolveGame(sessionId, { whole: true })
+      if (!game) return null
+      messages = Array.isArray(game.state.messages) ? game.state.messages : []
+    }
     let latest = -1
     for (let index = messages.length - 1; index >= 0; index--) {
       if (messages[index]?.role === 'assistant') { latest = index; break }
     }
     if (latest < 0) return null
     if (turn === undefined) turn = storyTurnOf(messages[latest])
-    const index = messages.findIndex(message => message?.role === 'assistant' && storyTurnOf(message) === turn)
-    if (index < 0 || (requireLatest && index !== latest)) return null
+    const local = messages.findIndex(message => message?.role === 'assistant' && storyTurnOf(message) === turn)
+    if (local < 0 || (requireLatest && local !== latest)) return null
+    const index = game.from + local
     const header = await deps.header(game.sessionId, ['settleStatus', 'macroState', 'cardPath', 'cardName'])
     if (!header) return null
-    if (!allowPending && index === latest && !messages[index].greeting && (!['done', 'failed', 'idle'].includes(header.settleStatus) || messages[index].mvu?.pending === true)) return null
+    if (!allowPending && local === latest && !messages[local].greeting && (!['done', 'failed', 'idle'].includes(header.settleStatus) || messages[local].mvu?.pending === true)) return null
     const target = await currentTarget(game.sessionId, turn)
     if (!target) return null
     return {
-      chatId: game.chatId, sessionId: game.sessionId, turn, index, greeting: messages[index].greeting === true, key: target.key, sourceDigest: target.sourceDigest,
+      chatId: game.chatId, sessionId: game.sessionId, turn, index, greeting: messages[local].greeting === true, key: target.key, sourceDigest: target.sourceDigest,
       source: target.source, text: projectedSceneText(target.source, header.macroState),
       card: { path: String(header.cardPath || ''), name: String(header.cardName || '') }
     }

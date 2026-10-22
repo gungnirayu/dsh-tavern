@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
@@ -92,4 +92,49 @@ test('Desktop 无 bootstrap 环境变量时按 app 可执行文件定位，不�
   const macDeps = resolveHostDependencies({ host: 'desktop', platform: 'darwin', env: { DSH_DESKTOP_APP_EXECUTABLE: path.join(f.root, 'Desktop.app/Contents/MacOS/DSH Desktop') } })
   assert.ok(macDeps.every(dep => dep.directory.includes('Desktop.app')))
   assert.ok(resolveDshBootModule({ host: 'desktop', platform: 'darwin', env: { DSH_DESKTOP_APP_EXECUTABLE: path.join(f.root, 'Desktop.app/Contents/MacOS/DSH Desktop') } }).includes('Desktop.app'))
+})
+
+function officialUpgradeFixture(t, parentReady = true) {
+  const f = fixture(t)
+  const oldHost = path.resolve(path.dirname(f.bootstrap), '..')
+  const host = oldHost.replace('app.asar.unpacked', 'app.asar')
+  renameSync(oldHost, host)
+  f.bootstrap = path.join(host, 'lib/desktop-cli.js')
+  writeFileSync(path.join(f.pluginDirectory, 'package.json'), JSON.stringify({ name: 'dsh-tavern-plugin', dependencies: { chevrotain: '11.2.0' } }))
+  writeFileSync(path.join(f.root, 'package.json'), JSON.stringify({ name: 'dsh-profile-tavern' }))
+  const parent = path.join(f.root, 'node_modules/chevrotain')
+  if (parentReady) {
+    mkdirSync(parent, { recursive: true })
+    writeFileSync(path.join(parent, 'package.json'), JSON.stringify({ name: 'chevrotain', type: 'module', exports: './api.js' }))
+    writeFileSync(path.join(parent, 'api.js'), 'export const parser = true')
+  }
+  // An empty package left by an old upgrade shadows the valid parent package.
+  mkdirSync(path.join(f.pluginDirectory, 'node_modules/chevrotain'), { recursive: true })
+  writeFileSync(path.join(f.pluginDirectory, 'node_modules/keep.txt'), 'legacy cache')
+  writeFileSync(path.join(f.pluginDirectory, 'probe.mjs'), "import { parser } from 'chevrotain'; console.log(parser)")
+  return f
+}
+
+test('官方 asar 升级隔离旧插件依赖，空包不再遮住根目录依赖，重复安装不重复备份', async t => {
+  const f = officialUpgradeFixture(t)
+  const probe = () => spawnSync(process.execPath, [path.join(f.pluginDirectory, 'probe.mjs')], { encoding: 'utf8' })
+  assert.notEqual(probe().status, 0, '复现升级前酒馆主插件无法导入')
+  const install = () => installPluginDependencies({ pluginDirectory: f.pluginDirectory, host: 'desktop', env: { DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap }, run() { assert.fail('asar 宿主不单独安装插件依赖') } })
+  await install()
+  const result = probe()
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.trim(), 'true')
+  assert.equal(existsSync(path.join(f.pluginDirectory, 'node_modules')), false)
+  const backups = readdirSync(f.pluginDirectory).filter(name => name.startsWith('.legacy-node_modules-'))
+  assert.equal(backups.length, 1)
+  assert.equal(readFileSync(path.join(f.pluginDirectory, backups[0], 'keep.txt'), 'utf8'), 'legacy cache')
+  await install()
+  assert.deepEqual(readdirSync(f.pluginDirectory).filter(name => name.startsWith('.legacy-node_modules-')), backups)
+})
+
+test('官方升级根目录依赖未准备好时保留旧依赖并明确失败', async t => {
+  const f = officialUpgradeFixture(t, false)
+  writeFileSync(path.join(f.pluginDirectory, 'package.json'), JSON.stringify({ dependencies: { 'tavern-missing-parent-dependency': '1.0.0' } }))
+  await assert.rejects(installPluginDependencies({ pluginDirectory: f.pluginDirectory, host: 'desktop', env: { DSH_DESKTOP_DSH_BOOTSTRAP: f.bootstrap }, run() { assert.fail('不调用 pnpm') } }), /根目录依赖.*tavern-missing-parent-dependency/)
+  assert.equal(readFileSync(path.join(f.pluginDirectory, 'node_modules/keep.txt'), 'utf8'), 'legacy cache')
 })

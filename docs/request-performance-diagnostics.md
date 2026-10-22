@@ -24,7 +24,7 @@
 
 - `browser.openings`：最近 120 条浏览器阶段记录。`preparePreview` 从点击人物卡到预览数据准备完毕；`startClick` 从点击开始到启动流程返回；`claimPrewarm` 是等待工作区预热；`startGame` 及其子阶段涵盖清理空会话、解析工作区、连接、等待 Session、设置预设、写入开场和打开会话。若开场按钮自动发送消息，另有 `submitInitialMessage`，其耗时由宿主命令返回时机决定，不能当作模型首 token 延迟。预览数据就绪和打开会话均不等于 iframe 所有资源加载完成或首帧已绘制。
 - `browser.openingRequests`：单独保留最近 60 次开局 RPC，包括 `getCardOpenings`、`initializeOpeningTemplate`、`preparePlayStart`、`startChat`。`headersMs` 为收到响应头，`parsedMs` 为读取并解析完成，均从请求发起计时。`bodyChars` 是解码后的字符串长度，不是网络字节数；`responseBytes` 只在服务端提供 Content-Length 时存在，可能是压缩后大小。
-- `requests.openings`：服务端对应的最近 60 次开局 RPC，包含阶段耗时。`getCardOpenings` 拆分 `readCard`、`readExtensions`、`resources`、`preview`、`prepare`；`initializeOpeningTemplate` 拆分 `templateInitialize`；`startChat` 包含需要时的 `openingDraft` 和 `initializeConversation`；预设预热为 `preparePreset`。
+- `requests.openings`：服务端对应的最近 60 次开局 RPC，包含阶段耗时。`getCardOpenings` 拆分 `readCard`、`readExtensions`、`resources`、`preview`、`prepare`；`initializeOpeningTemplate` 拆分 `templateInitialize`；预设预热为 `preparePreset`。`startChat` 包含需要时的 `openingDraft` 和 `initializeConversation`：`openingDraft` 内部为 `prepCard`、`prepWorldbook`、`prepExtensions`、`prepSettings`；`initializeConversation` 内部为 `settings`、`card`、`cardDefaults`、`script`、`preset`、`extensions`、`snapshot`、`publish`、`nativeAppend`、`present`，等待原生会话可写为 `waitSession`，设置新游戏默认模型为 `selectModel`；复用已有会话时只有 `session` 和 `reopen`。`snapshot` 含常驻世界书投影与场景世界书捕获，`publish` 为首次写入对话存档，`present` 为返回页面前的整份视图投影。阶段记录只保留名称与毫秒数。`startChat`、`openingDraft`、`initializeConversation` 为嵌套范围，父子耗时不要相加。
 
 两侧 RPC 使用同一个 `id` 对照。浏览器点击阶段的 `id` 用于组合一次动作的子阶段，是独立的动作 ID；不能直接与 RPC ID 匹配。可结合浏览器时间顺序判断动作发出了哪些 RPC。`startClick` 和 `startGame` 为嵌套范围，父子耗时不要相加。跨设备时钟不同，仍不要直接相减两侧绝对时间。
 

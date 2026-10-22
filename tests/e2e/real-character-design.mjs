@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { parse, stringify } from 'yaml'
 import { inspectWorldBookDocument } from '../../tavern-plugin/lib/domain/worldbook-resource.js'
 import { parseSessionLog } from '../../tavern-plugin/lib/domain/session-log-codec.js'
+import { currentSessionLogs } from './session-files.mjs'
 
 export async function setupRealCharacterDesign({ root, profile, data, runtimeHome }) {
   const settings = parse(await readFile(join(runtimeHome, 'settings.yaml'), 'utf8'))
@@ -113,8 +114,8 @@ export async function realCharacterDesignChecks({ page, step, savedChat, root, d
     await writeFile(join(output, 'character-design-state.json'), JSON.stringify({ characterDesignTask: chat.characterDesignTask, characterDesignDocument: chat.characterDesignDocument, openingWorldbookSnapshot: chat.openingWorldbookSnapshot }, null, 2))
     await writeFile(join(output, 'character-design-requests.json'), JSON.stringify(await requests(), null, 2))
     const dir = join(root, 'profile-data/tavern/sessions'), calls = []
-    for (const file of await readdir(dir, { recursive: true })) if (file.endsWith('session.v3.jsonl.zstd')) {
-      const parsed = parseSessionLog(await readFile(join(dir, file)))
+    for (const { path: file } of await currentSessionLogs(dir)) {
+      const parsed = parseSessionLog(await readFile(file))
       calls.push(...parsed.events.filter(event => event.type === 'tool/call' && ['character_design_read', 'character_design_save', 'character_design_finish', 'skill'].includes(event.data.name)).map(event => ({ sessionId: parsed.header.id, ...event })))
     }
     await writeFile(join(output, 'character-design-tools.json'), JSON.stringify(calls, null, 2))

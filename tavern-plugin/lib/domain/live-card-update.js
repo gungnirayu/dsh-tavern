@@ -137,7 +137,7 @@ function refreshOpeningInitvar(chat, states) {
     if(!value||typeof value!=='object')return
     if(value.greeting===true){
       const index=value.swipeId||0
-      for(const key of ['text','sourceText','projectionText','displayText','sessionText','templateInputSource'])if(typeof value[key]==='string')value[key]=rewrite(value[key],index)
+      for(const key of ['text','sourceText','projectionText','displayText','templateInputSource'])if(typeof value[key]==='string')value[key]=rewrite(value[key],index)
       if(Array.isArray(value.swipes))value.swipes=value.swipes.map((text,index)=>rewrite(text,index))
       return
     }
@@ -147,7 +147,7 @@ function refreshOpeningInitvar(chat, states) {
 }
 
 /** Preview executes with detached state and an RPC allowlist, never the live session. */
-export function createLiveCardUpdate({readGlobals = async () => ({})} = {}) {
+export function createLiveCardUpdate({readGlobals = async () => ({}), readWorldBook} = {}) {
   const previews = new Map(), cache = new Map()
   const runtime = createServerTemplateRuntime({ readOnly: true, maxSessions: 2, timeoutMs: 15000, rpc: async (method, args) => {
     const snapshot = previews.get(args.sessionId)
@@ -167,10 +167,18 @@ export function createLiveCardUpdate({readGlobals = async () => ({})} = {}) {
     }
     throw Error('更新预览不能执行外部写入或命令：' + method)
   } })
+  // A game that keeps no copy reads the live library; only a frozen game uses its own.
+  async function worldbookDocument(chat, card) {
+    if (chat.openingWorldbookSnapshot?.document !== undefined) return chat.openingWorldbookSnapshot.document
+    if (typeof readWorldBook !== 'function' || !chat.cardPath) return card.character_book
+    const record = await readWorldBook(chat, card).catch(() => null)
+    return record?.document ?? record?.view?.raw ?? card.character_book
+  }
+
   async function preview(chat, card, action, globals = undefined) {
     globals ??= await readGlobals()
     const id = 'card-update:' + randomUUID(), world = card.name || 'card'
-    const document = chat.openingWorldbookSnapshot?.document || card.character_book
+    const document = await worldbookDocument(chat, card)
     const state = projectFullPromptTemplateState(chat)
     state.sessionId = id
     const snapshot = { state, environment: {
@@ -190,7 +198,7 @@ export function createLiveCardUpdate({readGlobals = async () => ({})} = {}) {
     } finally { runtime.cancel(id); previews.delete(id) }
   }
   async function initialDefaults(chat, card) {
-    const document = chat.openingWorldbookSnapshot?.document || card.character_book
+    const document = await worldbookDocument(chat, card)
     const entries = document ? inspectWorldBookDocument(document).entries.filter(entry => entry.enabled && /\[initvar\]/i.test(entry.comment || entry.title)) : []
     // Match the selected opening, not necessarily first_mes.
     const greeting = chat.messages.find(message => message.greeting)

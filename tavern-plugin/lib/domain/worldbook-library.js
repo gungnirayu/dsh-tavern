@@ -46,7 +46,9 @@ export function createWorldBookLibrary(options = {}) {
     return (locator, ...args) => {
       const source = sourceOf(typeof locator === 'string' ? { kind: 'standalone', path: locator } : locator)
       const key = source.cardPath || source.path
-      const operation = (mutations.get(key) || Promise.resolve()).catch(() => {}).then(() => work(locator, ...args))
+      // A write must be visible to the next read even when the file system
+      // reports the same revision for both.
+      const operation = (mutations.get(key) || Promise.resolve()).catch(() => {}).then(() => work(locator, ...args)).then(result => { resolved.clear(); return result })
       mutations.set(key, operation)
       const release = () => { if (mutations.get(key) === operation) mutations.delete(key) }
       operation.then(release, release)
@@ -254,7 +256,7 @@ export function createWorldBookLibrary(options = {}) {
     function read(locator) {
       const source = sourceOf(locator)
       const key = JSON.stringify(source)
-      if (!records.has(key)) records.set(key, readRecord(source,
+      if (!records.has(key)) records.set(key, readSource(source,
         source.kind === 'card' && source.cardPath === normalizedCardPath ? card : undefined, templateOnly))
       return records.get(key)
     }
@@ -267,12 +269,65 @@ export function createWorldBookLibrary(options = {}) {
       if (!identities.has(identity)) { identities.add(identity); sources.push(source) }
     }
     if (!sources.length) return null
-    if (sources.length === 1) return await read(sources[0])
-    const resolved = await Promise.all(sources.map(read))
-    const merged = mergeWorldBooks(resolved)
-    const source = { kind: 'merged', sources: resolved.map(record => record.source) }
-    if (templateOnly) return templateRecord(JSON.stringify(merged.document), source)
-    return { source: resolved[0].source, document: merged.document, localChatId: chat?.id, mergedSources: merged.sources, view: inspectWorldBookDocument(merged.document) }
+    if (templateOnly) {
+      if (sources.length === 1) return await read(sources[0])
+      const books = await Promise.all(sources.map(read))
+      const merged = mergeWorldBooks(books)
+      return templateRecord(JSON.stringify(merged.document), { kind: 'merged', sources: books.map(record => record.source) })
+    }
+    const key = await unchangedStandaloneSet(sources)
+    if (key !== null) {
+      const cached = resolved.get(key)
+      if (cached !== undefined) { resolved.delete(key); resolved.set(key, cached); return forChat(cached, chat) }
+    }
+    let record
+    if (sources.length === 1) record = await read(sources[0])
+    else {
+      const books = await Promise.all(sources.map(read))
+      const merged = mergeWorldBooks(books)
+      record = { source: books[0].source, document: merged.document, mergedSources: merged.sources, view: inspectWorldBookDocument(merged.document) }
+    }
+    if (key !== null) remember(key, record)
+    return forChat(record, chat)
+  }
+
+  // A game without its own copy re-resolves the library on every turn and view.
+  // Projecting each unchanged standalone book once — and each unchanged merged
+  // set once — keeps that as cheap as the copy it replaced. Card books stay
+  // uncached: their document comes from a card read the caller already owns, and
+  // a chat may still be running on an older snapshot of the card.
+  const resolved = new Map()
+  // Each entry is one book or one merged set: a three-book set needs four.
+  const RESOLVED_LIMIT = 4
+  // Only a merged book is game-local: one book writes back to the library, so a
+  // script edit takes effect everywhere, while a merged set needs a private copy.
+  function forChat(record, chat) {
+    return record.mergedSources ? { ...record, localChatId: chat?.id } : record
+  }
+  function remember(key, record) {
+    resolved.set(key, record)
+    while (resolved.size > RESOLVED_LIMIT) resolved.delete(resolved.keys().next().value)
+    return record
+  }
+  async function standaloneRevision(source) {
+    if (source.kind !== 'standalone' || typeof resources.metadata !== 'function') return null
+    const metadata = await resources.metadata(source.path).catch(() => undefined)
+    return metadata === undefined ? null : metadata.updatedAt ?? 0
+  }
+  async function readSource(source, suppliedCard, templateOnly) {
+    if (templateOnly) return await readRecord(source, suppliedCard, true)
+    const revision = await standaloneRevision(source)
+    if (revision === null) return await readRecord(source, suppliedCard)
+    const key = JSON.stringify(['book', source.path, revision])
+    const hit = resolved.get(key)
+    if (hit !== undefined) { resolved.delete(key); resolved.set(key, hit); return hit }
+    return remember(key, await readRecord(source, suppliedCard))
+  }
+  async function unchangedStandaloneSet(sources) {
+    if (typeof resources.metadata !== 'function' || sources.some(source => source.kind !== 'standalone')) return null
+    const revisions = await Promise.all(sources.map(standaloneRevision))
+    if (revisions.some(revision => revision === null)) return null
+    return JSON.stringify(['set', sources, revisions])
   }
 
   async function bound(cardPath, card, chat) { return await resolveBound(cardPath, card, chat) }
@@ -331,6 +386,9 @@ export function createWorldBookLibrary(options = {}) {
   }
 
   async function importBook(payload) {
+    try { return await importBookPayload(payload) } finally { resolved.clear() }
+  }
+  async function importBookPayload(payload) {
     const prepared = prepareWorldBookImport(payload)
     const path = await resources.import(prepared, prepared.working)
     const record = await readRecord({ kind: 'standalone', path })

@@ -32,8 +32,8 @@ function harness(t, extra = {}) {
     ...extra.options
   }, {
     setup: () => () => {},
-    execute: async ({ agent, traceSessionId }, input) => {
-      await extra.work?.(input)
+    execute: async ({ agent, state, traceSessionId }, input) => {
+      await extra.work?.(input, state)
       agent.session.append('system/message', { text: input.text || 'task' })
       return traceSessionId
     }
@@ -50,4 +50,12 @@ test('failed persistence retains instance and backs off before retry', async t =
   await h.runner.reapIdle(); assert.equal(attempts, 1)
   fail = false; h.tick(60000); await h.runner.reapIdle()
   assert.equal(h.runner.owns(id), false); assert.equal(attempts, 2)
+})
+
+test('本局开了联网搜索：任务自己写明不联网时仍不联网（文风联想、世界书预筛）', async t => {
+  const seen = []
+  const h = harness(t, { options: { resolveWebSearch: async () => true }, work: async (input, state) => { seen.push([input.task, state.input.webSearchEnabled]) } })
+  await h.runner.run({ sessionId: 'parent-a', task: 'candidate', persistent: true, selection: { provider: 'test', model: 'test' } })
+  await h.runner.run({ sessionId: 'parent-a', task: 'style-reference', persistent: true, webSearchEnabled: false, selection: { provider: 'test', model: 'test' } })
+  assert.deepEqual(seen, [['candidate', true], ['style-reference', false]])
 })

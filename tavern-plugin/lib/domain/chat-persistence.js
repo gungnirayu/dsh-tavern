@@ -48,7 +48,7 @@ function sameCaptureTarget(left, right) {
   if (!object(left) || !object(right)) return false
   for (const key of ['id', 'role', 'turn', 'greeting']) if (!same(left[key], right[key])) return false
   if (Number(left.swipeId || 0) !== Number(right.swipeId || 0)) return false
-  for (const key of ['text', 'sourceText', 'projectionText', 'sessionText', 'displayText']) {
+  for (const key of ['text', 'sourceText', 'projectionText', 'displayText']) {
     if (!same(left[key] ?? left.text, right[key] ?? right.text)) return false
   }
   return same(left.swipes ?? [left.text], right.swipes ?? [right.text])
@@ -338,6 +338,7 @@ export function createChatPersistence(options = {}) {
   }
   // Do not normalize/remember a window as a full editable Chat baseline.
   async function readWindow(chatId,options) { return records.readWindow ? records.readWindow(chatId,options) : null }
+  async function readRecentSummaries(chatId,count) { return records.readRecentSummaries ? records.readRecentSummaries(chatId,count) : null }
   async function readHelperContext(chatId, range) {
     return records.readHelperContext?.(chatId, range)
   }
@@ -375,5 +376,5 @@ export function createChatPersistence(options = {}) {
     await records.remove(chatId)
   }
 
-  return Object.freeze({ read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, write, writeHeader, update, version, remove })
+  return Object.freeze({ read, readWindow, readRecentSummaries, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, write, writeHeader, update, version, remove })
 }

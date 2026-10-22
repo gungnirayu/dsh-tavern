@@ -32,6 +32,33 @@ function excerpt(text, terms, maximum = 240) {
   return (start > 0 ? '…' : '') + source.slice(start, end) + (end < source.length ? '…' : '')
 }
 
+// Like grep's context lines: a short window around every hit, nearby hits merged, at most `count` windows.
+function hitExcerpts(text, terms, radius = 60, count = 3) {
+  const source = str(text).replace(/\s+/g, ' ').trim()
+  const lower = source.toLocaleLowerCase()
+  const windows = []
+  for (const term of terms) {
+    for (let at = lower.indexOf(term); at >= 0; at = lower.indexOf(term, at + term.length)) windows.push([Math.max(0, at - radius), Math.min(source.length, at + term.length + radius)])
+  }
+  if (!windows.length) return excerpt(text, terms)
+  windows.sort((left, right) => left[0] - right[0])
+  const merged = []
+  for (const window of windows) {
+    const last = merged.at(-1)
+    if (last && window[0] <= last[1] && window[1] - last[0] <= radius * 4) last[1] = Math.max(last[1], window[1])
+    else if (last && window[0] < last[1]) continue
+    else merged.push(window.slice())
+  }
+  return merged.slice(0, count).map(([start, end]) => (start > 0 ? '…' : '') + source.slice(start, end) + (end < source.length ? '…' : '')).join(' ')
+    + (merged.length > count ? ` （本轮另有 ${merged.length - count} 处命中）` : '')
+}
+
+// Which rounds mention each keyword, so a narrow query still shows where else the story touched it.
+function termTurns(rounds, terms) {
+  const texts = rounds.map(round => ({ turn: round.turn, text: searchable(round.messages.map(message => message.text).join('\n')) }))
+  return terms.map(term => ({ term, turns: texts.filter(item => item.text.includes(searchable(term))).map(item => item.turn) }))
+}
+
 function committedRounds(chat) {
   const rounds = []
   let pendingUsers = []
@@ -73,7 +100,7 @@ function scoreRound(round, query, terms) {
 
 export const HISTORY_RECALL_TOOL = Object.freeze({
   name: 'tavern_recall_history',
-  description: '检索或读取当前对话已经正式发生的历史正文，仅用于回忆细节和剧情。query 与 turn 必须且只能提供一个。每次生成最多召回 6 次；完整正文召回后冷却 10 个剧情轮次，冷却期间不可重复读取。已有信息足够时直接继续任务，不要重复读取同一轮。检索结果不是当前场景，不得重复演绎、照搬旧台词或让已经发生的事件再次发生。',
+  description: '检索或读取当前对话已经正式发生的历史正文。剧情摘要省略了大部分数字、原话和次要情节；用到摘要里没有原文的细节时先查，不要凭摘要推断。query 用要找的人物、物品、事件本身的词，不要用摘要里已有的结论或数字当关键词（那只会查回你已知的内容）；问「第一次」「最早」时留意轮次靠前的结果。query 与 turn 必须且只能提供一个。每次生成最多召回 6 次；完整正文召回后冷却 10 个剧情轮次，冷却期间不可重复读取。已有信息足够时直接继续任务，不要重复读取同一轮。检索结果不是当前场景，不得重复演绎、照搬旧台词或让已经发生的事件再次发生。',
   parameters: Object.freeze({
     type: 'object',
     additionalProperties: false,
@@ -97,6 +124,16 @@ export const HISTORY_RECALL_OUTPUT_SCHEMA = Object.freeze({
     mode: { type: 'string', required: true },
     query: { type: 'string', required: true },
     requestedTurn: { type: 'integer', required: true },
+    terms: {
+      type: 'array', required: true,
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          term: { type: 'string', required: true },
+          turns: { type: 'array', required: true, items: { type: 'integer' } }
+        }
+      }
+    },
     matches: {
       type: 'array', required: true,
       items: {
@@ -160,6 +197,7 @@ export function createHistoryRecall() {
       mode: hasQuery ? 'search' : 'read',
       query: hasQuery ? query : '',
       requestedTurn: hasTurn ? Number(input.turn) : 0,
+      terms: [],
       matches: [],
       rounds: []
     }
@@ -177,13 +215,13 @@ export function createHistoryRecall() {
       const matches = rounds.filter(round => !cooling(round)).map(function (round) {
         const scored = scoreRound(round, query, terms)
         if (scored === null) return null
-        return { turn: round.turn, score: scored.score, excerpt: excerpt(scored.text, terms) }
+        return { turn: round.turn, score: scored.score, excerpt: hitExcerpts(scored.text, terms) }
       }).filter(Boolean).sort(function (left, right) {
         return right.score - left.score || right.turn - left.turn
       }).slice(0, limit).map(function (match) {
         return { turn: match.turn, excerpt: match.excerpt }
       })
-      return Object.assign(base, { found: matches.length > 0, matches, notice: cooldowns.some(item => item.audience === audience) ? '已召回的完整正文处于 10 轮冷却期，检索已跳过这些轮次。' : '' })
+      return Object.assign(base, { found: matches.length > 0, matches, terms: termTurns(rounds, terms), notice: cooldowns.some(item => item.audience === audience) ? '已召回的完整正文处于 10 轮冷却期，检索已跳过这些轮次。' : '' })
     }
     const requested = Number(input.turn)
     if (!Number.isInteger(requested) || requested < 1) throw new Error('历史正文轮次必须是大于 0 的整数')
@@ -216,9 +254,13 @@ export function renderHistoryRecall(value) {
   if (value?.notice && !value.rounds?.length && !value.matches?.length) return warning
   if (!value || value.found !== true) return warning + '\n\n没有找到相关历史正文。'
   if (value.mode === 'search') {
-    return warning + '\n\n' + value.matches.map(function (match) {
+    const spread = (value.terms || []).map(function (item) {
+      const turns = item.turns.length > 40 ? item.turns.slice(0, 20).join('、') + '……' + item.turns.slice(-20).join('、') : item.turns.join('、')
+      return '「' + item.term + '」' + (item.turns.length ? '出现在第 ' + turns + ' 轮（共 ' + item.turns.length + ' 轮）' : '没有出现')
+    }).join('\n')
+    return warning + (spread ? '\n\n关键词分布：\n' + spread : '') + '\n\n命中最多的轮次：\n\n' + value.matches.map(function (match) {
       return '[第 ' + match.turn + ' 轮]\n' + match.excerpt
-    }).join('\n\n') + '\n\n仅在摘要不足以回答当前问题时，用 turn 读取所需轮次；信息足够就继续当前任务。'
+    }).join('\n\n') + '\n\n只列出了命中最多的几轮；关键词分布里的其他轮次可用 turn 读取原文。信息足够就继续当前任务。'
   }
   return warning + '\n\n' + value.rounds.map(function (round) {
     return '【第 ' + round.turn + ' 轮】\n' + round.messages.map(function (message) {

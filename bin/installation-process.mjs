@@ -42,6 +42,14 @@ function execute(command, args, timeout) {
   })
 }
 
+function windowsProcessAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) {
+    if (error.code === 'ESRCH') return false
+    if (error.code === 'EPERM') return true
+    throw error
+  }
+}
+
 async function groupIsAlive(pid, deadline) {
   try { process.kill(-pid, 0) } catch (error) {
     if (error.code === 'ESRCH') return false
@@ -138,9 +146,10 @@ async function cleanTree({ directory, pid, root, childExited, killGraceMs, clean
     try {
       discover()
       if (process.platform === 'win32') {
-        const output = await execute('tasklist', ['/FO', 'CSV', '/NH'], Math.max(1, deadline - Date.now()))
-        const running = new Set([...output.matchAll(/^"[^"]+","(\d+)"/gm)].map(match => Number(match[1])))
-        live = [...known].filter(processId => running.has(processId))
+        // Ask the OS per PID (libuv opens the process and checks its exit code) instead of listing every
+        // process with tasklist: on slow machines tasklist outlives the few seconds left of this budget,
+        // is killed, and a finished install was then reported as unverifiable and locked.
+        live = [...known].filter(windowsProcessAlive)
       } else {
         live = []
         for (const processId of known) {

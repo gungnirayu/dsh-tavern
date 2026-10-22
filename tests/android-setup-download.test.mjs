@@ -34,7 +34,8 @@ for (const failures of [0, 1, 3]) {
     }
     await writeFile(path.join(mock, 'git'), `#!/usr/bin/env bash
 set -eu
-if [ "$1" != clone ]; then exit 0; fi
+# 传输超时参数（-c http.lowSpeed*）会出现在 clone 之前，按子命令判断。
+if [[ " $* " != *" clone "* ]]; then exit 0; fi
 count=0
 [ ! -f "$TEST_ROOT/attempts" ] || count=$(cat "$TEST_ROOT/attempts")
 count=$((count + 1))

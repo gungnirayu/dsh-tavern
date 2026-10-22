@@ -1,11 +1,20 @@
 # 游玩验收 E2E
 
+## 状态与生命周期重构回归
+
+`TAVERN_E2E_TIMEOUT_MS=60000 TAVERN_E2E_OUTPUT=output/playwright/refactor-lifecycle node tests/e2e/gameplay.mjs --refactor-lifecycle`
+
+使用独立 DSH Profile、真实 Chromium 与官方 MVU，模型输出固定。覆盖局部变量写入、重新结算、第二页面实时同步及隔离服务重启；通过真实 HTTP 接口并发绑定剧本，检查独占限制、世界书与人物卡重命名、全局引用、删除失败与恢复，并独立读取磁盘验证。
+
+更新流程使用真实侧栏与控制器，但拦截所有更新接口，验证迟到轮询、重复点击、更新/取消响应丢失与刷新恢复；不会执行安装器。这部分不验证真实安装、操作系统重启或安装文件替换。结果、服务日志、截图和浏览器 trace 写入独立运行目录。
+
 ## 超长存档结算计时
 
 `TAVERN_E2E_TIMEOUT_MS=120000 node tests/e2e/gameplay.mjs --settlement-performance`
 在隔离 Profile 中生成匹配的 Chat 与原生 Session，使用真实官方 MVU、浏览器和日志存储，只有模型输出固定。
 默认 1000 轮、20 个合成字段加金币、连续 5 次重新结算；可用 `TAVERN_PERF_ROUNDS`、`TAVERN_PERF_FIELDS`、`TAVERN_PERF_RUNS` 调整。
 设置 `TAVERN_PERF_APPEND=1` 改为实际继续游玩、追加新一轮；此模式与重新结算分别统计。阶段事件同时记录执行上下文是否为增量及包含的消息数量。
+继续游玩时，每轮记录这段时间里读取完整历史的次数（`historyReads`，命中缓存的也算，因为命中时仍会复制整份存档）。重开后的第一轮允许读一次（进程内会话的第一次请求钩子），之后每轮必须为零，否则失败；对比旧版本时设 `TAVERN_PERF_ALLOW_FULL_READS=1` 只记录不失败。
 合成字段从人物卡初始变量正常进入 MVU，每次独立读档验证所有字段和结算回执。
 
 `settlement-performance.json` 区分浏览器 MVU 事件完成、服务端 runtime 返回、结算日志 append 完成、commit 返回和状态栏显示。
@@ -149,3 +158,13 @@ TAVERN_E2E_WRONG_GOLD=1 TAVERN_E2E_TIMEOUT_MS=10000 pnpm test:e2e
 `node tests/e2e/gameplay.mjs --native-format --mvu-incremental` 进一步验证 Helper 历史楼、末楼、chat/script 变量、第二页面实时同步、MVU 重算及重启后继续写入。两者都只创建合成新局，不测试迁移。
 
 `node tests/e2e/gameplay.mjs --upgrade-save` 验证 DSH 0.2.1 统一升级：在独立测试环境准备旧版会话日志与 journal 剧情存储，重启后通过“升级存档”入口完成转换，核对旧文件与历史版本，再继续游玩、编辑、回退/撤销、切换预设和重启恢复。该选项替代旧 `--migrate-native`；实际覆盖与异常旧档限制见 `docs/verification/dsh-021-save-upgrade.md`。
+
+### 真实模型游玩
+
+```sh
+TAVERN_E2E_PLAY_CARD='/绝对路径/人物卡.json' TAVERN_E2E_TIMEOUT_MS=60000 \
+TAVERN_E2E_OUTPUT=output/playwright/real-gameplay \
+node tests/e2e/gameplay.mjs --real-gameplay
+```
+
+复制指定人物卡和本机模型配置到临时 profile；会产生真实 API 费用，不修改原始人物卡和存档。通过浏览器选卡开局、发送三轮（含生成并选择候选）、带指导重生成、回退、重启并继续。断言前文不变、回退边界、刷新与重启后的持久化及原生会话对齐，保存截图、阶段正文、trace 和模型用量。该场景关闭独立后台任务，普通卡不覆盖 MVU；MVU 生命周期使用 `--refactor-lifecycle` 单独验证。

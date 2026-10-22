@@ -73,7 +73,7 @@ function createSessionViewReader(maxSessions = 4) {
               && projectionEdits.every(([path]) => path[1] === "length" || Number.isSafeInteger(path[1]));
 
             const fieldUpdates = new Map();
-            for (const field of ["inputSources", "inputTemplateDisplays", "regeneratedDshTurns"]) {
+            for (const field of ["inputSources", "inputTemplateDisplays", "regeneratedDshTurns", "transcriptTurns"]) {
               const source = base.view?.[field];
               const sets = delta.set.filter(([path]) => path[0] === field);
               const removes = delta.remove.filter(path => path[0] === field);
@@ -162,7 +162,7 @@ function createSessionViewReader(maxSessions = 4) {
           if (!index.info(view.replyProjections)) view = {...view,replyProjections:index.from(view.replyProjections)};
           projectionLookup.remember(view.replyProjections);
         }
-        if (turnFields) for (const field of ["inputSources", "inputTemplateDisplays", "regeneratedDshTurns"]) {
+        if (turnFields) for (const field of ["inputSources", "inputTemplateDisplays", "regeneratedDshTurns", "transcriptTurns"]) {
           const value = turnFields.from(view?.[field]);
           if (value !== view?.[field]) view = {...view, [field]: value};
         }

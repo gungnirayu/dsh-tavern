@@ -74,3 +74,14 @@ test('Web 服务就绪检查接受 alpha.2 鉴权响应', async () => {
   assert.equal(await isServiceReady(3088, async () => ({ ok: false, status: 500 }), 'android'), false)
   assert.equal(await isServiceReady(3081, async () => { throw new Error('offline') }), false)
 })
+
+test('只接管本安装自己的旧酒馆服务：命令行版与桌面版的 tavern 不互相认领', async () => {
+  const { legacyServiceOwnedHere } = await import('../bin/service-lifecycle.mjs')
+  const cliRoot = path.join(tmpdir(), 'home', '.dsh-tavern')
+  const cliCommand = `node ${path.join(cliRoot, 'runtime', 'bin', 'dsh')} --profile tavern --host 127.0.0.1 --port 3081 --no-open`
+  const desktopCommand = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness --expose-internals /x/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js --profile tavern --port 3082'
+  assert.equal(legacyServiceOwnedHere(cliCommand, 'cli', cliRoot), true)
+  assert.equal(legacyServiceOwnedHere(cliCommand, 'desktop', path.join(tmpdir(), 'home', '.dsh')), false, '桌面版不接管命令行版的服务')
+  assert.equal(legacyServiceOwnedHere(desktopCommand, 'cli', cliRoot), false, '命令行版不接管桌面版的服务')
+  assert.equal(legacyServiceOwnedHere(desktopCommand, 'desktop', path.join(tmpdir(), 'home', '.dsh')), true)
+})

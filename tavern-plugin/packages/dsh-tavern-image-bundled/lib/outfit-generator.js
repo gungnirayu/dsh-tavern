@@ -1,0 +1,196 @@
+import { randomUUID } from 'node:crypto'
+
+/**
+ * 服装库生成器：把「按偏好生成 / 批量生成」提示词与解析逻辑集中在这里，
+ * 保持纯函数，方便单独测（不依赖 LLM、不依赖磁盘）。
+ *
+ * 与 lib/index.js 的分工：
+ *   本模块只负责「说什么」和「怎么解析」；
+ *   index.js 负责「叫谁去做」（runPlanner）与「写到哪」（definitions.json）。
+ */
+
+/** 服装的字段白名单与顺序。解析时只保留这些，多余字段丢掉。 */
+export const OUTFIT_FIELDS = [
+  'upper', 'lower', 'shoes', 'accessory', 'full', 'back', 'negative',
+]
+
+/** 年龄段。未指定时按 adult，不擅自推断年龄。 */
+export const AGE_BANDS = ['child', 'teen', 'adult']
+
+const AGE_HINT = {
+  child: '年龄段 child（未满 18）：版型、剪裁、配饰按这个年龄段应有的样式写。私密场景服装同样可以生成，只是把年龄差异体现在版型与配饰上。',
+  teen: '年龄段 teen（青少年）：日常穿着可以有流行元素与个人风格；私密场景服装同样可以生成。',
+  adult: '年龄段 adult：不受版型限制。',
+}
+
+function textOf(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function listOf(value) {
+  if (!value) return []
+  if (Array.isArray(value)) return value.map(textOf).filter(Boolean)
+  return String(value).split(/[,，、|]/).map(s => s.trim()).filter(Boolean)
+}
+
+/**
+ * 组装生成服装的系统提示与用户输入。
+ *
+ * @param {object} input
+ * @param {object} input.character      角色对象（name / traits / outfits）
+ * @param {string} [input.preference]   偏好，如「职场」「夏日」「古风」
+ * @param {number} [input.count]        数量，1–12
+ * @param {string} [input.ageBand]      child / teen / adult
+ * @param {boolean} [input.nsfw]        是否包含私密场景服装
+ * @returns {{ system: string, text: string, count: number, ageBand: string, nsfw: boolean }}
+ */
+export function buildOutfitPrompt({ character, preference = '', count = 3, ageBand = 'adult', nsfw = false } = {}) {
+  const safeCount = Math.max(1, Math.min(12, Number.isFinite(Number(count)) ? Math.trunc(Number(count)) : 3))
+  const safeAge = AGE_BANDS.includes(ageBand) ? ageBand : 'adult'
+  const name = textOf(character?.name) || '（未命名角色）'
+  const traits = character?.traits || {}
+  const existing = Array.isArray(character?.outfits) ? character.outfits : []
+
+  const traitLines = [
+    ['脸', traits.face], ['背影头部', traits.faceBack],
+    ['有衣物时身体', traits.bodySFW], ['裸露时身体', traits.bodyNSFW],
+    ['整套兜底', traits.fullSFW], ['整套裸露兜底', traits.fullNSFW],
+  ].map(([label, value]) => textOf(value) ? `- ${label}：${textOf(value)}` : '').filter(Boolean)
+
+  const existingNames = existing.map(o => textOf(o?.name)).filter(Boolean)
+
+  const system = [
+    '你是角色服装设计师，为一个虚构角色设计成套的服装，输出严格的 JSON 数组。',
+    '',
+    '角色：' + name,
+    traitLines.length ? '外貌（来自人物库，不要改写）：' : '外貌：未填写，服装照样设计，不要凭猜测补外貌。',
+    ...traitLines,
+    '',
+    '要求：',
+    '- 数量：' + safeCount + ' 套',
+    '- 偏好：' + (textOf(preference) || '不指定，按角色调性自由发挥'),
+    '- 年龄段：' + AGE_HINT[safeAge],
+    '- 类型：' + (nsfw
+      ? '包含私密场景服装：需要时给 nsfw 标 true；也可以同时给几套日常服装'
+      : '只要日常可穿的 sfw 服装，不要 nsfw'),
+    '- name 全部不重复' + (existingNames.length ? '，且不要与已有服装重名：' + existingNames.join('、') : ''),
+    '- 造型线索不重复：至少要换掉 upper 或 lower 之一',
+    '- 覆盖不同场合：日常 / 正式 / 居家 / 户外 / 季节',
+    '',
+    '每套服装的字段：',
+    '- name       中文名，简短（如「常服」「雨夜外衣」「夏日便装」）',
+    '- upper      上身英文 Tag（white shirt, denim jacket）',
+    '- lower      下身英文 Tag（black slacks, pleated skirt）',
+    '- shoes      鞋英文 Tag',
+    '- accessory  配饰，可空',
+    '- full       整套一句话描述，可空',
+    '- back       背影专用补充，可空',
+    '- negative   这套不该出现的元素，可空',
+    '- nsfw       只用于私密场景时为 true，否则 false',
+    '- default    是否常穿，最多一套 true',
+    '',
+    '只写服装本身：面料、版型、颜色、配饰、暴露程度。不要写身体描写，不要写情节，不要写年龄解释。',
+    '',
+    '输出格式：只输出 JSON 数组，不要任何解释文字、不要 markdown 代码围栏：',
+    '[{"name":"常服","upper":"white shirt","lower":"black slacks","shoes":"leather loafers","accessory":"","full":"office attire","back":"","negative":"","nsfw":false,"default":true}]',
+  ].join('\n')
+
+  return {
+    system,
+    text: '请为「' + name + '」生成 ' + safeCount + ' 套服装。' + (textOf(preference) ? '偏好：' + textOf(preference) + '。' : ''),
+    count: safeCount,
+    ageBand: safeAge,
+    nsfw: Boolean(nsfw),
+  }
+}
+
+/**
+ * 从模型输出里抠出服装数组。
+ * 容忍 markdown 代码围栏、前后废话、单个对象（不是数组）三种常见偏差。
+ *
+ * @returns {{ outfits: object[], dropped: number }}
+ */
+export function parseOutfits(text) {
+  const raw = String(text ?? '')
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidates = []
+  if (fenced) candidates.push(fenced[1])
+  candidates.push(raw)
+
+  // 兜底：从第一个 [ 或 { 起，配平到结尾
+  const bracket = raw.indexOf('[')
+  if (bracket >= 0) candidates.push(raw.slice(bracket))
+  const brace = raw.indexOf('{')
+  if (brace >= 0) candidates.push(raw.slice(brace))
+
+  let parsed = null
+  for (const candidate of candidates) {
+    const trimmed = String(candidate).trim()
+    if (!trimmed) continue
+    try { parsed = JSON.parse(trimmed); break } catch {}
+    // 去掉尾部多余字符再试一次
+    const cut = Math.max(trimmed.lastIndexOf(']'), trimmed.lastIndexOf('}'))
+    if (cut > 0) { try { parsed = JSON.parse(trimmed.slice(0, cut + 1)); break } catch {} }
+  }
+
+  const list = Array.isArray(parsed) ? parsed
+    : parsed && Array.isArray(parsed.outfits) ? parsed.outfits
+      : parsed && typeof parsed === 'object' ? [parsed] : []
+
+  const outfits = []
+  let dropped = 0
+  const seenNames = new Set()
+  for (const item of list) {
+    if (!item || typeof item !== 'object') { dropped++; continue }
+    const name = textOf(item.name)
+    const upper = textOf(item.upper)
+    const lower = textOf(item.lower)
+    // name 与上下身至少各有一个，否则这套没意义
+    if (!name || (!upper && !lower)) { dropped++; continue }
+    if (seenNames.has(name)) { dropped++; continue }
+    seenNames.add(name)
+    const outfit = { id: 'o-' + randomUUID().slice(0, 8), name }
+    for (const field of OUTFIT_FIELDS) outfit[field] = textOf(item[field])
+    outfit.shoes = textOf(item.shoes)
+    outfit.nsfw = item.nsfw === true
+    outfit.enabled = true
+    outfit.default = item.default === true
+    outfits.push(outfit)
+  }
+  return { outfits, dropped }
+}
+
+/**
+ * 把新服装并进角色已有的 outfits：
+ * - 同名跳过（不覆盖用户改过的）
+ * - default 只保留一套
+ * - 绝不删除已有服装
+ */
+export function mergeOutfits(existing, incoming, { keepDefault = true } = {}) {
+  const base = Array.isArray(existing) ? existing.slice() : []
+  const names = new Set(base.map(o => textOf(o?.name)).filter(Boolean))
+  let added = 0, skipped = 0
+  let hasDefault = base.some(o => o && o.default === true)
+  for (const outfit of Array.isArray(incoming) ? incoming : []) {
+    const name = textOf(outfit?.name)
+    if (!name || names.has(name)) { skipped++; continue }
+    names.add(name)
+    const next = { ...outfit }
+    if (keepDefault && hasDefault) next.default = false
+    else if (next.default === true) hasDefault = true
+    base.push(next)
+    added++
+  }
+  return { outfits: base, added, skipped }
+}
+
+/**
+ * 批量生成时钳制每个角色的数量，避免一次请求产出过多。
+ * @param {number} count 每个角色要几套（1–12，非法回落 3）
+ * @param {number} [maxTotal] 一次批量请求允许的总套数上限（1–60）
+ */
+export function clampBatchCount(count, maxTotal = 60) {
+  const each = Math.max(1, Math.min(12, Number.isFinite(Number(count)) ? Math.trunc(Number(count)) : 3))
+  const total = Math.max(1, Math.min(60, Number.isFinite(Number(maxTotal)) ? Math.trunc(Number(maxTotal)) : 60))
+  return { perCharacter: each, maxTotal: total }
+}

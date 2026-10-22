@@ -24,19 +24,17 @@ test('清单损坏时保留原文件，不自动重置用户配置', async (t) =
   assert.equal(await readFile(paths.config, 'utf8'), 'invalid: [')
 })
 
-// The desktop installer runs on the host app's own Node, pnpm and DSH (official DeepSeek Harness or the
-// community DSH NEXT). A minimal community-layout app stands in for it: package name, a DSH entry that
-// prints the adapted version, a no-op pnpm, and this test's Node.
+// Match the supported official app layout. Node stands in for Electron's
+// ELECTRON_RUN_AS_NODE mode; DSH reports its version and pnpm is a no-op.
 async function fakeDesktopApp(root) {
   const app = path.join(root, 'Fake DSH.app/Contents')
-  const runtime = path.join(app, 'Resources/runtime', process.arch, 'primary-runtime/dependencies')
+  const runtime = path.join(app, 'Resources/runtime/primary-runtime/dependencies')
+  const host = path.join(app, 'Resources/app/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib')
   await mkdir(path.join(app, 'MacOS'), { recursive: true })
-  await writeFile(path.join(app, 'MacOS/Fake DSH'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
-  await mkdir(path.join(app, 'Resources/app/lib'), { recursive: true })
-  await writeFile(path.join(app, 'Resources/app/package.json'), '{"name":"dsh-plugin-desktop"}')
-  await writeFile(path.join(app, 'Resources/app/lib/desktop-cli.js'), 'console.log(' + JSON.stringify(adaptedDshVersion) + ')\n')
-  await mkdir(path.join(runtime, 'node/bin'), { recursive: true })
-  await symlink(process.execPath, path.join(runtime, 'node/bin/node'))
+  await symlink(process.execPath, path.join(app, 'MacOS/Fake DSH'))
+  await mkdir(host, { recursive: true })
+  await writeFile(path.join(app, 'Resources/app/package.json'), '{"name":"@deepseek-ai/dsh-desktop"}')
+  await writeFile(path.join(host, 'cli.js'), 'console.log(' + JSON.stringify(adaptedDshVersion) + ')\n')
   await mkdir(path.join(runtime, 'pnpm/bin'), { recursive: true })
   await writeFile(path.join(runtime, 'pnpm/bin/pnpm.mjs'), '')
   return path.join(app, 'MacOS/Fake DSH')

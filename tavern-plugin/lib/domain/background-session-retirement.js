@@ -3,11 +3,16 @@ const path = 'background-session-retirement.json'
 /** Native Session logs remain readable; only retired Tavern workers lose discovery/reuse. */
 export function createBackgroundSessionRetirement(store, { readState, isRunning } = {}) {
   async function records() { return (await store.readJson(path)) || {} }
+  // Recorded retirements, kept in memory for synchronous readers (the catalog view).
+  const known = new Set()
   return {
+    async load() { for (const id of Object.keys(await records())) known.add(id) },
+    ids() { return known },
     async isRetired(id) { return Object.hasOwn(await records(), id) },
     async retire(id, parentId) {
       if (!id || !parentId) throw new Error('后台会话退休缺少会话编号')
       await store.updateJson(path, old => ({ ...old, [id]: { parentId, retiredAt: Date.now() } }))
+      known.add(id)
     },
     async filter(rows, parentId) {
       const retired = await records()
@@ -74,6 +79,44 @@ export function installRetiredBackgroundFilter(subagents, retirement, sessionQue
     }
     sessionQuery.listSessions = wrapped
     restore.push(() => { if (sessionQuery.listSessions === wrapped) sessionQuery.listSessions = original })
+  }
+  return () => { for (const undo of restore) undo() }
+}
+
+/**
+ * DSH 0.2 shows a game's subagents (header count and popup) from the `subagentCatalog`
+ * session projection, folded from append-only `subagent/catalog` facts in the game's
+ * own log: a retired background worker stays listed forever. Filter that projection's
+ * wire view, the one place every snapshot, push and cached checkpoint read passes
+ * through. The log and the folded state stay untouched; running workers are never hidden.
+ */
+export function installRetiredCatalogView(projections, retirement, { isRunning } = {}) {
+  const KEY = 'subagentCatalog'
+  const hide = view => function (state) {
+    const rows = view(state)
+    const retired = retirement.ids()
+    if (!Array.isArray(rows) || retired.size === 0) return rows
+    return rows.filter(row => !retired.has(row?.id) || isRunning?.(row.id) === true)
+  }
+  const restore = []
+  const registration = projections?.registrations?.get?.(KEY)
+  const wire = registration?.def?.wire
+  if (wire && typeof wire.view === 'function') {
+    const original = wire.view
+    wire.view = hide(original)
+    restore.push(() => { wire.view = original })
+  }
+  // Registered after Tavern (load order is the host's): wrap the definition on its way in.
+  const register = projections?.register
+  if (typeof register === 'function') {
+    const wrapped = function (definition) {
+      if (definition?.key === KEY && typeof definition.wire?.view === 'function') {
+        definition = { ...definition, wire: { ...definition.wire, view: hide(definition.wire.view) } }
+      }
+      return register.call(this, definition)
+    }
+    projections.register = wrapped
+    restore.push(() => { if (projections.register === wrapped) projections.register = register })
   }
   return () => { for (const undo of restore) undo() }
 }

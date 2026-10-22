@@ -2,6 +2,18 @@ import { sessionEvents } from './session-events.js'
 import { inputKind, isNewTurnInput, storyPlayerInputs } from './session-turn-input.js'
 import { clearRegenerationAttemptSurface, regenerationAttemptTurns, locateRegenerationSurface, applyRegenerationProjection } from './rollback-surface.js'
 
+/**
+ * `replacingDshTurns` once the committed body is projected. The old reply stays
+ * hidden until that very write: before it the log has no projection yet, and the
+ * row plan would draw the old turn next to the attempt — one body twice (#312).
+ */
+export function projectedReplacingTurns(chat) {
+  const temporary = Number(chat?.regenRecovery?.temporaryReplacingTurn)
+  const turns = Array.isArray(chat?.replacingDshTurns) ? chat.replacingDshTurns : []
+  const kept = Number.isSafeInteger(temporary) ? turns.filter(turn => Number(turn) !== temporary) : turns
+  return kept.length ? kept : undefined
+}
+
 /** Recover an uncommitted replacement from its durable pre-rollback revision. */
 export function createRegenerationRecovery({ chats, sessions, timeline, isActive }) {
   const recovering = new Set()
@@ -69,6 +81,9 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
       if (!projection) throw new Error('重新生成缺少已提交正文的投影记录')
       applyRegenerationProjection(session, projection)
       if (typeof sessions.flush === 'function') await sessions.flush(session)
+      const kept = projectedReplacingTurns(current)
+      if (kept) current.replacingDshTurns = kept
+      else delete current.replacingDshTurns
       delete current.regenRecovery
       delete current.regenInProgress
       return current

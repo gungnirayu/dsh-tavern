@@ -133,6 +133,5 @@ export function startSettings(value) {
     if (Object.keys(picked).length) result.backgroundTasks = picked
   }
   if (typeof value.webSearch === 'boolean') result.webSearchEnabled = value.webSearch
-  if (typeof value.sceneImages === 'boolean') result.sceneImagesEnabled = value.sceneImages
   return Object.keys(result).length ? result : null
 }

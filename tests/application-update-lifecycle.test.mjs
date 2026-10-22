@@ -133,3 +133,20 @@ test('Windows persistent service launched after cleanup survives successful upda
   process.kill(pid, 0)
   assert.equal(JSON.parse(await readFile(f.statusFile)).phase, 'completed')
 })
+
+test('sidebar stage follows the installer steps instead of staying at 安装程序', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t)
+  await writeFile(path.join(f.sourceRoot, 'install.sh'), `#!/bin/sh
+printf '== [步骤 1] 下载源码（已用 0s）==\\n'
+printf '== [步骤 2] 安装依赖并配置 Profile（已用 1s）==\\n'
+while :; do sleep 0.02; done
+`)
+  const active = updateApplication({ ...f.options, timeoutMs: 10000 }).catch(error => error)
+  await until(async () => (await f.updater().status()).stage === '第 2 步 · 安装依赖并配置 Profile')
+  const running = await f.updater().status()
+  assert.equal(running.phase, 'running')
+  assert.equal(running.stalled, false)
+  assert.equal((await f.updater().cancel()).phase, 'cancelling')
+  const error = await active
+  assert.equal(error.code, 'INSTALLATION_ABORTED')
+})

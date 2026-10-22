@@ -60,7 +60,7 @@ export function renderSite(inventory) {
   for (const group of groups) for (const [, keys] of group.chapters) for (const key of keys.split(' ')) if (!owner.has(key)) owner.set(key, group)
   // Shared links point to one article; its main home follows the user's task.
   for (const [key, id] of Object.entries({ I01: 'play', J01: 'cards', L02: 'cards', D02: 'play', E01: 'advanced', E02: 'advanced', E03: 'advanced', E04: 'advanced', M04: 'advanced', M05: 'advanced', L05: 'advanced', L06: 'advanced' })) owner.set(key, groups.find(g => g.id === id))
-  if (topics.length !== 100 || owner.size !== 100 || topics.some(t => !owner.has(t.key))) throw new Error('The manual must cover every inventory topic exactly once or via shared links.')
+  if (owner.size !== topics.length || topics.some(t => !owner.has(t.key))) throw new Error('The manual must cover every inventory topic exactly once or via shared links.')
   const allPages = groups.filter(g => g !== gettingStarted).map(g => ({ ...g, group: g.id, content: overview[g.id] }))
   const orderedTopics = groups.flatMap(g => [...new Set(g.chapters.flatMap(([, keys]) => keys.split(' ')))].filter(key => owner.get(key) === g).map(key => byId.get(key)))
   for (const topic of orderedTopics) {
@@ -93,7 +93,7 @@ export function renderSite(inventory) {
         .replace('<p>截图：选择配置</p>', (figureList[1] || '') + sourceNote)
     }
     else body = figures + sourceNote + body
-    const directory = page.chapters ? `<h2 id="${page.id}--topics">逐项查阅</h2>` + page.chapters.map(([name, keys]) => `<h3>${escapeHTML(name)}</h3><ul class="topic-list">${keys.split(' ').map(key => `<li>${link(byId.get(key).id, byId.get(key).title)}</li>`).join('')}</ul>`).join('') : ''
+    const directory = page.chapters?.length ? `<h2 id="${page.id}--topics">逐项查阅</h2>` + page.chapters.map(([name, keys]) => `<h3>${escapeHTML(name)}</h3><ul class="topic-list">${keys.split(' ').map(key => `<li>${link(byId.get(key).id, byId.get(key).title)}</li>`).join('')}</ul>`).join('') : ''
     const siblings = page.key ? [...new Set(group.chapters.flatMap(([, keys]) => keys.split(' ')))].filter(key => owner.get(key) === group) : []
     const at = siblings.indexOf(page.key), previous = byId.get(siblings[at - 1]), next = byId.get(siblings[at + 1])
     const pagination = page.key ? `<nav class="pagination" aria-label="相邻文档">${previous ? link(previous.id, `← ${previous.title}`) : link(groupRoute(group), `← ${group.title}`)}${next ? link(next.id, `${next.title} →`) : link('index', '全部功能索引 →')}</nav>` : ''
@@ -104,9 +104,9 @@ export function renderSite(inventory) {
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>产品概览 · DSH Tavern 文档</title>
-<meta name="description" content="DSH Tavern 使用文档：从产品概览、安装与启动开始，再了解酒馆生态兼容、游玩模式、卡片模式与高级功能。">
+<meta name="description" content="DSH Tavern 使用文档：从产品概览、安装与启动开始，再了解酒馆生态兼容、游玩模式、卡片模式、高级功能、插件与 DSH 人物卡。">
 <meta name="theme-color" content="#ffffff">
-<meta property="og:title" content="DSH Tavern 使用文档"><meta property="og:description" content="酒馆生态兼容、游玩模式、卡片模式与高级功能。"><meta property="og:type" content="website"><meta property="og:image" content="https://flizzywine.github.io/dsh-tavern/assets/social.png">
+<meta property="og:title" content="DSH Tavern 使用文档"><meta property="og:description" content="酒馆生态兼容、游玩模式、卡片模式、高级功能、插件与 DSH 人物卡。"><meta property="og:type" content="website"><meta property="og:image" content="https://flizzywine.github.io/dsh-tavern/assets/social.png">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="DSH Tavern 使用文档"><meta name="twitter:description" content="按界面与操作逐项查阅 DSH Tavern 功能。"><meta name="twitter:image" content="https://flizzywine.github.io/dsh-tavern/assets/social.png">
 <link rel="icon" type="image/svg+xml" href="assets/brand/favicon.svg"><link rel="icon" type="image/png" sizes="32x32" href="assets/brand/favicon-32.png"><link rel="apple-touch-icon" href="assets/brand/dsh-tavern-app-icon-192.png">
 <link rel="stylesheet" href="assets/manual.css?v=20261010-plugins"><script src="assets/manual-state.js" defer></script><script src="assets/manual.js" defer></script>
@@ -115,8 +115,8 @@ export function renderSite(inventory) {
 <a class="skip-link" href="#main">跳到正文</a>
 <header class="site-header"><a class="brand" href="#a01"><span class="brand-mark" aria-hidden="true"></span><span>DSH Tavern <b>Docs</b></span></a><button class="search-trigger" type="button" hidden>搜索文档 <kbd>⌘ K</kbd></button><nav aria-label="顶部导航">${link('a02', '安装与启动')}${link('index', '功能索引')}${link('help', '帮助')}<a href="https://github.com/flizzywine/dsh-tavern" target="_blank" rel="noopener noreferrer">GitHub ↗</a><button id="theme-toggle" type="button" aria-label="切换深色主题" hidden>◐</button></nav></header>
 <div class="mobile-bar"><button id="menu-toggle" type="button" aria-expanded="false" aria-controls="sidebar">☰ 功能目录</button><span>使用文档</span></div>
-<aside class="sidebar" id="sidebar" aria-label="功能目录"><div class="sidebar-label">使用文档 <span>功能指南</span></div><nav class="getting-started" aria-label="入门指南"><p>从这里开始</p>${link('a01', '产品概览')}${link('a02', '安装与启动')}${link('plugin-installation', '用 DSH 命令安装（试验）')}</nav><nav aria-label="四部分文档目录">${sections.map(navGroup).join('')}</nav><div class="sidebar-bottom">${link('index', '全部功能索引')}${link('help', '帮助与维护')}<p>先开始使用，再按需了解。</p></div></aside>
-<div class="page-layout"><main id="main">${allPages.map(article).join('')}<article class="doc-page" id="index" data-title="全部功能索引" data-group="index"><div class="breadcrumb">使用文档 / 索引</div><h1 tabindex="-1">全部功能索引</h1><p class="lead">100 个功能与指南主题，按四个部分逐项查阅。辅助指南单列，不是第五种产品模式。</p>${groups.map(g => `<h2 id="index--${g.id}">${link(groupRoute(g), g.title)}</h2><ul class="topic-list">${orderedTopics.filter(t => owner.get(t.key) === g).map(t => `<li>${link(t.id, t.title)}</li>`).join('')}</ul>`).join('')}</article><article class="doc-page" id="not-found" data-title="没有找到这篇文档" data-group="help"><h1 tabindex="-1">没有找到这篇文档</h1><p>这个链接可能已经变更。请打开${link('index', '全部功能索引')}，或搜索功能名称。</p></article></main><aside class="page-toc" aria-label="本页导航"><p>本页导航</p><nav id="toc-links"></nav><div class="toc-note">按需查阅<br>界面截图均使用公开样例。</div></aside></div>
+<aside class="sidebar" id="sidebar" aria-label="功能目录"><div class="sidebar-label">使用文档 <span>功能指南</span></div><nav class="getting-started" aria-label="入门指南"><p>从这里开始</p>${link('a01', '产品概览')}${link('a02', '安装与启动')}${link('plugin-installation', '用 DSH 命令安装（试验）')}</nav><nav aria-label="文档目录">${sections.map(navGroup).join('')}</nav><div class="sidebar-bottom">${link('index', '全部功能索引')}${link('help', '帮助与维护')}<p>先开始使用，再按需了解。</p></div></aside>
+<div class="page-layout"><main id="main">${allPages.map(article).join('')}<article class="doc-page" id="index" data-title="全部功能索引" data-group="index"><div class="breadcrumb">使用文档 / 索引</div><h1 tabindex="-1">全部功能索引</h1><p class="lead">${topics.length} 个功能与指南主题，按部分逐项查阅。帮助与维护单列。</p>${groups.map(g => `<h2 id="index--${g.id}">${link(groupRoute(g), g.title)}</h2><ul class="topic-list">${orderedTopics.filter(t => owner.get(t.key) === g).map(t => `<li>${link(t.id, t.title)}</li>`).join('')}</ul>`).join('')}</article><article class="doc-page" id="not-found" data-title="没有找到这篇文档" data-group="help"><h1 tabindex="-1">没有找到这篇文档</h1><p>这个链接可能已经变更。请打开${link('index', '全部功能索引')}，或搜索功能名称。</p></article></main><aside class="page-toc" aria-label="本页导航"><p>本页导航</p><nav id="toc-links"></nav><div class="toc-note">按需查阅<br>界面截图均使用公开样例。</div></aside></div>
 <dialog id="search-dialog" aria-labelledby="search-title"><div class="search-header"><label id="search-title" for="doc-search">搜索文档</label><button type="button" id="search-close" aria-label="关闭搜索">Esc</button></div><input id="doc-search" type="search" placeholder="输入功能或操作，例如：重写、世界书…" autocomplete="off"><p id="search-status" role="status"></p><ul id="search-results"></ul></dialog>
 <noscript><div class="noscript-note">未启用 JavaScript：下方按顺序展示全部文字，可通过目录跳转。</div></noscript>
 </body></html>\n`

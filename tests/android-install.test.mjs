@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { execFile, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import http from 'node:http'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import test from 'node:test'
 
@@ -9,6 +12,7 @@ import { createEntryHandler, createEntryManager, resolveEntryConfig } from '../a
 import { configureAndroidProfiles } from '../android/configure-profiles.mjs'
 
 const root = new URL('../', import.meta.url)
+const execute = promisify(execFile)
 
 const entryClient = await readFile(new URL('../android/dsh-tavern-entry/client.js', import.meta.url), 'utf8')
 
@@ -148,11 +152,26 @@ test('Android 入口未安装 Tavern 时明确拒绝伪更新', async (t) => {
   await assert.rejects(() => manager.update(), /尚未安装 DSH Tavern/)
 })
 
-for (const initialVersion of ['cached', '10.34.5', 'missing', 'install-failed', 'standalone', 'restored', 'restored-failed', 'invalid-install', 'swap-failed']) {
+for (const initialVersion of ['cached', '10.34.5', 'missing', 'install-failed', 'standalone', 'restored', 'restored-failed', 'invalid-install', 'swap-failed', 'persistent-store']) {
 test(`Android 安装固定 pnpm 并先安装依赖再停止旧服务：${initialVersion}`, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'dsh-android-install-order-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const dshHome = path.join(directory, 'dsh-home')
+  const offlineDir = path.join(directory, 'offline')
+  // persistent-store：内置包已经清理（或根本没有），只能复用 DSH_ROOT 下的持久缓存。
+  const persistent = initialVersion === 'persistent-store'
+  const expectedStore = persistent ? path.join(dshHome, 'runtime', 'tavern-pnpm-store') : path.join(offlineDir, 'store')
+  const expectedCache = persistent ? path.join(dshHome, 'runtime', 'tavern-pnpm-cache') : path.join(offlineDir, 'cache')
+  const expectedRegistry = persistent ? 'https://registry.npmmirror.com' : 'https://registry.npmjs.org'
+  if (persistent) {
+    await mkdir(path.join(offlineDir), { recursive: true })
+    await mkdir(expectedStore, { recursive: true })
+    await mkdir(expectedCache, { recursive: true })
+  } else {
+    await mkdir(path.join(offlineDir, 'store'), { recursive: true })
+    await mkdir(path.join(offlineDir, 'cache'), { recursive: true })
+    await writeFile(path.join(offlineDir, 'registry'), 'https://registry.npmjs.org\n')
+  }
   const mockBin = path.join(directory, 'mock-bin')
   const events = path.join(directory, 'events')
   const dependenciesReady = path.join(directory, 'dependencies-ready')
@@ -177,6 +196,13 @@ if [ "\$1" = "--version" ]; then
 fi
 [ "\$1" = "--config.update-notifier=false" ] || exit 93
 shift
+[ "\$1" = "--config.fetchTimeout=600000" ] || exit 96
+shift
+[ "\${pnpm_config_store_dir:-}" = "${expectedStore}" ] || exit 97
+case " \$* " in *" --store-dir"*) exit 98;; esac
+[ "\${pnpm_config_cache_dir:-}" = "${expectedCache}" ] || exit 99
+[ "\${pnpm_config_prefer_offline:-}" = true ] || exit 100
+[ "\${pnpm_config_registry:-}" = "${expectedRegistry}" ] || exit 101
 if [ "\$1" = "--dir" ] && [ "\$2" = "${new URL('..', import.meta.url).pathname.replace(/\/$/, '')}" ]; then
   printf 'dependencies\\n' >> "${events}"
   : > "${dependenciesReady}"
@@ -229,7 +255,7 @@ esac
 `, { mode: 0o755 })
 
   const result = spawnSync('bash', [new URL('../android/install.sh', import.meta.url).pathname], {
-    env: { ...process.env, DSH_HOME: dshHome, DSH_TAVERN_ANDROID_STANDALONE: initialVersion === 'standalone' ? '1' : '0', PATH: `${mockBin}${path.delimiter}${process.env.PATH}` },
+    env: { ...process.env, DSH_HOME: dshHome, DSH_TAVERN_OFFLINE_DIR: offlineDir, DSH_TAVERN_ANDROID_STANDALONE: initialVersion === 'standalone' ? '1' : '0', DSH_TAVERN_FORCE_DEPENDENCIES: '1', PATH: `${mockBin}${path.delimiter}${process.env.PATH}` },
     encoding: 'utf8',
   })
   const recorded = (await readFile(events, 'utf8')).replace(/11\.25\.0\.install\.[^ \n]+/g, '11.25.0').trim().split('\n')
@@ -243,6 +269,13 @@ esac
   }
   assert.equal(result.status, 0, result.stderr)
   const expected = initialVersion === 'cached' ? [] : [`npm install --global --prefix ${pnpmRoot} pnpm@11.25.0`]
+  if (persistent) {
+    assert.match(result.stdout, /复用本地依赖缓存/)
+  } else {
+    // 首装的 store 会转存到持久目录，下次更新直接复用而不是重新下载。
+    await access(path.join(dshHome, 'runtime', 'tavern-pnpm-store'))
+    await assert.rejects(access(path.join(offlineDir, 'store')), '内置 store 转存后不应留在离线包里')
+  }
   if (initialVersion === 'standalone') {
     assert.deepEqual(recorded, [...expected, 'dependencies', 'install'])
     assert.match(result.stdout, /返回 DSH Tavern 应用并重新启动/)
@@ -262,7 +295,7 @@ test('Android setup 通过同一命令完成首次安装和后续更新', async 
   await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'dsh-profile-tavern' }), 'utf8')
   await writeFile(path.join(source, 'bin', 'dsh-tavern.mjs'), '', 'utf8')
   await writeFile(path.join(source, 'android', 'install.sh'), '#!/usr/bin/env bash\nset -euo pipefail\nprintf "installed\\n" >> "${DSH_HOME}/setup-runs"\n', 'utf8')
-  const documentImages = ['docs/images/readme/overview.png', 'tavern-plugin/packages/dsh-image-gen/docs/assets/demo.png']
+  const documentImages = ['docs/images/readme/overview.png', 'tavern-plugin/packages/dsh-dream-skin/docs/assets/demo.png']
   for (const file of documentImages) {
     await mkdir(path.dirname(path.join(source, file)), { recursive: true })
     await writeFile(path.join(source, file), 'documentation image')
@@ -359,7 +392,7 @@ test('Git 下载失败时通过 tarball 安装更新，保留旧数据并在安�
     await writeFile(path.join(source, 'version.txt'), version + '\n', 'utf8')
     await writeFile(path.join(source, 'bin', 'dsh-tavern.mjs'), '', 'utf8')
     await writeFile(path.join(source, 'android', 'install.sh'), `#!/usr/bin/env bash\nprintf "${version}\\n" >> "\${DSH_HOME}/setup-runs"\nexit ${installExit}\n`, 'utf8')
-    for (const file of ['docs/images/readme/demo.png', 'tavern-plugin/packages/dsh-image-gen/docs/assets/demo.png']) {
+    for (const file of ['docs/images/readme/demo.png', 'tavern-plugin/packages/dsh-dream-skin/docs/assets/demo.png']) {
       await mkdir(path.dirname(path.join(source, file)), { recursive: true })
       await writeFile(path.join(source, file), 'documentation image')
     }
@@ -382,7 +415,7 @@ test('Git 下载失败时通过 tarball 安装更新，保留旧数据并在安�
   assert.equal(first.status, 0, first.stderr)
   assert.match(first.stdout, /改用 GitHub 压缩包/)
   await assert.rejects(access(path.join(appDir, 'docs')))
-  await assert.rejects(access(path.join(appDir, 'tavern-plugin/packages/dsh-image-gen/docs')))
+  await assert.rejects(access(path.join(appDir, 'tavern-plugin/packages/dsh-dream-skin/docs')))
   assert.equal(await readFile(path.join(appDir, 'version.txt'), 'utf8'), 'v1\n')
   await mkdir(path.join(appDir, 'data'), { recursive: true })
   await writeFile(path.join(appDir, 'data', 'legacy.txt'), '用户数据\n', 'utf8')
@@ -473,7 +506,7 @@ test('Git 仓库 fetch 失败时切换为 tarball 更新', async (t) => {
   const mockBin = path.join(directory, 'mock-bin')
   const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
   await mkdir(mockBin, { recursive: true })
-  await writeFile(path.join(mockBin, 'git'), `#!/usr/bin/env bash\nif [ "\$1" = "-C" ] && [ "\$3" = "fetch" ]; then exit 1; fi\nexec "${realGit}" "\$@"\n`, { encoding: 'utf8', mode: 0o755 })
+  await writeFile(path.join(mockBin, 'git'), `#!/usr/bin/env bash\ncase " \$* " in *" fetch "*) exit 1;; esac\nexec "${realGit}" "\$@"\n`, { encoding: 'utf8', mode: 0o755 })
   const second = spawnSync('bash', [setupPath], { env: { ...baseEnvironment, PATH: `${mockBin}${path.delimiter}${process.env.PATH}` }, encoding: 'utf8' })
   assert.equal(second.status, 0, second.stderr)
   assert.match(second.stdout, /改用 GitHub 压缩包/)
@@ -550,4 +583,142 @@ test('Android 入口不复用本次启动之前的旧鉴权地址', async (t) =>
   const manager = createEntryManager({ home, env: {}, portProbe: async () => true, request: async url => { calls.push(url); return { status: 200 } } })
   assert.equal(await manager.accessUrl(), 'http://127.0.0.1:3088/')
   assert.deepEqual(calls, ['http://127.0.0.1:3088/'])
+})
+
+test('更新按运行清单增量下载：只取有变化的文件，保留用户数据，未变化的文件不联网', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'dsh-android-incremental-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const dshHome = path.join(directory, 'dsh-home')
+  const appDir = path.join(dshHome, 'apps', 'dsh-tavern')
+  const setupPath = new URL('../android/setup.sh', import.meta.url).pathname
+  const downloadModule = await readFile(new URL('../bin/download.cjs', import.meta.url))
+  const installScript = '#!/usr/bin/env bash\nset -euo pipefail\nprintf "installed\\n" >> "${DSH_HOME}/setup-runs"\n'
+  const unchanged = 'export const answer = 42\n'
+  // 旧目录是一次 tarball 安装留下的（没有 .git，带 tarball 标记）。
+  const oldFiles = new Map([
+    ['package.json', '{"name":"dsh-profile-tavern","version":"1.0.0"}\n'],
+    ['pnpm-workspace.yaml', 'packages:\n  - .\n'],
+    ['pnpm-lock.yaml', 'lockfileVersion: 9\n'],
+    ['bin/dsh-tavern.mjs', ''],
+    ['android/install.sh', '#!/usr/bin/env bash\nexit 1\n'],
+    ['tavern-plugin/lib/stable.js', unchanged],
+    ['docs/hello.md', 'not shipped by the runtime manifest'],
+  ])
+  for (const [file, content] of oldFiles) {
+    await mkdir(path.dirname(path.join(appDir, file)), { recursive: true })
+    await writeFile(path.join(appDir, file), content)
+  }
+  await copyFile(new URL('../bin/download.cjs', import.meta.url), path.join(appDir, 'bin', 'download.cjs'))
+  await writeFile(path.join(appDir, '.dsh-tavern-tarball-source'), 'https://example.invalid/previous.tar.gz\n')
+  await mkdir(path.join(appDir, 'data'), { recursive: true })
+  await writeFile(path.join(appDir, 'data/cards.json'), '{"keep":true}\n')
+  // 已装依赖：lockfile 未变，更新时应直接搬进新源码，而不是重新安装。
+  await mkdir(path.join(appDir, 'node_modules'), { recursive: true })
+  await writeFile(path.join(appDir, 'node_modules', 'marker.txt'), 'keep\n')
+
+  const revision = 'c'.repeat(40)
+  const next = new Map(oldFiles)
+  next.set('package.json', '{"name":"dsh-profile-tavern","version":"1.1.0"}\n')
+  next.set('android/install.sh', installScript)
+  next.set('bin/download.cjs', downloadModule)
+  next.delete('docs/hello.md')
+  const manifest = {
+    schemaVersion: 2, revision, releaseSequence: 7, version: '1.1.0',
+    files: [...next].map(([file, content]) => ({ path: file, size: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex') })),
+  }
+  const requests = []
+  const server = http.createServer((request, response) => {
+    const url = decodeURIComponent(request.url)
+    requests.push(url)
+    if (url === '/manifest') { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(manifest)); return }
+    const prefix = `/source@${revision}/`
+    const content = url.startsWith(prefix) ? next.get(url.slice(prefix.length)) : undefined
+    if (content !== undefined) { response.end(content); return }
+    response.writeHead(404)
+    response.end('unexpected request')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const environment = {
+    ...process.env, DSH_HOME: dshHome, DSH_TAVERN_BRANCH: 'main', DSH_TAVERN_REPOSITORY: path.join(directory, 'missing.git'),
+    DSH_TAVERN_CDN_METADATA_URL: `${base}/manifest`, DSH_TAVERN_CDN_ROOT_URL: `${base}/source`,
+    DSH_TAVERN_TARBALL_URL: 'https://example.invalid/should-not-download.tar.gz',
+  }
+  // 本地清单/文件服务器跑在本进程里，必须异步等待，否则事件循环会被阻塞而无法响应。
+  let output = ''
+  try { ({ stdout: output } = await execute('bash', [setupPath], { env: environment, timeout: 60000, maxBuffer: 2 * 1024 * 1024 })) }
+  catch (error) { assert.fail(`${error.stdout || ''}\n${error.stderr || error.message}`) }
+  assert.match(output, /增量下载源码/)
+  assert.equal(await readFile(path.join(appDir, 'package.json'), 'utf8'), next.get('package.json'))
+  assert.equal(await readFile(path.join(appDir, 'android/install.sh'), 'utf8'), installScript)
+  assert.equal(await readFile(path.join(appDir, 'tavern-plugin/lib/stable.js'), 'utf8'), unchanged)
+  assert.equal(await readFile(path.join(appDir, 'data/cards.json'), 'utf8'), '{"keep":true}\n')
+  assert.equal(await readFile(path.join(appDir, 'node_modules', 'marker.txt'), 'utf8'), 'keep\n', 'lockfile 未变时应复用已安装依赖')
+  await assert.rejects(access(path.join(appDir, 'docs/hello.md')), '清单外的文件不会进入新版本')
+  await access(path.join(appDir, '.dsh-tavern-tarball-source'))
+  await assert.rejects(access(path.join(appDir, '.git')))
+  await readFile(path.join(dshHome, 'setup-runs'))
+  assert.ok(requests.includes('/manifest'))
+  assert.ok(requests.includes(`/source@${revision}/package.json`))
+  assert.ok(requests.includes(`/source@${revision}/android/install.sh`))
+  assert.equal(requests.some(url => url.includes('stable.js')), false, '未变化的文件应从已安装目录复用')
+  assert.equal(requests.some(url => url.includes('should-not-download')), false, '增量成功时不应回退到完整源码包')
+})
+
+test('APK 升级用内置快照离线替换源码与依赖，保留用户数据', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'dsh-android-bundle-upgrade-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const dshHome = path.join(directory, 'dsh-home')
+  const appDir = path.join(dshHome, 'apps', 'dsh-tavern')
+  const offlineDir = path.join(dshHome, 'tavern-offline')
+  const setupPath = new URL('../android/setup.sh', import.meta.url).pathname
+  const oldRevision = 'd'.repeat(40)
+  const newRevision = 'e'.repeat(40)
+  const installStub = '#!/usr/bin/env bash\nset -euo pipefail\nprintf "installed\\n" >> "${DSH_HOME}/setup-runs"\n'
+  // 旧安装：tarball 标记 + 用户数据，源码仍是上一个 APK 的快照。
+  await mkdir(path.join(appDir, 'bin'), { recursive: true })
+  await mkdir(path.join(appDir, 'android'), { recursive: true })
+  await mkdir(path.join(appDir, 'data'), { recursive: true })
+  await writeFile(path.join(appDir, 'package.json'), '{"name":"dsh-profile-tavern","version":"1.0.0"}\n')
+  await writeFile(path.join(appDir, 'bin/dsh-tavern.mjs'), '')
+  await writeFile(path.join(appDir, 'android/install.sh'), '#!/usr/bin/env bash\nexit 1\n')
+  await writeFile(path.join(appDir, '.dsh-tavern-tarball-source'), 'https://example.invalid/old.tar.gz\n')
+  await writeFile(path.join(appDir, 'version.txt'), 'old\n')
+  await writeFile(path.join(appDir, 'data/cards.json'), '{"keep":true}\n')
+  // 新 APK 的内置包已经由原生层解到 offlineDir（tar 解包后会被删掉）。
+  await mkdir(path.join(offlineDir, 'store'), { recursive: true })
+  await mkdir(path.join(offlineDir, 'source/bin'), { recursive: true })
+  await mkdir(path.join(offlineDir, 'source/android'), { recursive: true })
+  await writeFile(path.join(offlineDir, 'revision'), `${newRevision}\n`)
+  await writeFile(path.join(offlineDir, 'source/package.json'), '{"name":"dsh-profile-tavern","version":"1.1.0"}\n')
+  await writeFile(path.join(offlineDir, 'source/bin/dsh-tavern.mjs'), '')
+  await writeFile(path.join(offlineDir, 'source/android/install.sh'), installStub)
+  await writeFile(path.join(offlineDir, 'source/version.txt'), 'bundle\n')
+
+  const environment = {
+    ...process.env, DSH_HOME: dshHome, DSH_TAVERN_ANDROID_STANDALONE: '1',
+    DSH_TAVERN_APK_BUNDLE_UPDATE: '1', DSH_TAVERN_APK_BUNDLE_REVISION: newRevision,
+    DSH_TAVERN_REPOSITORY: path.join(directory, 'missing.git'),
+    DSH_TAVERN_TARBALL_URL: 'https://example.invalid/should-not-download.tar.gz',
+  }
+  const result = spawnSync('bash', [setupPath], { env: environment, encoding: 'utf8', timeout: 60000 })
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stdout, /已用 APK 内置快照完成离线升级/)
+  assert.equal(await readFile(path.join(appDir, 'version.txt'), 'utf8'), 'bundle\n')
+  assert.equal(JSON.parse(await readFile(path.join(appDir, 'package.json'), 'utf8')).version, '1.1.0')
+  assert.equal(await readFile(path.join(appDir, 'data/cards.json'), 'utf8'), '{"keep":true}\n')
+  assert.equal(await readFile(path.join(dshHome, 'setup-runs'), 'utf8'), 'installed\n')
+  await access(path.join(appDir, '.dsh-tavern-tarball-source'))
+  await assert.rejects(access(offlineDir), '成功后应清理内置包，依赖缓存由 install.sh 转存')
+  // 旧提交的解包目录会被识别并丢弃：没有 tar 时回退常规更新，失败也不改源码。
+  await mkdir(path.join(offlineDir, 'source'), { recursive: true })
+  await mkdir(path.join(offlineDir, 'store'), { recursive: true })
+  await writeFile(path.join(offlineDir, 'revision'), `${oldRevision}\n`)
+  const stale = spawnSync('bash', [setupPath], {
+    env: { ...environment, DSH_TAVERN_SOURCE_CDN: '0' }, encoding: 'utf8', timeout: 60000,
+  })
+  assert.notEqual(stale.status, 0)
+  assert.match(stale.stdout, /内置快照版本变化/)
+  assert.equal(await readFile(path.join(appDir, 'version.txt'), 'utf8'), 'bundle\n')
 })

@@ -3,6 +3,7 @@ import { readFile, writeFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseNativeSessionLog } from './native-session-log.mjs'
 import { Session } from '../fixtures/dsh-session-host.mjs'
+import { currentSessionLogs } from './session-files.mjs'
 
 export async function surfaceRecoveryChecks({ page, step, savedChat, output, report, root, restartServer }) {
   const prose = chat => chat.messages.map(message => ({ role: message.role, text: message.sourceText ?? message.text }))
@@ -19,9 +20,8 @@ export async function surfaceRecoveryChecks({ page, step, savedChat, output, rep
   async function native() {
     const chat = await savedChat()
     const directory = join(root, 'profile-data/tavern/sessions')
-    for (const file of await readdir(directory, { recursive: true })) {
-      if (!file.endsWith('session.v3.jsonl.zstd')) continue
-      const parsed = parseNativeSessionLog(await readFile(join(directory, file)))
+    for (const { path: file } of await currentSessionLogs(directory)) {
+      const parsed = parseNativeSessionLog(await readFile(file))
       if (parsed.header.id === chat.sessionId) return { ...parsed, session: Session.create(chat.sessionId, parsed.events, parsed.header) }
     }
     throw Error('本次游玩原生会话尚未落盘')

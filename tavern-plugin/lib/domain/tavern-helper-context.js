@@ -4,6 +4,7 @@ const helperTurns = createImmutableTurnFields()
 const helperIndex = createIndexedArrayApi({valid: row => Boolean(row && !row.stub)})
 import { assertPluginJson } from './tavern-chat-plugin-data.js'
 import { projectAgentContent } from './runtime-content-projection.js'
+import { plainReplyProse, writeReplyProse } from './reply-prose.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -59,7 +60,7 @@ export function projectTavernHelperMessage(source, messageId) {
   const swipeId = selectedSwipe(source)
   const swipes = Array.isArray(source.swipes) && source.swipes.length > 0
     ? source.swipes.map(str)
-    : [str(source.sourceText || source.text)]
+    : [str(source.projectionText ?? source.sourceText ?? source.text)]
   const variables = Array.isArray(source.variables) ? clone(source.variables) : []
   const projected = {
     pluginData: clone(source.tavernPluginData || {}),
@@ -238,12 +239,7 @@ export function appendTavernHelperMessages(chat, values, option = {}) {
       tavernRole: role,
       tavernHidden: value.is_hidden === true,
       tavernHelperCreated: true,
-      text,
-      sourceText: text,
-      projectionText: text,
-      sessionText: text,
-      displayText: text,
-      displayMode: 'markdown',
+      ...plainReplyProse(text),
       swipeId: 0,
       swipes: [text],
       variables: [clone(value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : {})]
@@ -293,8 +289,12 @@ export function replaceTavernHelperVariables(chat, request = {}) {
   return { type: 'message', messageId, swipeId }
 }
 
-/** Apply the subset of setChatMessages used by card UI and greeting-index scripts. */
-export function replaceTavernHelperMessages(chat, patches) {
+/**
+ * Apply the subset of setChatMessages used by card UI and greeting-index scripts.
+ * regexScripts are the ones the round was saved with, so a rewritten or switched
+ * swipe reaches the model context as a fresh round would (reply-prose.js).
+ */
+export function replaceTavernHelperMessages(chat, patches, { regexScripts = [] } = {}) {
   if (!chat || typeof chat !== 'object') throw new Error('聊天不存在')
   const messages = Array.isArray(chat.messages) ? chat.messages : []
   const updated = []
@@ -314,7 +314,7 @@ export function replaceTavernHelperMessages(chat, patches) {
     const writesText = Object.prototype.hasOwnProperty.call(patch, 'message')
     if (writesText) {
       const text = str(patch.message)
-      if (!Array.isArray(message.swipes)) message.swipes = [str(message.sourceText || message.text)]
+      if (!Array.isArray(message.swipes)) message.swipes = [str(message.projectionText ?? message.sourceText ?? message.text)]
       while (message.swipes.length < count) message.swipes.push('')
       message.swipes[swipeId] = text
     }
@@ -333,15 +333,9 @@ export function replaceTavernHelperMessages(chat, patches) {
     // rendered message with raw swipe text or replay stateful macros for it.
     if ((writesText || swipeId !== previousSwipeId) && Array.isArray(message.swipes) && message.swipes[swipeId] !== undefined) {
       const sourceText = message.swipes[swipeId]
-      const projection = projectAgentContent(sourceText, { charName: chat.cardName, macroState: chat.macroState })
-      message.sourceText = sourceText
-      message.projectionText = projection.renderedText
-      message.text = projection.sessionText
-      message.sessionText = projection.sessionText
-      message.displayText = projection.displayText
-      message.displayMode = projection.displayMode
-      message.projectionVersion = 2
-      message.projectionWarnings = projection.warnings
+      const projection = projectAgentContent(sourceText, { charName: chat.cardName, macroState: chat.macroState,
+        regexScripts, regexPlacement: 2, isEdit: false, depth: 0 })
+      writeReplyProse(message, sourceText, projection)
       delete message.displayRuntime
       chat.macroState = projection.macroState
     }

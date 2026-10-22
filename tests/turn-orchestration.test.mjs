@@ -107,7 +107,6 @@ function harness(mode, options = {}) {
       }
     },
     worldBookRecall: options.worldBookRecall,
-    captureSceneWorldbook: options.captureSceneWorldbook,
     scripts,
     timeline,
     frameBuilder: createForegroundFrameBuilder(),
@@ -245,28 +244,25 @@ test('new card is created and bound before tool returns; next write updates the 
 })
 
 test('玩家模板先于本轮召回，重试不重复执行；提交后只产生一条玩家消息', async () => {
-  for (const compatibility of [false,true]) {
-    let calls=0
-    const run=harness('story',{projectUserTemplate:async()=>{
-      calls++
-      return {message:{role:'user',text:'进入少林',variables:[{place:'少林'}],tavernPluginData:{is_ejs_processed:[true]}},scopes:{local:{place:'少林'},initial:{}}}
-    },projectForegroundWorldbook:async({chat,userText})=>{
-      assert.equal(chat.variables.place,'少林');assert.equal(userText,'进入少林')
-      return {context:'少林名册',activation:{refs:[]},refs:[],reads:{}}
-    }})
-    const input={sessionId:'session-1',turn:2,userText:'原始模板'}
-    const start=compatibility?'beginCompatibility':'prepare'
-    const first=await run.orchestrator[start](input)
-    await run.orchestrator[start](input)
-    assert.equal(calls,1)
-    assert.equal(first.userText,'进入少林')
-    assert.equal(run.chat().messages.length,0)
-    await run.orchestrator.finalize({...input,assistantText:'少林的僧人迎上前。'})
-    assert.equal(run.chat().messages.length,2)
-    assert.equal(run.chat().messages[0].text,'进入少林')
-    assert.equal(run.chat().messages[0].variables[0].place,'少林')
-    assert.equal(run.chat().promptTemplateInput,undefined)
-  }
+  let calls=0
+  const run=harness('story',{projectUserTemplate:async()=>{
+    calls++
+    return {message:{role:'user',text:'进入少林',variables:[{place:'少林'}],tavernPluginData:{is_ejs_processed:[true]}},scopes:{local:{place:'少林'},initial:{}}}
+  },projectForegroundWorldbook:async({chat,userText})=>{
+    assert.equal(chat.variables.place,'少林');assert.equal(userText,'进入少林')
+    return {context:'少林名册',activation:{refs:[]},refs:[],reads:{}}
+  }})
+  const input={sessionId:'session-1',turn:2,userText:'原始模板'}
+  const first=await run.orchestrator.prepare(input)
+  await run.orchestrator.prepare(input)
+  assert.equal(calls,1)
+  assert.equal(first.userText,'进入少林')
+  assert.equal(run.chat().messages.length,0)
+  await run.orchestrator.finalize({...input,assistantText:'少林的僧人迎上前。'})
+  assert.equal(run.chat().messages.length,2)
+  assert.equal(run.chat().messages[0].text,'进入少林')
+  assert.equal(run.chat().messages[0].variables[0].place,'少林')
+  assert.equal(run.chat().promptTemplateInput,undefined)
 })
 
 test('失败回合的玩家模板变量被撤销，遗留的别轮模板输入在下一轮开始前恢复（#193）', async () => {

@@ -170,7 +170,7 @@ ctx.tavern.replaceSettlement({
 })
 ```
 
-- 抛错、超时或交回的结果不合格时，这一轮自动改用 Tavern 自己的结算，并在「本局设置 → 插件」里记下原因。
+- 抛错、超时或交回的结果不合格时，这一轮自动改用 Tavern 自己的结算，并把原因记进 Tavern 日志。
 - 使用 MVU 变量的卡不会调用 `settle`。只想让结算顺带记点东西，用上面的 `settlementSection` 和 `settlementTool` 就够了，不需要接管。
 
 ## 回退、分叉、删局时插件要做什么
@@ -191,7 +191,7 @@ ctx.tavern.replaceSettlement({
 ctx.tavernUi.registerPanel({ id: 'memory', title: '记忆', render: ({ gameId }) => h(MemoryPanel, { gameId }) })
 ```
 
-面板要读宿主侧的数据时，由插件自己的宿主代码提供读取入口。玩家可以在「本局设置 → 插件」里按局关掉插件；关掉后插件不再收到这局的通知，它已经保存的数据保留。
+面板要读宿主侧的数据时，由插件自己的宿主代码提供读取入口。玩家可以在「设置 → 酒馆插件」里停用插件；停用后它已经保存的数据保留。
 
 ## 做小游戏（战斗、地图、小游戏界面）
 

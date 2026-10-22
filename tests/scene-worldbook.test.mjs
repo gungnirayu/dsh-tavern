@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 import { createSceneWorldbooks, bindSceneWorldbook, sceneWorldbookBinding } from '../tavern-plugin/lib/domain/scene-worldbook.js'
-import { createSceneReferences } from '../tavern-plugin/lib/domain/scene-references.js'
 import { sceneTarget } from '../tavern-plugin/lib/domain/scene-illustration.js'
 
 async function fixture(t) {
@@ -35,21 +34,6 @@ test('opening swipes retain their archive; rewritten bodies and missing/corrupt 
   await store.remove('scene-images/worldbooks/' + ref.digest + '.json')
   assert.match((await api.read(ref)).unavailable, /缺失/)
   assert.equal(await api.read({ version: 1, digest: '../../elsewhere' }), null)
-})
-
-test('conditional reference variants require current scene evidence, not old history or an unexamined regex', async t => {
-  const { api } = await fixture(t)
-  const worldBook = book('林岚的夜晚形态。')
-  Object.assign(worldBook.view.entries[0], { selective: true, secondaryKeys: ['夜晚'], selectiveLogic: 0 })
-  const archived = await api.read(await api.capture({ worldBook }))
-  const read = (text, worldbook = archived) => createSceneReferences({ worldbook, target: { turn: 3 }, sources: [
-    { id: 'target', text }, { id: 'history', text: '上一轮是夜晚。' }
-  ] }).read({ query: '林岚' })
-  assert.equal(read('林岚站在白天的车站。').sources.length, 0)
-  assert.equal(read('林岚站在夜晚的车站。').sources.length, 1)
-  worldBook.view.entries[0].secondaryKeys = ['/夜晚/']
-  const unsupported = await api.read(await api.capture({ worldBook }))
-  assert.equal(read('林岚站在夜晚的车站。', unsupported).sources.length, 0)
 })
 
 test('only the latest turns keep their snapshots; shared snapshots and entries stay while any game lists them', async t => {

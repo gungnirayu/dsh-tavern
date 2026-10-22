@@ -9,7 +9,7 @@ const releaseSequence = Number(process.argv[3])
 if (!/^[0-9a-f]{40}$/i.test(revision)) throw new Error('A full Git commit SHA is required')
 if (!Number.isSafeInteger(releaseSequence) || releaseSequence <= 0) throw new Error('A positive release sequence is required')
 
-const entries = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml', 'install.ps1', 'install.sh', 'bin', 'config', 'presets', 'patches', 'tavern-plugin']
+const entries = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml', 'install.ps1', 'install.sh', 'android', 'bin', 'config', 'presets', 'patches', 'tavern-plugin']
 const files = []
 
 async function collect(relative) {

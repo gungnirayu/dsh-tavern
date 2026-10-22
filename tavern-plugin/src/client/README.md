@@ -6,6 +6,7 @@
 - `runtime/`：Helper、脚本执行、会话生命周期、宿主挂载和消息 iframe 生命周期。
 - `ui/`：错误中心和消息展示。
 - `modules/` 及本目录其他文件：已有的独立工厂、共享算法和浏览器兼容实现。
+  `modules/conversation-settings.js` 独立管理本局设置，显式接收 RPC、视图通知与共享设置面板。
 
 `node bin/build-tavern-client.mjs` 从 `main.js` 递归展开 `@include`，生成
 `tavern-plugin/lib/client.js`。include 路径始终相对于本目录；

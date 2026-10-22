@@ -37,3 +37,30 @@ test('生产通信模块校验窗口与token，拒绝伪造回复并在更新上
   receive({ source: parent, data: { ...response, requestId: sent[1].requestId, ok: false, error: 'revision conflict' } })
   await rejection
 })
+
+test('上下文同步未完成时探测照常应答、事件仍等待；同步失败给出明确失败回执', async () => {
+  let receive, release, fail
+  const sent = [], events = []
+  const parent = { postMessage: message => sent.push(message) }
+  helperClient.createTavernHelperTransport({ parent, token: 't', copy: structuredClone, identity: () => ({}),
+    listen: listener => { receive = listener }, onEvent: value => events.push(value.type),
+    onContext: () => new Promise((resolve, reject) => { release = resolve; fail = reject }) })
+  const message = (type, extra) => receive({ source: parent, data: { token: 't', type: 'dsh-tavern-helper-' + type, eventId: 'e1', ...extra } })
+  message('context')
+  message('event', { name: 'CHAT_CHANGED', args: [1] })
+  message('event-query'); message('event-ack'); message('event-query', { eventId: 'lost' })
+  await tick()
+  assert.deepEqual(events, ['dsh-tavern-helper-event-ack', 'dsh-tavern-helper-event-query'], '只有事件本身等待上下文')
+  assert.deepEqual(sent.map(x => [x.type, x.phase]), [['dsh-tavern-helper-event-state', 'queued']], '排队中的事件回报存活，不触发重发')
+  release(); await tick()
+  assert.equal(events.at(-1), 'dsh-tavern-helper-event')
+
+  message('context'); message('event', { eventId: 'e2', args: [2] })
+  fail(new Error('读取失败')); await tick()
+  const receipt = sent.at(-1)
+  assert.equal(receipt.type, 'dsh-tavern-helper-event-complete')
+  assert.equal(receipt.eventId, 'e2')
+  assert.equal(receipt.errorCode, 'TAVERN_HELPER_CONTEXT_FAILED')
+  assert.match(receipt.error, /读取失败/)
+  assert.equal(events.filter(x => x === 'dsh-tavern-helper-event').length, 1, '没有上下文不执行处理器')
+})

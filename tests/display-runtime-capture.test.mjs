@@ -1,13 +1,12 @@
-import { projectDisplayRuntimeState } from '../tavern-plugin/lib/domain/chat-session-state.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import vm from 'node:vm'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createChatPersistence } from '../tavern-plugin/lib/domain/chat-persistence.js'
-import { createDisplayRuntimeStore, displayRuntimeReceipt } from '../tavern-plugin/lib/domain/display-runtime-store.js'
+import { createDisplayRuntimeCapture } from '../tavern-plugin/lib/domain/display-runtime-capture.js'
+import { createDisplayRuntimeStore } from '../tavern-plugin/lib/domain/display-runtime-store.js'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 
 async function harness(t) {
@@ -19,18 +18,12 @@ async function harness(t) {
     backgroundConfigVersion: 1, conversationFeaturesVersion: 1, updatedAt: Date.now(),
     messages: Array.from({ length: 459 }, (_, turn) => ({ role: 'assistant', turn: turn + 1,
       text: `story ${turn}`, variables: { stat_data: { gold: 10, payload: 'history'.repeat(1000) } } })) })
-  const source = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-  const body = source.slice(source.indexOf('  function cleanRuntimeUrl('), source.indexOf('  const tavernScriptHostAdapter ='))
   const hooks = { beforePatch: async () => {} }
   const displayRuntimeStore = createDisplayRuntimeStore({ store: createProfileDataStore({ dataRoot: root }) })
-  const capture = vm.runInNewContext(`(function(){${body};return captureDisplayRuntime})()`, {
-    str: value => String(value ?? ''), groupOfMode: () => 'play',
+  const capture = createDisplayRuntimeCapture({
     chatForSession: () => persistence.read('chat'), readSessionMap: async () => ({ session: 'chat' }),
-    chatPersistence: persistence,
-    updateChat: (...args) => persistence.update(...args),
-    patchChat: async (...args) => { await hooks.beforePatch(); return persistence.patch(...args) },
-    displayRuntimeStore, displayRuntimeReceipt,
-    projectDisplayRuntimeState, Date, Math, Object, Array, Number, JSON
+    chatPersistence: persistence, displayRuntimeStore,
+    patchChat: async (...args) => { await hooks.beforePatch(); return persistence.patch(...args) }
   })
   return { records, persistence, capture, hooks, root, displayRuntimeStore }
 }

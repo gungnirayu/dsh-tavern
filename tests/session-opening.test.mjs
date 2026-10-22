@@ -53,7 +53,9 @@ for (const method of ['saveChat', 'setChatMessage', 'swipe.to']) test('正式首
   assert.equal(starts, 1)
   assert.equal(opened, 'new-session')
   assert.equal(created.preparation.openingId, 'alternate:0')
-  assert.equal(created.preparation.worldbookSnapshot.document.entries[0].enabled, true)
+  // The new game follows the library instead of carrying its own copy.
+  assert.equal(created.preparation.worldbookSnapshot, undefined)
+  assert.equal(created.preparation.worldbook.document.entries[0].enabled, true)
   assert.equal(created.preparation.sourceSessionId, 'old-session')
   assert.deepEqual(chat, original)
 })

@@ -3,6 +3,7 @@ import {readFile,writeFile,readdir} from 'node:fs/promises'
 import {join} from 'node:path'
 import {parseNativeSessionLog} from './native-session-log.mjs'
 import {Session} from '../fixtures/dsh-session-host.mjs'
+import {currentSessionLogs} from './session-files.mjs'
 export async function openingUpdateChecks({page,step,savedChat,data,output,report,root}){
  const state=text=>JSON.parse(text.match(/<initvar>([\s\S]*?)<\/initvar>/)[1])
  const file=join(data,'resources/cards/e2e.json'),doc=JSON.parse(await readFile(file,'utf8'))
@@ -24,9 +25,8 @@ export async function openingUpdateChecks({page,step,savedChat,data,output,repor
   assert.equal(after.messages.length,1)
   const directory=join(root,'profile-data/tavern/sessions')
   let verified=false
-  for(const file of await readdir(directory,{recursive:true})){
-   if(!file.endsWith('session.v3.jsonl.zstd'))continue
-   const parsed=parseNativeSessionLog(await readFile(join(directory,file)))
+  for(const {path:file} of await currentSessionLogs(directory)){
+   const parsed=parseNativeSessionLog(await readFile(file))
    if(parsed.header.id!==after.sessionId)continue
    const native=Session.create(after.sessionId,parsed.events,parsed.header)
    const texts=native.surface.nodes.map(seq=>parsed.events.find(event=>event.seq===seq)).filter(event=>event?.type==='assistant/message').flatMap(event=>event.data.message.content).filter(block=>block.type==='text').map(block=>block.text)

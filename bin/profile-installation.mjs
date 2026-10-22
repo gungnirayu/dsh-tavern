@@ -1,4 +1,6 @@
+import officialDesktopRuntime from './official-desktop-runtime.cjs'
 import { beginDesktopProfileInstallation } from './desktop-profile-installation.mjs'
+import { ensureInitialTavernShortcut } from '../tavern-plugin/packages/dsh-profile-bridge/lib/shortcut.mjs'
 import { importUserHome } from './import-user-home.mjs'
 import { randomUUID } from 'node:crypto'
 import installationState from './installation-state.cjs'
@@ -15,7 +17,9 @@ import { extractDshVersion, assertCompatibleDshVersion, dshCompatibilityNotice }
 import { patchThemeFontLimit } from './theme-font-limit.mjs'
 import { patchChatAnswerStep } from './chat-answer-step-patch.mjs'
 import { installPluginDependencies, resolveHostDependencies } from './plugin-dependencies.mjs'
+import { installBundledSceneImagePlugin } from './bundled-scene-image-plugin.mjs'
 import { isAsarPath } from './desktop-host-paths.mjs'
+import { repairDirectoryLinksSync } from './portable-fs.mjs'
 import { migrateLegacyTavernData, resolveTavernDataRoot } from '../tavern-plugin/lib/domain/tavern-data.js'
 import { ensureUserExtensions } from '../tavern-plugin/lib/domain/user-extensions.js'
 import { beginProfileConfigurationUpdate, loadProfileManifest, mergeProfileManifest, prepareProfilePatch, prepareProfileWorkspace, syncProfileDependencyPatches } from './profile-configuration.mjs'
@@ -300,6 +304,19 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
 
     const hostDependencies = await installPluginDependencies({ pluginDirectory: path.join(SOURCE_ROOT, 'tavern-plugin'), dsh, host, run: runInstall })
     for (const dependency of hostDependencies) console.log(`复用当前 DSH 依赖：${dependency.name} ${dependency.version}`)
+
+    // 安装内置固定版本的剧情生图插件：只读发行包里随附的副本，全程不联网、不拉 latest。
+    // 已装同一插件的旧版时就地升级代码、保留数据；更新的版本、别的来源和残缺目录不动。
+    // 失败不阻断 Tavern 安装 —— 插件装不上只是少了接管方，Tavern 本身照常可用。
+    try {
+      const bundledPlugin = installBundledSceneImagePlugin({ sourceRoot: SOURCE_ROOT, dataRoot, profileDir: PROFILE_DIR })
+      if (bundledPlugin.action === 'installed') console.log(`已内置剧情生图插件 ${bundledPlugin.version}：${bundledPlugin.target}`)
+      else if (bundledPlugin.action === 'upgraded') console.log(`已把剧情生图插件从 ${bundledPlugin.installedVersion} 升级到 ${bundledPlugin.version}：${bundledPlugin.target}`)
+      else console.log(`内置剧情生图插件：${bundledPlugin.reason || bundledPlugin.action}`)
+      if (bundledPlugin.hint) console.warn('[Tavern 插件] ' + bundledPlugin.hint)
+    } catch (error) {
+      console.warn('[Tavern 插件] 内置剧情生图插件安装失败（不影响 Tavern 使用）：' + (error?.message || error))
+    }
     const configuration = prepareProfileConfiguration(host, dshVersion)
     const transaction = await beginProfileConfigurationUpdate({
       profileDir: PROFILE_DIR,
@@ -313,6 +330,11 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
       const workspaceText = prepareProfileWorkspace(readFileSync(path.join(SOURCE_ROOT, 'pnpm-workspace.yaml'), 'utf8'), configuration.manifest)
       writeFileSync(path.join(PROFILE_DIR, 'pnpm-workspace.yaml'), workspaceText)
       syncProfileDependencyPatches({ sourceRoot: SOURCE_ROOT, profileDir: PROFILE_DIR, workspaceText })
+      // pnpm keeps an existing link whose target text matches, so untraversable Windows links
+      // (they stop the desktop host at startup) must be replaced before it runs.
+      for (const directory of [PROFILE_DIR, bridge?.desktopStage].filter(Boolean)) {
+        for (const link of repairDirectoryLinksSync(path.join(directory, 'node_modules'))) console.log(`已修复无法访问的依赖链接：${link}`)
+      }
       // This generated profile changes dependencies and patch settings on upgrade.
       // Its previous lockfile is not the source repository's frozen lockfile.
       await runInstall('pnpm', ['install', '--no-frozen-lockfile'], { cwd: PROFILE_DIR })
@@ -363,10 +385,18 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
     runtime?.commit()
     const receipt = await recordInstallationReceipt({ sourceRoot: SOURCE_ROOT, dshHome: DSH_ROOT, host, attemptId })
     bridge?.commit()
+    if (host === 'desktop') {
+      try {
+        const shortcut = ensureInitialTavernShortcut({ paths: { home: DSH_ROOT, profilesDir: path.join(DSH_ROOT, 'profiles') }, runner: pinnedDesktopDsh(host)?.executable || officialDesktopRuntime.discover() })
+        if (!shortcut.skipped) console.log(`桌面快捷方式已就绪：${shortcut.path}`)
+      } catch (error) {
+        console.warn(`未能添加桌面快捷方式，可稍后在设置中手动添加：${error?.message || error}`)
+      }
+    }
     console.log('DSH Tavern 已安装。')
     console.log(host === 'cli' ? `已安装独立 DSH ${dshVersion}：${CLI_RUNTIME_ROOT}；不使用全局 DSH。` : `已复用当前 DSH ${dshVersion} 的本地依赖；未升级或降级宿主。`)
     if (host === 'desktop') {
-      console.log(`请重启桌面版（DeepSeek Harness 或 DSH NEXT），酒馆已安装到 ${path.basename(PROFILE_DIR)} 配置；原 Tavern 数据目录保持不变。`)
+      console.log(`请重启官方桌面版 DeepSeek Harness，酒馆已安装到 ${path.basename(PROFILE_DIR)} 配置；原 Tavern 数据目录保持不变。`)
     } else if (host === 'android') {
       console.log('Android Tavern Profile 已配置。')
     } else {

@@ -11,6 +11,7 @@ import { createBoundedHistory } from '../tavern-plugin/lib/domain/bounded-histor
 import { createTurnOrchestrator } from '../tavern-plugin/lib/domain/turn-orchestration.js'
 import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.js'
 import { createForegroundFrameBuilder } from '../tavern-plugin/lib/domain/agent-input-frame.js'
+import { replyProseProblems } from '../tavern-plugin/lib/domain/reply-prose.js'
 
 function history(count, variablesAt) {
   const messages = []
@@ -90,6 +91,7 @@ for (const [name, variablesAt] of [['最近楼层有变量', () => true], ['变�
     assert.deepEqual(comparable(left), comparable(right))
     const expected = variablesAt(120) ? 120 : variablesAt(3) ? 3 : undefined
     assert.equal(left.messages.at(-1).variables[0].stat_data?.hp, expected)
+    assert.deepEqual(replyProseProblems(left.messages.at(-1), { regexScripts: [] }), [])
   })
 }
 

@@ -36,6 +36,23 @@ export function nativeStoryTurns(session) {
 }
 
 /**
+ * Whether the native turn that just ended carries a model's reply: what a missed record
+ * (#196) would be. Tavern's own turns — a rollback, its undo, a body edit, a repair —
+ * only replace the surface or append copies naming their round; they write the save
+ * around them and are compared once both writes have landed. Reads that turn only.
+ */
+export function turnRepliedByModel(events, turn) {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event?.type === 'turn/start' && Number(event.data?.turn) === Number(turn)) return false
+    if (event?.type !== 'assistant/message' || event.surfaceOp !== 'append' || Number(event.data?.turn) !== Number(turn)) continue
+    const source = event.data?.message?.source
+    if (source?.kind === 'model' && source.provider !== 'dsh-tavern' && !Number.isSafeInteger(source.tavernStoryTurn) && text(event.data.message)) return true
+  }
+  return false
+}
+
+/**
  * Compare the latest story rounds of the save with the native surface.
  * `storyTurns` are the save's player rounds (non-greeting replies) in order;
  * it may be only the latest part of a long save. The native side may be

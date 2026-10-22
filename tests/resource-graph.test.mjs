@@ -6,7 +6,7 @@ import { createResourceGraph } from '../tavern-plugin/lib/domain/resource-graph.
 function harness(fault) {
   const resourcePaths = new Set(['cards/old.json'])
   let operation = null
-  let index = { chats: [{ id: 'chat-1', cardPath: 'cards/old.json' }] }
+  let index = { chats: [{ id: 'chat-1', cardPath: 'cards/old.json', mode: 'card' }] }
   let chat = {
     id: 'chat-1',
     cardPath: 'cards/old.json',
@@ -32,8 +32,7 @@ function harness(fault) {
       async readIndex() { return structuredClone(index) },
       async updateIndex(updater) { const next = await updater(await this.readIndex()); if (next !== undefined) await this.writeIndex(next); return next },
       async writeIndex(value) { index = structuredClone(value) },
-      async readChat() { return structuredClone(chat) },
-      async writeChat(value) { chat = structuredClone(value) }
+      async updateRefs(id, mutate) { const next = await mutate(structuredClone(chat)); chat = structuredClone(next) }
     },
     operations: {
       async read() { return structuredClone(operation) },
@@ -76,4 +75,69 @@ test('资源删除后崩溃时，重启清理 Chat 中的旧引用', async funct
   assert.deepEqual(app.organizationMoves, [['cards/old.json', null]])
   assert.deepEqual(app.snapshot().chat.workspace.sourcePaths, [])
   assert.deepEqual(app.snapshot().chat.workspace.mountedResources, [])
+})
+
+test('删除绑定资源在写入前被拒绝后清理操作日志，下一次资源操作不被阻塞', async () => {
+  const app = harness()
+  app.options.resources.remove = async () => { throw Object.assign(new Error('resource still bound'), { code: 'DSH_TAVERN_RESOURCE_BOUND' }) }
+  await assert.rejects(app.graph.remove('materials/bound.txt', 'source'), /still bound/)
+  assert.equal(app.snapshot().operation, null)
+  await app.graph.rename('cards/old.json', 'new.json')
+  assert.deepEqual(app.snapshot().resourcePaths, ['cards/new.json'])
+})
+
+test('改名在资源文件改好后即返回，存档引用在后台更新，下一次资源操作等它完成', async () => {
+  const app = harness()
+  app.options.chats.writeIndex({ chats: [{ id: 'chat-1', cardPath: 'cards/other.json', mode: 'card' }] })
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const updateRefs = app.options.chats.updateRefs
+  app.options.chats.updateRefs = async function (...args) { await gate; return await updateRefs.apply(this, args) }
+  const graph = createResourceGraph(app.options)
+
+  assert.deepEqual(await graph.rename('cards/old.json', 'new.json'), { kind: 'card', path: 'cards/new.json' })
+  assert.deepEqual(app.snapshot().resourcePaths, ['cards/new.json'])
+  assert.equal(app.snapshot().chat.cardPath, 'cards/old.json')
+
+  let removed = false
+  const removal = graph.remove('cards/new.json', 'card').then(() => { removed = true })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(removed, false)
+
+  release()
+  await removal
+  await graph.idle()
+  assert.equal(app.snapshot().operation, null)
+  assert.deepEqual(app.snapshot().resourcePaths, [])
+  assert.equal(app.snapshot().chat.cardPath, 'cards/new.json')
+  assert.deepEqual(app.snapshot().chat.workspace.sourcePaths, [])
+})
+
+test('后台更新存档引用失败时只记日志，操作日志保留到下次继续', async () => {
+  const app = harness()
+  app.options.chats.writeIndex({ chats: [{ id: 'chat-1', cardPath: 'cards/other.json', mode: 'card' }] })
+  const warnings = []
+  const updateRefs = app.options.chats.updateRefs
+  app.options.chats.updateRefs = async () => { throw new Error('disk busy') }
+  const graph = createResourceGraph(Object.assign({}, app.options, { logger: { warn: (...args) => warnings.push(args.join(' ')) } }))
+
+  await graph.rename('cards/old.json', 'new.json')
+  await graph.idle()
+  assert.match(warnings.join('\n'), /disk busy/)
+  assert.equal(app.snapshot().operation.kind, 'rename')
+
+  app.options.chats.updateRefs = updateRefs
+  await createResourceGraph(app.options).recover()
+  assert.equal(app.snapshot().operation, null)
+  assert.deepEqual(app.snapshot().chat.workspace.sourcePaths, ['cards/new.json'])
+})
+
+test('在改名卡片上游玩的存档，改名返回前已改好卡片路径', async () => {
+  const app = harness()
+  const graph = createResourceGraph(app.options)
+  await graph.rename('cards/old.json', 'new.json')
+  assert.equal(app.snapshot().chat.cardPath, 'cards/new.json')
+  assert.equal(app.snapshot().index.chats[0].cardPath, 'cards/new.json')
+  await graph.idle()
+  assert.equal(app.snapshot().operation, null)
 })

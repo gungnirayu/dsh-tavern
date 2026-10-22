@@ -25,3 +25,19 @@ test('entering settlement cancels a pending retry and blocks a running callback 
   assert.equal(runs, 3, 'unblocking the same revision still wakes work')
   release({}); await Promise.resolve()
 })
+
+test('回合进行中写入的显示同步先暂缓，回合结束放行后只跑一次', async () => {
+  const runs = []
+  const sync = createServerTemplateSync({ delayMs: 1, run: async id => { runs.push(id) } })
+  sync.schedule('a', 1, { blocked: true })
+  sync.schedule('a', 2, { blocked: true })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(runs, [])
+  sync.release('a')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(runs, ['a'])
+  sync.release('a')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(runs, ['a'])
+  sync.dispose()
+})

@@ -1,4 +1,5 @@
-import { foregroundSuppressedTurns, clearFailedTurnSurface, locateRollbackSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { clearFailedTurnSurface, locateRollbackSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { planTranscriptRows } from '../tavern-plugin/lib/domain/transcript-row-plan.js'
 import { Session } from './fixtures/dsh-session-host.mjs'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import assert from 'node:assert/strict'
@@ -27,17 +28,19 @@ function row(kind, turn, alpha) {
 function harness(rows) {
   rows.forEach((row, index) => { row.previousElementSibling = rows[index - 1] ?? null })
   const document = { querySelectorAll(selector) {
-    assert.ok(['[data-chat-flow-kind="turn-tail"]', '[data-chat-flow-kind="context"]', '[data-chat-turn]'].includes(selector))
-    if (selector === '[data-chat-turn]') return rows.filter(row => row.getAttribute('data-chat-turn'))
+    assert.ok(['[data-chat-flow-kind]', '[data-chat-flow-kind="context"]'].includes(selector))
+    if (selector === '[data-chat-flow-kind]') return rows.filter(row => row.getAttribute('data-chat-flow-kind'))
     return rows.filter(row => selector === '[data-chat-flow-kind="' + row.getAttribute('data-chat-flow-kind') + '"]')
   } }
-  const projection = client.createTurnHistoryProjection({ root: () => document, storage: () => ({ getItem: () => '{}' }) })
+  const projection = client.createTurnHistoryProjection({ root: () => document, storage: () => ({ removeItem() {} }) })
   return {
     restore: view => projection.restored('test-session', view),
-    applySuppressedDshTurns: turns => projection.apply('test-session', turns),
-    applyRegeneration: (turns, regeneratedDshTurns) => projection.apply('test-session', turns, regeneratedDshTurns)
+    apply: turns => projection.apply('test-session', { turns, from: null }),
+    // Turns that draw nothing (rolled back, void).
+    hideTurns: turns => projection.apply('test-session', { turns: Object.fromEntries(turns.map(turn => [turn, { input: 0, reply: 0 }])), from: null })
   }
 }
+const planView = turns => ({ transcriptTurns: Object.fromEntries(turns.map(turn => [turn, { input: 0, reply: 0 }])), transcriptFrom: null })
 
 for (const alpha of [false, true]) {
   test(`${alpha ? 'alpha' : 'main'} 回退隐藏整轮，包含用户输入之前的系统提示词`, () => {
@@ -45,10 +48,10 @@ for (const alpha of [false, true]) {
     const removed = ['system-prompt', 'user', 'turn-process', 'context', 'assistant-step', 'turn-tail'].map(kind => row(kind, 6, alpha))
     const after = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 8, alpha))
     const projection = harness([...before, ...removed, ...after])
-    projection.applySuppressedDshTurns([6])
+    projection.hideTurns([6])
     assert.ok(removed.every(row => row.style.display === 'none'), 'system prompt must disappear with the rolled-back turn')
     assert.ok([...before, ...after].every(row => row.style.display === ''), 'adjacent turns remain unchanged')
-    projection.applySuppressedDshTurns([6])
+    projection.hideTurns([6])
     assert.ok(removed.every(row => row.style.display === 'none'), 'refresh/repeated projection remains stable')
   })
 
@@ -56,17 +59,17 @@ for (const alpha of [false, true]) {
     const pager = { style: { display: '' }, previousElementSibling: null, getAttribute: () => null, querySelector: () => null }
     const suppressed = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 9, alpha))
     const projection = harness([pager, ...suppressed])
-    projection.applySuppressedDshTurns([9])
+    projection.hideTurns([9])
     assert.ok(suppressed.every(row => row.style.display === 'none'))
     assert.equal(pager.style.display, '', '分页控件保持可见')
     pager.style.display = 'flex'
-    projection.restore({ undoneRollback: { turn: 9 }, suppressedDshTurns: [] })
+    projection.restore(planView([]))
     assert.equal(pager.style.display, 'flex', '恢复回合不改写分页控件')
   })
 
   test(`${alpha ? 'alpha' : 'main'} 首轮或无用户输入的重生成轮也能完整隐藏`, () => {
     const removed = ['system-prompt', 'context', 'assistant-step', 'turn-tail'].map(kind => row(kind, 1, alpha))
-    harness(removed).applySuppressedDshTurns([1])
+    harness(removed).hideTurns([1])
     assert.ok(removed.every(row => row.style.display === 'none'))
   })
 }
@@ -78,10 +81,10 @@ for (const alpha of [false, true]) {
     // 重放把同一段输入重新提交为一个新回合，不能被失败轮次的隐藏波及。
     const replayed = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 5, alpha))
     const projection = harness([...committed, ...failed, ...replayed])
-    projection.applySuppressedDshTurns([4])
+    projection.hideTurns([4])
     assert.ok(failed.every(row => row.style.display === 'none'), '失败轮次的残留正文与错误行整轮隐藏')
     assert.ok([...committed, ...replayed].every(row => row.style.display === ''), '已完成剧情与重放出的新回合保持可见')
-    projection.applySuppressedDshTurns([4])
+    projection.hideTurns([4])
     assert.ok(failed.every(row => row.style.display === 'none'), '重复投影保持稳定')
   })
 }
@@ -92,7 +95,8 @@ for (const alpha of [false, true]) {
     const regenerated = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 3, alpha))
     const projection = harness([...original, ...regenerated])
 
-    projection.applyRegeneration([3], { '2': 3 })
+    // Round 2 regenerated: its input stays at 2, its reply is drawn by attempt 3.
+    projection.apply({ 2: { input: 1, reply: 0 }, 3: { input: 0, reply: 1, story: 2 } })
 
     assert.equal(original[0].style.display, '', '原玩家输入继续可见')
     assert.ok(original.slice(1).every(item => item.style.display === 'none'), '旧正文与旧 turn tail 被隐藏')
@@ -112,7 +116,8 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 中断残�
   }
   // Same event sequence as the report: aborted reply -> failed-turn cleanup -> rollback.
   clearFailedTurnSurface({ session, turn: 3 })
-  assert.deepEqual(foregroundSuppressedTurns({}, sessionEvents(session)), [], "停止本身保留半截正文，只有回退才隐藏")
+  const twoRounds = [1, 2].flatMap(turn => [{ role: 'user', turn }, { role: 'assistant', turn }])
+  assert.equal(planTranscriptRows({ chat: { messages: twoRounds }, events: sessionEvents(session) })['3'], undefined, '停止本身保留半截正文，只有回退才隐藏')
   const rollback = locateRollbackSurface({ events: sessionEvents(session), nodes: session.surface.nodes })
   assert.equal(rollback.turn, 2)
   session.append('assistant/message', { turn: 2, step: 1, stream: [], message: { id: 'rollback', role: 'assistant', source: model, content: [] } }, {
@@ -124,8 +129,9 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 中断残�
     const rolled = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 2, alpha))
     const interrupted = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 3, alpha))
     const projection = harness([...kept, ...rolled, ...interrupted])
-    const viewTurns = foregroundSuppressedTurns({ suppressedDshTurns: [2] }, sessionEvents(session))
-    projection.applySuppressedDshTurns(viewTurns)
+    // The save after the rollback holds round 1 only.
+    const plan = planTranscriptRows({ chat: { messages: [{ role: 'user', turn: 1 }, { role: 'assistant', turn: 1 }] }, events: sessionEvents(session) })
+    projection.apply(plan)
     assert.ok(!JSON.stringify(session.deriveMessages()).includes('中断时已流出的半截正文'), '模型上下文已清理')
     assert.ok(rolled.every(item => item.style.display === 'none'), '已提交回合已回退')
     assert.ok(interrupted.every(item => item.style.display === 'none'), '中断的半截正文不应留在界面')
@@ -137,8 +143,8 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 撤销回�
   const older = ['user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 3, alpha))
   const latest = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 4, alpha))
   const projection = harness([...older, ...latest])
-  projection.applySuppressedDshTurns([3, 4])
-  projection.restore({ undoneRollback: { turn: 4 }, suppressedDshTurns: [3] })
+  projection.hideTurns([3, 4])
+  projection.restore(planView([3]))
   assert.ok(older.every(item => item.style.display === 'none'))
   assert.ok(latest.every(item => item.style.display === ''))
 })
@@ -146,12 +152,12 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 撤销回�
 for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 撤销后旧显示回调迟到，最新投影仍能恢复正文`, () => {
   const latest = ['system-prompt', 'user', 'assistant-step', 'turn-tail'].map(kind => row(kind, 6, alpha))
   const projection = harness(latest)
-  projection.applySuppressedDshTurns([6])
-  projection.restore({undoneRollback: {turn: 6}, suppressedDshTurns: []})
+  projection.hideTurns([6])
+  projection.restore(planView([]))
   // A MutationObserver callback still holding the old view can arrive before
   // React installs the effect for the restored view.
-  projection.applySuppressedDshTurns([6])
-  projection.applySuppressedDshTurns([])
+  projection.hideTurns([6])
+  projection.hideTurns([])
   assert.ok(latest.every(item => item.style.display === ''), '最新投影必须撤销旧的隐藏样式')
 })
 
@@ -164,7 +170,7 @@ for (const alpha of [false, true]) test(`${alpha ? 'alpha' : 'main'} 撤销后�
   body.textContent = 'dsh-tavern-surface-restore'
   const projection = harness([body, internal, normal])
   for (let i = 0; i < 2; i++) {
-    projection.restore({ undoneRollback: { turn: 9 }, suppressedDshTurns: [] })
+    projection.restore(planView([]))
     assert.equal(internal.style.display, 'none')
     assert.equal(normal.style.display, '')
     assert.equal(body.style.display, '')
@@ -175,13 +181,13 @@ test('重生成尾部先挂载时，不能隐藏相邻轮次的玩家输入或�
   const previous = ['user', 'assistant-step'].map(kind => row(kind, 2, true))
   const current = ['assistant-step', 'turn-tail'].map(kind => row(kind, 6, true))
   const projection = harness([...previous, ...current])
-  projection.applyRegeneration([4, 5, 6], { '3': 6 })
+  projection.apply({ 3: { input: 1, reply: 0 }, 4: { input: 0, reply: 0 }, 5: { input: 0, reply: 0 }, 6: { input: 0, reply: 1, story: 3 } })
   assert.ok(previous.every(item => item.style.display === ''), '缺少本轮 user 和前轮 tail 时不能越过明确轮次边界')
 })
 
 test('隐藏旧正文不能越过明确轮次边界，重生成正文尚未挂载也保留前轮', () => {
   const previous = row('assistant-step', 2, true)
   const tail = row('turn-tail', 3, true)
-  harness([previous, tail]).applyRegeneration([6], { '3': 6 })
+  harness([previous, tail]).apply({ 3: { input: 1, reply: 0 }, 6: { input: 0, reply: 1, story: 3 } })
   assert.equal(previous.style.display, '')
 })

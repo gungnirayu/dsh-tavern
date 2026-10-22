@@ -13,8 +13,8 @@ const providers = () => [
 
 test('配音设置：选渠道、填 Key 后打开开关，开关跟着保存结果；失败时给出原因', async t => {
   let state = { enabled: false, provider: 'browser', providers: providers() }
-  const { page, calls } = await openTavernSettings(t, { sceneImages: false, section: 'dsh-tavern: speech settings section', respond(method, args) {
-    if (method === 'getTavernSettings') return { settings: { castPresentation: true, defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [], releaseCapabilities: { sceneImages: false } }
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: speech settings section', respond(method, args) {
+    if (method === 'getTavernSettings') return { settings: { castPresentation: true, defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [], releaseCapabilities: {} }
     if (method === 'getSpeechSettings') return state
     if (method === 'updateSpeechSettings') {
       if (args.enabled && !args.apiKey && args.provider === 'openai') throw new Error('还不能开启配音：请填写 API Key')
@@ -38,8 +38,8 @@ test('配音设置：选渠道、填 Key 后打开开关，开关跟着保存结
 
 test('配音设置：火山引擎的密钥格标成 Access Token，APP ID 跟着设置一起保存', async t => {
   let state = { enabled: false, provider: 'browser', providers: providers() }
-  const { page, calls } = await openTavernSettings(t, { sceneImages: false, section: 'dsh-tavern: speech settings section', respond(method, args) {
-    if (method === 'getTavernSettings') return { settings: { castPresentation: true, defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [], releaseCapabilities: { sceneImages: false } }
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: speech settings section', respond(method, args) {
+    if (method === 'getTavernSettings') return { settings: { castPresentation: true, defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [], releaseCapabilities: {} }
     if (method === 'getSpeechSettings') return state
     if (method === 'updateSpeechSettings') {
       state = { ...state, provider: args.provider, providers: state.providers.map(item => item.id === args.provider && args.apiKey ? { ...item, hasKey: true } : item) }

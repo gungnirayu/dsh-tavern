@@ -2,7 +2,7 @@ import { createImmutableTurnFields } from './freeze-json.js'
 import { createMvuReceiptIndex } from './mvu-receipt-index.js'
 import { copyJsonTree } from './copy-json-tree.js'
 import { copyLazyHistoryHeader } from './lazy-history-read.js'
-import { rollbackAvailability, hasRollbackMessages, failedTurnReplayAvailability, foregroundSuppressedTurns, supersededRegenerationErrorTurns, supersededRegenerationTurns, projectedReplyTurns } from './rollback-surface.js'
+import { rollbackAvailability, hasRollbackMessages, failedTurnReplayAvailability, foregroundSuppressedTurns, supersededRegenerationErrorTurns, supersededRegenerationTurns, projectedReplyTurns, regenerationInputTurns, keptPlayerInputTurns } from './rollback-surface.js'
 import { isRescuedHistoryMessage } from './chat-history-rescue.js'
 import { canUndoRollback } from './surface-restoration.js'
 import { failedErrorTurnStates } from './failed-error-visibility.js'
@@ -30,7 +30,7 @@ export function projectChatSessionState(chat, options = {}) {
   for (const key of ['id', 'sessionId', '_storageRevision', 'mode', 'cardPath', 'cardContextRevision',
     'backgroundConfigVersion', 'conversationFeaturesVersion', 'disabledWritingSkills', 'contextCompaction', 'updatedAt', 'timeline', 'candidateAgent',
     'cardName', 'requestMode', 'statusBarPlacement', 'statusSections', 'webSearchEnabled', 'candidates', 'taskMailbox', 'regenInProgress',
-    'settleError', 'scriptState', 'hiddenDshErrorTurns', 'suppressedDshTurns', 'replacingDshTurns', 'regeneratedDshTurns', 'tavernHelperLifecycleRevision']) {
+    'settleError', 'scriptState', 'hiddenDshErrorTurns', 'suppressedDshTurns', 'replacingDshTurns', 'regeneratedDshTurns', 'userInputEdits', 'tavernHelperLifecycleRevision']) {
     if (Object.hasOwn(chat, key)) selected[key] = chat[key]
   }
   if (chat.importHistory) selected.importHistory = {
@@ -116,6 +116,19 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
     }
     return [...turns].sort((left, right) => left - right)
   }
+  // The mapping feeds the cache key below, so it runs on every read: remember it per
+  // immutable log and surface, or a variable-only revision rescans the whole history.
+  const projectedCache = new WeakMap()
+  function projectedOf(events, nodes, generation) {
+    if (!Array.isArray(nodes) || !Array.isArray(events)) return new Map()
+    const frozen = Object.isFrozen(events) && Number.isSafeInteger(generation)
+    const stamp = frozen ? JSON.stringify([nodes.length, nodes[0], nodes.at(-1), generation]) : null
+    const known = frozen ? projectedCache.get(events) : undefined
+    if (known && known.stamp === stamp) return known.value
+    const value = projectedReplyTurns({ events, nodes })
+    if (frozen) projectedCache.set(events, { stamp, value })
+    return value
+  }
   function rollbackViewFields(chat, evidence = evidenceOf(chat.sessionId), changes) {
     const session = evidence.session, events = evidence.events
     const nodes = session?.surface?.nodes
@@ -125,7 +138,7 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
     // body — two replies for one round, and a reload cannot help because both
     // numbers are in the log. The projection event knows where the body really
     // is (it carries the story turn), so the log wins over the header here.
-    const projected = Array.isArray(nodes) && Array.isArray(events) ? projectedReplyTurns({ events, nodes }) : new Map()
+    const projected = projectedOf(events, nodes, session?.surface?.replaceGeneration)
     const savedMappings = normalizedMappings(chat, changes)
     // Reuse the shared object whenever the log agrees with the header: building a
     // fresh map on every read would defeat the shared-mapping cache.
@@ -161,11 +174,36 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
     // the rows it already built for them, so the page shows the old body next to
     // the new one until these turns are hidden. Read from the log, not from a
     // transient marker: a reload must hide them too.
-    const supersededTurns = Array.isArray(nodes) ? supersededRegenerationTurns({ events: evidence.events || [], nodes }) : []
+    const supersededTurns = Array.isArray(nodes) ? supersededRegenerationTurns({ events: evidence.events || [], nodes, keepTurns: Object.values(mappings || {}) }) : []
+    // Regeneration attempts, found by their input rather than by the number the save
+    // stored (a renumbering turn repair shifts that number onto the next turn). One
+    // still settling stays visible until its body is mapped: hiding it earlier would
+    // blank the round between generation and commit.
+    const shownTurns = new Set(Object.values(mappings || {}).map(Number))
+    const attemptTurns = regenerationInputTurns(evidence.events || [])
+      .filter(turn => shownTurns.has(turn) || chat.regenInProgress !== true)
+    const suppressedDshTurns = [...new Set([...foregroundSuppressedTurns(chat, evidence.events || []), ...attemptTurns])]
+      .filter(turn => !replacingTurns.includes(turn)).sort((left, right) => left - right)
+    // A failed input can be adopted by a retry: its native turn stays suppressed while
+    // the drawn body lives in another turn. Keep the player's nearest message visible
+    // for the last reply and for the attempt now running, so the page still shows what
+    // the round is answering. Older failed residue keeps the existing hiding rules.
+    const replyTurns = new Set(shownTurns)
+    for (const message of chat.messages || []) {
+      if (message?.role === 'assistant' && message.greeting !== true && Number(message.turn) > 0) replyTurns.add(Number(message.turn))
+    }
+    for (const turn of supersededTurns) replyTurns.delete(Number(turn))
+    for (const turn of replacingTurns) replyTurns.delete(Number(turn))
+    let openTurn = null
+    if (chat.regenInProgress === true) {
+      for (const event of evidence.events || []) if (event?.type === 'turn/start') openTurn = Number(event.data?.turn)
+    }
+    if (openTurn > 0) replyTurns.add(openTurn)
+    const keptInputTurns = keptPlayerInputTurns({ events: evidence.events || [], replyTurns: [...replyTurns], suppressed: suppressedDshTurns, openTurn })
     const result = {
       hiddenDshErrorTurns: chat.hiddenDshErrorTurns || [],
-      suppressedDshTurns: foregroundSuppressedTurns(chat, evidence.events || [])
-        .filter(turn => !replacingTurns.includes(turn)),
+      suppressedDshTurns,
+      keptInputTurns,
       replacingDshTurns: replacingTurns,
       supersededDshTurns: supersededTurns,
       regeneratedDshTurns: mappings,
@@ -253,7 +291,7 @@ export function projectDisplayRuntimeState(chat, requestedTurn) {
 export function projectChatBackgroundConfig(chat) {
   const selected = {}
   for (const key of ['id', 'sessionId', 'mode', 'backgroundConfigVersion', 'conversationFeaturesVersion',
-    'backgroundModelSelection', 'backgroundModelRevision', 'imageModelSelection', 'backgroundTasks', 'webSearchEnabled', 'sceneImagesEnabled', 'cardContextRevision']) {
+    'backgroundModelSelection', 'backgroundModelRevision', 'backgroundTasks', 'webSearchEnabled', 'cardContextRevision']) {
     if (Object.hasOwn(chat, key)) selected[key] = chat[key]
   }
   selected.backgroundSessionStatus = chat.timeline?.participants?.background?.status
@@ -283,7 +321,6 @@ export function projectSceneImageState(chat) {
     id: chat.id, sessionId: chat.sessionId, mode: chat.mode,
     backgroundConfigVersion: chat.backgroundConfigVersion,
     conversationFeaturesVersion: chat.conversationFeaturesVersion,
-    sceneImagesEnabled: chat.sceneImagesEnabled,
     messages: (chat.messages || []).map(message => ({
       role: message.role, turn: message.turn, greeting: message.greeting,
       text: message.text, sourceText: message.sourceText, swipeId: message.swipeId,

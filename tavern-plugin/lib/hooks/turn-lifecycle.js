@@ -6,6 +6,8 @@ import { prependSystemInstruction } from '../domain/system-append.js'
 import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/session-stable-prefix.js'
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
+import { turnRepliedByModel } from '../domain/story-alignment.js'
+import { sessionEvents } from '../domain/session-events.js'
 
 export function registerTurnLifecycleHooks({
   reconcileWhenIdle,
@@ -79,13 +81,14 @@ export function registerTurnLifecycleHooks({
 
   ctx.on('session/event', function (session, event) {
     if (!event || event.type !== 'turn/end') return
-    foregroundStrategies.endTurn(session.id)
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''
     foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason })
     // A turn whose record went missing (#196) is adopted before the player's next
-    // message, once the agent has gone idle; reconcile never blocks this hook.
-    setTimeout(() => { void reconcileWhenIdle?.(session.id) }, 0)
+    // message, once the agent has gone idle; reconcile never blocks this hook. Only after
+    // a model's reply: Tavern's own turns (rollback, undo, edit, repair) end between their
+    // native write and their save write, and reconciling there undoes them.
+    if (turnRepliedByModel(sessionEvents(session), event.data && event.data.turn)) setTimeout(() => { void reconcileWhenIdle?.(session.id) }, 0)
   })
 
   ctx.on('system-prompt/assemble', async function (_assembly, context, next) {

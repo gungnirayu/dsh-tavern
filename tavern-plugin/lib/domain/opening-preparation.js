@@ -1,5 +1,4 @@
 import { parseOpeningCommand } from './opening-command.js'
-import { worldbookContentDigest } from './worldbook-version.js'
 import { projectFullPromptTemplateState, applyFullPromptTemplateState } from './full-prompt-template-state.js'
 import { projectTavernHelperScripts } from './tavern-helper-scripts.js'
 import { mutateScriptPrompts } from './tavern-script-prompts.js'
@@ -14,8 +13,10 @@ import { helperGenerationHistory } from './helper-generation-prompts.js'
 
 const copy = value => structuredClone(value)
 
+const untraced = { stage: (_name, run) => run() }
+
 /** Private pre-game state; explicit plugin-setting saves use the profile store. */
-export function createOpeningPreparation({ readCard, worldBooks, generate, generateRaw, readRuntimeExtensions, extensionSettings, now = Date.now }) {
+export function createOpeningPreparation({ readCard, worldBooks, generate, generateRaw, readRuntimeExtensions, extensionSettings, now = Date.now, trace = untraced }) {
   const drafts = new Map()
   const generations = createHelperGenerationTasks()
   const lifetime = 2 * 60 * 60 * 1000
@@ -41,39 +42,48 @@ export function createOpeningPreparation({ readCard, worldBooks, generate, gener
       runtime: draft.runtimeEnabled ? { context: runtimeContext(draft), scripts: (draft.chat.mvu.enabled ? [{ id: '__dsh_official_mvu__', name: 'MVU', system: 'official-mvu', assetUrl: OFFICIAL_MVU_VERSION.assetUrl }] : []).concat(draft.helperScripts || []) } : null,
       worldbook: draft.document ? projectTavernHelperWorldbook(inspectWorldBookDocument(draft.document)) : null })
   }
+  async function createDraft(cardPath, settings = {}) {
+    for (const [id, draft] of drafts) if (now() - draft.touchedAt > lifetime) { generations.stopAll('opening:' + id); drafts.delete(id) }
+    if (drafts.size >= 64) throw new Error('打开的游戏准备页过多，请稍后重试')
+    const card = settings.card || await trace.stage('prepCard', () => readCard(cardPath))
+    if (!card) throw new Error('人物卡不存在')
+    const record = await trace.stage('prepWorldbook', () => worldBooks.bound(cardPath, card, settings.sourceChat))
+    const draft = { id: randomUUID(), cardPath, openings: cardOpeningChoices(card),
+      // inspect() already owns an independent copy of the document, and every
+      // edit path clones before writing, so the draft can use it directly.
+      document: record ? record.view.raw : null, source: record ? copy(record.source) : null,
+      worldBookView: record ? record.view : null, touchedAt: now() }
+    draft.sourceSessionId = settings.sourceChat?.sessionId || ''
+    draft.presetSnapshot = settings.sourceChat ? copy(settings.sourceChat.runtimePresetSnapshot || null) : undefined
+    draft.sourceLifecycleRevision = Number(settings.sourceChat?.tavernHelperLifecycleRevision) || 0
+    draft.card = copy(card)
+    draft.userName = settings.userName || settings.sourceChat?.macroState?.userName || '你'
+    const swipes = draft.openings.map(opening => opening.text)
+    draft.chat = { id: draft.id, cardPath, mode: 'story', mvu: { enabled: settings.runtime === true }, _storageRevision: 0,
+      macroState: { userName: draft.userName, local: {}, global: {} },
+      variables: {}, messages: [{ role: 'assistant', text: swipes[0], sourceText: swipes[0], greeting: true, turn: 1, swipeId: 0, swipes, variables: swipes.map(() => ({})) }] }
+    const extensions = settings.extensions || (readRuntimeExtensions ? await trace.stage('prepExtensions', () => readRuntimeExtensions(cardPath)) : {})
+    draft.characterVariables = copy(extensions.variables || {})
+    const projected = projectTavernHelperScripts(extensions.helperScripts)
+    draft.helperScripts = projected.scripts
+    draft.regexScripts = { global: extensions.globalRegexScripts || [], character: extensions.characterRegexScripts || extensions.regexScripts || [] }
+    draft.diagnostics = projected.diagnostics.concat(extensions.diagnostics || [])
+    draft.runtimeEnabled = projected.scripts.length > 0
+    draft.extensionSettings = extensionSettings ? await trace.stage('prepSettings', () => extensionSettings.read()) : {}
+    // Starting MVU must not replace another plugin's settings or its save baseline.
+    if (settings.runtime === true) draft.runtimeEnabled = true
+    draft.chat.sessionId = 'opening:' + draft.id
+    drafts.set(draft.id, draft)
+    return draft
+  }
   return {
+    // Plain greetings start from the draft id alone; projecting the card and the
+    // whole worldbook for a presentation nobody reads would run twice per start.
+    async begin(cardPath, settings = {}) {
+      return { id: (await createDraft(cardPath, settings)).id }
+    },
     async create(cardPath, settings = {}) {
-      for (const [id, draft] of drafts) if (now() - draft.touchedAt > lifetime) { generations.stopAll('opening:' + id); drafts.delete(id) }
-      if (drafts.size >= 64) throw new Error('打开的游戏准备页过多，请稍后重试')
-      const card = settings.card || await readCard(cardPath)
-      if (!card) throw new Error('人物卡不存在')
-      const record = await worldBooks.bound(cardPath, card, settings.sourceChat)
-      const draft = { id: randomUUID(), cardPath, openings: cardOpeningChoices(card),
-        document: record ? copy(record.view.raw) : null, source: record ? copy(record.source) : null, touchedAt: now() }
-      draft.libraryDigest = settings.sourceChat?.worldbookLibraryDigest ?? settings.sourceChat?.openingWorldbookSnapshot?.libraryDigest
-        ?? (settings.sourceChat?.openingWorldbookSnapshot ? undefined : worldbookContentDigest(record))
-      draft.sourceSessionId = settings.sourceChat?.sessionId || ''
-      draft.presetSnapshot = settings.sourceChat ? copy(settings.sourceChat.runtimePresetSnapshot || null) : undefined
-      draft.sourceLifecycleRevision = Number(settings.sourceChat?.tavernHelperLifecycleRevision) || 0
-      draft.card = copy(card)
-      draft.userName = settings.userName || settings.sourceChat?.macroState?.userName || '你'
-      const swipes = draft.openings.map(opening => opening.text)
-      draft.chat = { id: draft.id, cardPath, mode: 'story', mvu: { enabled: settings.runtime === true }, _storageRevision: 0,
-        macroState: { userName: draft.userName, local: {}, global: {} },
-        variables: {}, messages: [{ role: 'assistant', text: swipes[0], sourceText: swipes[0], greeting: true, turn: 1, swipeId: 0, swipes, variables: swipes.map(() => ({})) }] }
-      const extensions = settings.extensions || (readRuntimeExtensions ? await readRuntimeExtensions(cardPath) : {})
-      draft.characterVariables = copy(extensions.variables || {})
-      const projected = projectTavernHelperScripts(extensions.helperScripts)
-      draft.helperScripts = projected.scripts
-      draft.regexScripts = { global: extensions.globalRegexScripts || [], character: extensions.characterRegexScripts || extensions.regexScripts || [] }
-      draft.diagnostics = projected.diagnostics.concat(extensions.diagnostics || [])
-      draft.runtimeEnabled = projected.scripts.length > 0
-      draft.extensionSettings = extensionSettings ? await extensionSettings.read() : {}
-      // Starting MVU must not replace another plugin's settings or its save baseline.
-      if (settings.runtime === true) draft.runtimeEnabled = true
-      draft.chat.sessionId = 'opening:' + draft.id
-      drafts.set(draft.id, draft)
-      return present(draft)
+      return present(await createDraft(cardPath, settings))
     },
     templateState(id) {
       const draft = requireDraft(id), world = draft.card.name || 'opening'
@@ -179,16 +189,26 @@ export function createOpeningPreparation({ readCard, worldBooks, generate, gener
         throw new Error('世界书已被其他操作修改，请重新读取后重试')
       }
       const operations = replaceTavernHelperWorldbookOperations(view, entries)
-      draft.document = updateWorldBookDocument(draft.document, { operations }).document
+      const updated = updateWorldBookDocument(draft.document, { operations })
+      draft.document = updated.document
+      draft.worldBookView = updated.view
       return present(draft)
     },
     resolve(id, cardPath, openingId) {
       const draft = requireDraft(id)
       if (draft.cardPath !== cardPath) throw new Error('开局草稿与人物卡不匹配')
-      const selected = openingId || 'primary'
+      // No choice falls back to the first greeting the card has (an empty first_mes
+      // is skipped); a card with no greeting at all starts from a blank scene.
+      const selected = openingId || draft.openings[0]?.id || ''
       const selectedIndex = draft.openings.findIndex(opening => opening.id === selected)
-      if (selectedIndex < 0) throw new Error('人物卡开场白不存在')
-      return copy({ startCommand: draft.startCommand?.openingId === selected ? draft.startCommand : undefined, openingMessages: Object.fromEntries(draft.openings.map((opening,index)=>[opening.id,draft.chat.messages[0]?.swipes?.[index] ?? opening.text])), openingVariables: Object.fromEntries(draft.openings.map((opening, index) => [opening.id, draft.chat.messages[0]?.variables?.[index] || {}])), variables: draft.chat.variables || {}, messageVariables: draft.chat.messages[0]?.variables?.[selectedIndex] || {}, openingId: selected, sourceSessionId: draft.sourceSessionId, sourceLifecycleRevision: draft.sourceLifecycleRevision, worldbookSnapshot: { version: 1, libraryDigest: draft.libraryDigest, source: draft.source, document: draft.document } })
+      if (selectedIndex < 0 && selected !== '') throw new Error('人物卡开场白不存在')
+      // Nothing is cloned here: the start path clones the variables it installs
+      // and takes ownership of the document, so copying the whole world book a
+      // second and third time only duplicated a multi-megabyte read.
+      return { startCommand: draft.startCommand?.openingId === selected ? draft.startCommand : undefined, openingMessages: Object.fromEntries(draft.openings.map((opening,index)=>[opening.id,draft.chat.messages[0]?.swipes?.[index] ?? opening.text])), openingVariables: Object.fromEntries(draft.openings.map((opening, index) => [opening.id, draft.chat.messages[0]?.variables?.[index] || {}])), variables: draft.chat.variables || {}, messageVariables: draft.chat.messages[0]?.variables?.[selectedIndex] || {}, openingId: selected, sourceSessionId: draft.sourceSessionId, sourceLifecycleRevision: draft.sourceLifecycleRevision,
+        // The projection this game starts from. Nothing is copied into the chat:
+        // the game follows the library, so a later edit takes effect.
+        worldbook: draft.worldBookView ? { source: draft.source, document: draft.document, view: draft.worldBookView } : null }
     }
   }
 }

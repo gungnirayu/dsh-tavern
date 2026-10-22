@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-const serverSource = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
+const openingSource = await readFile(new URL('../tavern-plugin/lib/rpc/opening.js', import.meta.url), 'utf8')
 
 function between(source, start, end) {
   const from = source.indexOf(start)
@@ -13,7 +13,7 @@ function between(source, start, end) {
 }
 
 test('创建对话失败时服务端记录请求边界但不记录开场白正文', () => {
-  const dispatch = between(serverSource, 'async function dispatch', '  registerTavernHttpRoutes({')
+  const dispatch = between(openingSource, 'async startChat(', '\n    },')
 
   assert.match(dispatch, /console\.error\('dsh-tavern: 创建对话失败'/)
   assert.match(dispatch, /cardPath: str\(args && args\.path\)/)

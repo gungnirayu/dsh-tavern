@@ -9,6 +9,7 @@ import { SCRIPT_PATH, RUNTIME_HOST, DSH_ROOT } from './launcher-environment.mjs'
 import { installProfile, parseInstallHost } from './profile-installation.mjs'
 import { startService, stopService, statusService, openService, bootstrapFrontendOnce } from './service-lifecycle.mjs'
 import { updateApplication, parseUpdateOptions } from './application-update.mjs'
+import { openTavernWindow } from './tavern-window.mjs'
 import { recordUpdateDiagnostic } from './update-diagnostics.mjs'
 
 // Keep the existing import surface while the executable only dispatches commands.
@@ -24,7 +25,7 @@ function fail(message) {
 }
 
 function usage() {
-  console.log('用法：dsh-tavern install [--host cli|desktop|android] | {update|start|open|stop|restart|status}')
+  console.log('用法：dsh-tavern install [--host cli|desktop|android] | {update|start|open|window|stop|restart|status}')
 }
 
 // A detached in-app update has no console; keep its trail next to its status file.
@@ -39,9 +40,10 @@ function updateDiagnostic(event, details = {}) {
 async function main() {
   const action = process.argv[2] || 'status'
   updateDiagnostic('updater.started', { execPath: process.execPath, electron: process.versions.electron || '', runtimeHost: RUNTIME_HOST, cwd: process.cwd() })
-  if (RUNTIME_HOST === 'desktop' && ['install', 'update'].includes(action)) {
+  // Desktop hosts run DSH through the app's own runtime; every command that touches the service needs it.
+  if (RUNTIME_HOST === 'desktop' && ['install', 'update', 'start', 'stop', 'restart', 'status', 'open', 'window'].includes(action)) {
     const executable = officialDesktop.discover()
-    // Official: the app's Electron in Node mode. Community: its bundled Node.
+    // Run installation and updates under the official app's Electron in Node mode.
     const runner = officialDesktop.runner(executable)
     if (path.resolve(process.execPath) !== path.resolve(runner)) {
       updateDiagnostic('updater.relaunch', { executable, runner })
@@ -84,6 +86,9 @@ async function main() {
       break
     case 'open':
       await openService()
+      break
+    case 'window':
+      await openTavernWindow()
       break
     case '-h':
     case '--help':

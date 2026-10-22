@@ -1,5 +1,6 @@
 import { desktopElectronExecutable, desktopHostAnchors, desktopResourcesRoot, isAsarPath } from './desktop-host-paths.mjs'
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -323,6 +324,23 @@ export function resolveDshBootModule({ dsh, host = 'cli', env = process.env, exe
   return dependency.entry
 }
 
+// Official desktop resolves host packages from ASAR and ordinary packages from the
+// application root. A previous standalone plugin install can shadow both with stale
+// or incomplete packages. Retain that cache, but take it out of Node's search path.
+function retireLegacyPluginDependencies(pluginDirectory) {
+  const legacy = path.join(pluginDirectory, 'node_modules')
+  if (!existsSync(legacy)) return
+  const parent = createRequire(path.resolve(pluginDirectory, '..', 'package.json'))
+  const manifest = JSON.parse(readFileSync(path.join(pluginDirectory, 'package.json'), 'utf8'))
+  for (const name of Object.keys(manifest.dependencies || {}).filter(name => !name.startsWith('@deepseek-ai/'))) {
+    try { parent.resolve(name) }
+    catch { throw new Error(`酒馆根目录依赖 ${name} 尚未安装完整；已保留旧插件依赖，请重新运行安装器。`) }
+  }
+  const backup = path.join(pluginDirectory, '.legacy-node_modules-' + randomUUID())
+  renameSync(legacy, backup)
+  console.log(`已隔离旧版插件依赖，改用酒馆根目录和官方宿主依赖；旧缓存保存在 ${backup}`)
+}
+
 export async function installPluginDependencies({ pluginDirectory, run, ...hostOptions }) {
   // Validate everything before changing the plugin's existing installation.
   const dependencies = resolveHostDependencies(hostOptions)
@@ -331,6 +349,7 @@ export async function installPluginDependencies({ pluginDirectory, run, ...hostO
   // profile 条目提供这些 @deepseek-ai/* 包（证据：profiles/web 的 dependencies 为空、也没有
   // node_modules，但它的 bundle 行照常解析），所以这里只保留校验结果、不改 workspace。
   if (dependencies.some(dependency => isAsarPath(dependency.directory))) {
+    retireLegacyPluginDependencies(pluginDirectory)
     for (const dependency of dependencies) console.log(`已确认宿主内置依赖（app.asar 内，无需链接）：${dependency.name} ${dependency.version}`)
     console.log('0.2.0 桌面把宿主依赖打进 app.asar，跳过 tavern-plugin 的 link 覆盖安装；运行时由宿主解析器提供这些包。')
     return dependencies

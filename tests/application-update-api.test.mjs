@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { registerTavernHttpRoutes } from '../tavern-plugin/lib/http/routes.js'
 
-// Exercise the real updater dispatch arms and the production HTTP route together.
-const source = readFileSync(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-const start = source.indexOf("      case 'getUpdateStatus':")
-const end = source.indexOf("      case 'prepareSessionOpening':", start)
-assert.ok(start >= 0 && end > start)
+// Rejected requests must never reach the application dispatcher.
 function route(updater) {
-  const dispatch = new Function('applicationUpdater', 'return async function(method) { switch (method) {' + source.slice(start, end) + '\ndefault: throw new Error("未知方法: " + method) } }')(updater)
+  const dispatch = async method => {
+    assert.equal(method, 'cancelUpdate')
+    return { status: await updater.cancel() }
+  }
   let handler
   const webServer = { register(spec) { if (spec.path === '/api/dsh-tavern') handler = spec.handler; return () => {} } }
   registerTavernHttpRoutes({ ctx: { get: () => webServer, effect: fn => fn() }, dispatch, str: String,

@@ -5,14 +5,22 @@ import {pathToFileURL} from 'node:url'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createChatPersistence } from '../../tavern-plugin/lib/domain/chat-persistence.js'
 import { encodeMigratedSessionLog, encodeCurrentGeneration, parseSessionLog } from '../../tavern-plugin/lib/domain/session-log-codec.js'
+import { currentSessionLogs, dropOtherGenerations } from './session-files.mjs'
 
 // Avoid Playwright's iframe element preview: a srcdoc containing a complete
 // compatibility context can be hundreds of MB and preview formatting dominates
 // the very performance this probe measures. Still inspect the real status DOM.
 async function statusFrame(page) {
   // The right panel no longer opens by itself when a game opens (#213): open 酒馆状态 when it is not shown.
-  if (!await page.evaluate(() => Boolean(document.querySelector('.dsh-tavern-status-runtime')))) {
-    await page.getByRole('button', { name: '酒馆状态', exact: true }).filter({ visible: true }).first().click()
+  // DSH may also bring another right-panel tab forward (Tasks, when background agents run):
+  // the status is mounted but hidden then, so select its tab rather than reopening the panel.
+  const status = () => page.evaluate(() => { const node = document.querySelector('.dsh-tavern-status-runtime'); return node ? (node.getClientRects().length ? 'shown' : 'hidden') : 'absent' })
+  const state = await status()
+  if (state === 'absent') await page.getByRole('button', { name: '酒馆状态', exact: true }).filter({ visible: true }).first().click()
+  else if (state === 'hidden') {
+    const tab = page.getByRole('tab', { name: '酒馆状态' }).filter({ visible: true })
+    if (await tab.count()) await tab.first().click()
+    else await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
   }
   const handle = await page.waitForFunction(() => document.querySelector('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])'), null, {timeout:120000})
   const frame = await handle.asElement().contentFrame(); await handle.dispose()
@@ -70,6 +78,15 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     await page.waitForFunction(()=>document.body?.innerText.includes('这是性能测试的合成剧情'),null,{timeout:15000}).then(()=>{firstWindow.bodyVisibleAt=Date.now()},()=>{})
   }
   page.on('response',observeWindow)
+  // Every request that widens the history window (scrolling into older floors). Opening a
+  // long save must not walk the window back on its own: each step makes views heavier.
+  const historyRequests=report.settlementPerformance.historyRequests=[]
+  page.on('request',request=>{
+    if(!request.url().endsWith('/api/dsh-tavern/getSession'))return
+    let body;try{body=JSON.parse(request.postData()||'{}')}catch{return}
+    const args=body.args||body
+    if(Number.isSafeInteger(args?.historyFrom)||args?.fullView)historyRequests.push({at:Date.now(),historyFrom:args.historyFrom,fullView:args.fullView===true})
+  })
   await step(`构造 ${rounds} 轮隔离长档并重新打开`, async () => {
     const reopening = await restartServer(async () => {
       const next = structuredClone(fixture), greeting = next.messages[0], user = next.messages.find(m => m.role === 'user'), assistant = next.messages.at(-1)
@@ -110,8 +127,8 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
       await persistence.write(next)
       const sessions = join(root, 'profile-data/tavern/sessions')
       let found = false
-      for (const file of (await readdir(sessions, { recursive: true })).filter(x => x.endsWith('session.v3.jsonl.zstd'))) {
-        const path = join(sessions, file), saved = parseSessionLog(await readFile(path))
+      for (const { path, directory } of await currentSessionLogs(sessions)) {
+        const saved = parseSessionLog(await readFile(path))
         if (saved.header.id !== fixture.sessionId) continue
         const header = { type: 'session', delegationDepth: 0, version: 0, id: fixture.sessionId, createdAt: saved.header.createdAt, cwd: saved.header.cwd }
         if(process.argv.includes('--native-format')){
@@ -119,13 +136,15 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
           const restore=catalog.createRestore(header,{recovery:'recoverable',validation:'current'})
           for(const row of rows)restore.decodeRow(row)
           const artifact=restore.finish()
-          assert.equal(artifact.header.version,3)
-          await writeFile(path,encodeCurrentGeneration(artifact,catalog))
-          await rm(join(dirname(path),'session.jsonl.zstd'),{force:true})
-          size.sessionFormat=3
+          // Written in whatever format the host currently stores, as it would itself.
+          const name=`session.v${artifact.header.version}.jsonl.zstd`
+          await writeFile(join(directory,name),encodeCurrentGeneration(artifact,catalog))
+          await dropOtherGenerations(directory,name)
+          size.sessionFormat=artifact.header.version
         }else{
-          await writeFile(join(dirname(path), 'session.jsonl.zstd'), encodeMigratedSessionLog(JSON.stringify(header), rows))
-          await rm(path)
+          // An unversioned log: the host migrates it to its current format on startup.
+          await writeFile(join(directory, 'session.jsonl.zstd'), encodeMigratedSessionLog(JSON.stringify(header), rows))
+          await dropOtherGenerations(directory, 'session.jsonl.zstd')
           size.sessionFormat=0
         }
         found = true; break
@@ -136,11 +155,12 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     while(true) {
       const frame=await statusFrame(page)
       try {
-        await frame.locator('#e2e-gold').filter({hasText:/^金币：10$/}).waitFor({timeout:Math.max(1,statusDeadline-Date.now())})
+        // Short waits: DSH may bring its Tasks tab forward meanwhile, hiding the status again.
+        await frame.locator('#e2e-gold').filter({hasText:/^金币：10$/}).waitFor({timeout:Math.max(1,Math.min(5000,statusDeadline-Date.now()))})
         break
       } catch(error) {
         // The runtime replaces its loading iframe during initialization.
-        if(!frame.isDetached() || Date.now()>=statusDeadline)throw error
+        if(Date.now()>=statusDeadline || !(frame.isDetached() || error.name==='TimeoutError'))throw error
       }
     }
     if (reopening) {
@@ -204,7 +224,8 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
       const record=request=>{if(request.url().endsWith('/api/dsh-tavern/getSession'))try{sessionRequests.push(request.postDataJSON())}catch{}}
       page.on('request',record)
       for(let step=0;step<8;step++){
-        await page.evaluate(()=>{const scroller=[...document.querySelectorAll('*')].filter(node=>node.scrollHeight>node.clientHeight+200).sort((a,b)=>b.scrollHeight-a.scrollHeight)[0];scroller.scrollTop=0})
+        // Older floors load on the player's scrolling (a wheel), not on a jump the page made itself.
+        await page.evaluate(()=>{const scroller=[...document.querySelectorAll('*')].filter(node=>node.scrollHeight>node.clientHeight+200).sort((a,b)=>b.scrollHeight-a.scrollHeight)[0];scroller.dispatchEvent(new WheelEvent('wheel',{deltaY:-2000,bubbles:true}));scroller.scrollTop=0})
         await page.waitForTimeout(1500)
       }
       page.off('request',record)
@@ -229,10 +250,12 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     }
   })
   const samples = []
-  report.settlementPerformance = { scope: 'isolated full DSH + native Session + official MVU + active storage + React; synthetic history, fixed model; tracing disabled', requireCompact, size, samples, firstWindow }
+  report.settlementPerformance = { scope: 'isolated full DSH + native Session + official MVU + active storage + React; synthetic history, fixed model; tracing disabled', requireCompact, size, samples, firstWindow, historyRequests }
   if(process.argv.includes('--opening-only')) {report.settlementPerformance.scope+='; opening only: settlement and second restart not exercised';return}
   for (let run = 0; run < runs; run++) await step(`长档结算采样 ${run + 1}/${runs}`, async () => {
     const gold = 100 + run
+    // A player reads the reply before sending the next message: TAVERN_PERF_PAUSE_MS between rounds.
+    if (run > 0 && Number(process.env.TAVERN_PERF_PAUSE_MS) > 0) await page.waitForTimeout(Number(process.env.TAVERN_PERF_PAUSE_MS))
     await writeFile(join(output, 'performance-control.json'), JSON.stringify({ id: run, gold }))
     const offset = readLog().length
     const clickedAt = Date.now()
@@ -263,16 +286,21 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     await page.getByPlaceholder('例如：这轮还没有交付物品，不要扣除库存。').fill('性能测试：本次金币更新为 ' + gold)
     await page.getByRole('button', { name: '重新结算', exact: true }).click()
     }
-    const frame = await statusFrame(page)
-    const visiblePromise = frame.evaluate(gold => new Promise(resolve => {
-      const node = document.querySelector('#e2e-gold')
-      const check = () => { if (node.textContent === '金币：' + gold) { observer.disconnect(); requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.timeOrigin + performance.now()))) } }
-      const observer = new MutationObserver(check); observer.observe(node, { subtree: true, characterData: true, childList: true }); check()
-    }), gold).then(value => ({ value }), error => ({ error }))
-    await frame.locator('#e2e-gold').filter({ hasText: new RegExp('^金币：' + gold + '$') }).waitFor({ timeout: 120000 })
-    const observation = await visiblePromise
-    if (observation.error) throw observation.error
-    const visibleAt = observation.value
+    // The status frame is re-rendered when display work lands: wait again in the new frame.
+    let visibleAt
+    for (const deadline = Date.now() + 120000; visibleAt === undefined;) {
+      const frame = await statusFrame(page)
+      const visiblePromise = frame.evaluate(gold => new Promise(resolve => {
+        const node = document.querySelector('#e2e-gold')
+        const check = () => { if (node.textContent === '金币：' + gold) { observer.disconnect(); requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.timeOrigin + performance.now()))) } }
+        const observer = new MutationObserver(check); observer.observe(node, { subtree: true, characterData: true, childList: true }); check()
+      }), gold).then(value => ({ value }), error => ({ error }))
+      try { await frame.locator('#e2e-gold').filter({ hasText: new RegExp('^金币：' + gold + '$') }).waitFor({ timeout: Math.max(1, deadline - Date.now()) }) }
+      catch (error) { if (!frame.isDetached() || Date.now() >= deadline) throw error; continue }
+      const observation = await visiblePromise
+      if (observation.error) { if (!frame.isDetached() || Date.now() >= deadline) throw observation.error; continue }
+      visibleAt = observation.value
+    }
     await page.locator('.dsh-tavern-mvu-receipt[data-status="updated"]').filter({ visible: true }).last().waitFor()
     const receiptAt = await page.evaluate(() => window.__perfSettlement.receiptAt || null)
     // Fresh store, independent of the running server's hot cache. Read only target.
@@ -306,10 +334,19 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
       submitToCommitMs: round(commitAt - submitted), submitToVisibleMs: round(visibleAt - submitted), runtimeToCommitMs: round(commitAt - runtime),
       runtimeToVisibleMs: round(visibleAt - runtime), commitMs: round(commitAt - commitStart), commitToVisibleMs: round(visibleAt - commitAt),
       diskReadMs: round(diskReadMs), events, browserEvents }
+    // Whole-history reads during this round, cache hits included: a hit still copies the
+    // complete Chat. The round after reopening may read once (the first request hook of a
+    // session in a process); every later round must read none.
+    const historyReads = events.filter(event => ['full-read', 'full-read-miss', 'summary-history-read'].includes(event.stage))
+    sample.historyReads = historyReads.map(event => ({ stage: event.stage, caller: event.caller?.filter(line => line.includes('tavern-plugin/')).slice(0, 6) }))
     samples.push(sample)
     delete report.settlementPerformance.activeSample
-    console.log('PERF ' + JSON.stringify({ ...size, ...Object.fromEntries(Object.entries(sample).filter(([key]) => key.endsWith('Ms'))) }))
+    console.log('PERF ' + JSON.stringify({ ...size, ...Object.fromEntries(Object.entries(sample).filter(([key]) => key.endsWith('Ms'))), historyReads: historyReads.length }))
     await writeFile(join(output, 'settlement-performance.json'), JSON.stringify(report.settlementPerformance, null, 2))
+    // Baseline comparisons against older builds record the reads instead of failing.
+    if (append && run > 0 && process.env.TAVERN_PERF_ALLOW_FULL_READS !== '1') {
+      assert.equal(historyReads.length, 0, 'an ordinary round must not read the complete history: ' + JSON.stringify(sample.historyReads))
+    }
     if (process.env.TAVERN_PERF_REQUIRE_LAZY === '1') {
       assert.ok(!events.some(event => event.stage === 'full-read-miss'), 'settlement must not read the complete Chat')
       const loads = events.filter(event => event.stage === 'settlement-history-load')
@@ -324,6 +361,10 @@ export async function settlementPerformanceChecks({ page, step, savedChat, outpu
     await page.waitForTimeout(500)
   })
   await page.screenshot({ path: join(output, 'long-archive-settled.png') })
+  // The server's whole-read guard (warn mode) names any per-turn path that loaded this long save whole.
+  const wholeReads = [...readLog().matchAll(/每轮路径读取了完整存档[^\n]*/g)].map(match => match[0])
+  report.settlementPerformance.wholeReads = wholeReads
+  if (process.env.TAVERN_PERF_ALLOW_FULL_READS !== '1') assert.deepEqual(wholeReads, [], 'per-turn paths must not load the long save whole')
   if (process.argv.includes('--long-operations')) await longOperationChecks({ page, step, savedChat, readLog, report })
 }
 

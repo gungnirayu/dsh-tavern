@@ -38,7 +38,7 @@ test('多端输入、短窗口与标签边界', { skip: !process.env.TAVERN_BROW
       assert.ok(send.y >= 30 && send.y + send.height <= height + 31, '发送按钮可见 ' + JSON.stringify({ height, send }))
       assert.ok((await page.locator('[contenteditable]').innerText()).includes('未发送草稿'))
       // 关闭键盘焦点后主动展开列表，短窗口应完整滚动，而不是把列表高度压成 0。
-      await page.locator('[aria-label="会话列表"]').focus(); await settle()
+      await page.locator('[aria-label="打开侧栏"]').focus(); await settle()
       await page.getByRole('button', { name: '展开行动列表', exact: true }).click(); await settle()
       const sheet = await page.locator('.dsh-tavern-candidate-question').boundingBox()
       const header = await page.locator('header').boundingBox()
@@ -63,12 +63,6 @@ test('多端输入、短窗口与标签边界', { skip: !process.env.TAVERN_BROW
   await t.test('宽屏触控设备跟随软键盘，鼠标桌面维持原布局和字号', async () => {
     for (const width of [1024, 1280, 1366]) {
       await page.setViewportSize({ width, height: 900 }); await install(page); await nativeComposer(page)
-      await page.evaluate(() => {
-        // 真宿主跨到宽屏后卸载 mobile-nav 标记，保留根插槽及 frame 类。
-        const frame = document.querySelector('#frame'), root = document.createElement('div')
-        root.dataset.slot = 'root'; root.style.display = 'contents'
-        frame.before(root); root.append(frame); frame.classList.add('host_frame'); frame.removeAttribute('data-mobile-nav')
-      })
       await viewport(page, { height: 450, offsetTop: 25 })
       const seat = await page.locator('[data-composer-seat]').boundingBox()
       assert.ok(seat.y + seat.height <= 476)
@@ -84,7 +78,7 @@ test('多端输入、短窗口与标签边界', { skip: !process.env.TAVERN_BROW
     const desktop = await browser.newPage({ viewport: { width: 1280, height: 900 }, hasTouch: false })
     await install(desktop); await nativeComposer(desktop)
     assert.equal(await desktop.locator('[contenteditable]').evaluate(el => getComputedStyle(el).fontSize), '14px')
-    assert.equal(await desktop.locator('#frame').evaluate(el => getComputedStyle(el).position), 'static')
+    assert.equal(await desktop.locator('#frame').evaluate(el => getComputedStyle(el).position), 'relative', '桌面保持宿主外壳的定位，不被钉到可视区')
     await desktop.close()
   })
 

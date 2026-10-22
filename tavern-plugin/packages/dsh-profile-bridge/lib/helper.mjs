@@ -1,6 +1,6 @@
 // Tavern compatibility fork of 2NF/dsh-profile-bridge (MIT).
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, existsSync, lstatSync, renameSync, symlinkSync, unlinkSync, readFileSync, readdirSync, realpathSync, statSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, lstatSync, renameSync, symlinkSync, unlinkSync, readFileSync, readdirSync, realpathSync, statSync, rmSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 

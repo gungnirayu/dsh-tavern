@@ -5,7 +5,7 @@ import { canUndoRollback, restoreSurface, preflightSurfaceRestore, unchangedSinc
 import { rewindBackgroundSurface } from './background-surface.js'
 import { releaseOpeningTurn, sessionEvents, withSurfaceEditTurn } from './session-events.js'
 import { randomUUID } from 'node:crypto'
-import { createRegenerationRecovery } from './regeneration-recovery.js'
+import { createRegenerationRecovery, projectedReplacingTurns } from './regeneration-recovery.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createScopedMessages, isScopedMessages } from './scoped-messages.js'
 import { diffJson } from './json-mutation.js'
@@ -307,13 +307,8 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
         next.settleStatus = 'pending'
         next.settleError = null
         next.tavernHelperLifecycleRevision = lifecycleRevision + 1
-        // 撤销生成期对旧正文的临时隐藏；它此后由 regeneratedDshTurns 的键负责。
-        const temporaryTurn = Number(next.regenRecovery && next.regenRecovery.temporaryReplacingTurn)
-        const keptReplacing = (Array.isArray(next.replacingDshTurns) ? next.replacingDshTurns : [])
-          .filter(function (turn) { return !Number.isSafeInteger(temporaryTurn) || Number(turn) !== temporaryTurn })
-        if (keptReplacing.length) next.replacingDshTurns = keptReplacing
-        else delete next.replacingDshTurns
-        if (next.regenRecovery) delete next.regenRecovery.temporaryReplacingTurn
+        // 旧正文的临时隐藏留到投影写入时（regenerationRecovery.complete）才撤：此刻日志里还没有
+        // 投影，行计划会把旧轮和生成轮都画出来，同一段正文显示两份（#312）。
         next.suppressedDshTurns = Array.from(new Set((Array.isArray(next.suppressedDshTurns) ? next.suppressedDshTurns : []).concat([syntheticTurn]))).sort(function (left, right) { return left - right })
         next.regeneratedDshTurns = next.regeneratedDshTurns && typeof next.regeneratedDshTurns === 'object' && !Array.isArray(next.regeneratedDshTurns)
           ? structuredClone(next.regeneratedDshTurns) : {}
@@ -486,13 +481,8 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       next.settleStatus = 'pending'
       next.settleError = null
       next.tavernHelperLifecycleRevision = lifecycleRevision + 1
-      // 撤销生成期对旧正文的临时隐藏；它此后由 regeneratedDshTurns 的键负责。
-      const temporaryTurn = Number(next.regenRecovery && next.regenRecovery.temporaryReplacingTurn)
-      const keptReplacing = (Array.isArray(next.replacingDshTurns) ? next.replacingDshTurns : [])
-        .filter(function (turn) { return !Number.isSafeInteger(temporaryTurn) || Number(turn) !== temporaryTurn })
-      if (keptReplacing.length) next.replacingDshTurns = keptReplacing
-      else delete next.replacingDshTurns
-      if (next.regenRecovery) delete next.regenRecovery.temporaryReplacingTurn
+      // 旧正文的临时隐藏留到投影写入时（regenerationRecovery.complete）才撤：此刻日志里还没有
+      // 投影，行计划会把旧轮和生成轮都画出来，同一段正文显示两份（#312）。
       next.suppressedDshTurns = Array.from(new Set((Array.isArray(next.suppressedDshTurns) ? next.suppressedDshTurns : []).concat([syntheticTurn]))).sort(function (left, right) { return left - right })
       next.regeneratedDshTurns = next.regeneratedDshTurns && typeof next.regeneratedDshTurns === 'object' && !Array.isArray(next.regeneratedDshTurns)
         ? structuredClone(next.regeneratedDshTurns) : {}
@@ -540,10 +530,12 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     }
     applyRegenerationProjection(session, saved.projection)
     if (typeof sessions.flush === 'function') await sessions.flush(session)
-    const head = await chats.patch(chat.id, chat._storageRevision, [{ op: 'delete', path: ['regenRecovery'] }, { op: 'delete', path: ['regenInProgress'] }], { source: 'foreground.regen-projected' })
+    const replacing = projectedReplacingTurns(chat)
+    const head = await chats.patch(chat.id, chat._storageRevision, [{ op: 'delete', path: ['regenRecovery'] }, { op: 'delete', path: ['regenInProgress'] },
+      replacing ? { op: 'set', path: ['replacingDshTurns'], value: replacing } : { op: 'delete', path: ['replacingDshTurns'] }], { source: 'foreground.regen-projected' })
     if (head) {
-      const { regenRecovery: _recovery, regenInProgress: _flag, ...rest } = chat
-      return { ...rest, _storageRevision: head._storageRevision, updatedAt: head.updatedAt }
+      const { regenRecovery: _recovery, regenInProgress: _flag, replacingDshTurns: _replacing, ...rest } = chat
+      return { ...rest, ...(replacing ? { replacingDshTurns: replacing } : {}), _storageRevision: head._storageRevision, updatedAt: head.updatedAt }
     }
     return await regenerationRecovery.complete({ chatId: chat.id, session, operationId }) || chat
   }
@@ -580,28 +572,38 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       // 2) 同步隐藏该回合残留的正文与错误提示，再原样重发本轮输入。
       await updateChat(chat.id, function (current) {
         if (current === null || typeof current !== 'object') return current
-        return {
+        const next = {
           ...current,
           suppressedDshTurns: Array.from(new Set([...(Array.isArray(current.suppressedDshTurns) ? current.suppressedDshTurns : []), target.turn]))
             .sort(function (left, right) { return left - right }),
           updatedAt: Date.now()
         }
+        if (current.userInputEdits && typeof current.userInputEdits === 'object' && Object.hasOwn(current.userInputEdits, String(target.turn))) {
+          const edits = { ...current.userInputEdits }
+          delete edits[String(target.turn)]
+          next.userInputEdits = edits
+        }
+        return next
       }, { source: 'replay.failed-turn' })
       // The replay input is a first-class turn input so the normal foreground
       // prepare/finalize pipeline commits it exactly like a typed message. Its
       // source must stay kind 'user': hosts render anything else as a context
       // node, which would hide the player's text instead of resending it.
+      // A failed input may have been edited as a Chat overlay. Retry with that
+      // text; the failed turn itself is cleared and resent below.
+      const edited = chat.userInputEdits && typeof chat.userInputEdits === 'object' ? chat.userInputEdits[String(target.turn)] : null
+      const inputText = edited && typeof edited.text === 'string' ? edited.text : target.userText
       releaseOpeningTurn(agent.session, agent)
       agent.followup({
         id: randomUUID(),
         role: 'user',
-        content: projectPlayerContent(target.inputAttachments, target.userText),
+        content: projectPlayerContent(target.inputAttachments, inputText),
         source: target.source
       })
       await agent.whenIdle()
       const latest = await readChat(chat.id) || chat
       const result = await view(latest, card)
-      result.replayed = { turn: target.turn, userText: target.userText, cleared }
+      result.replayed = { turn: target.turn, userText: inputText, cleared }
       return result
     } finally {
       pendingReplays.delete(chat.id)
@@ -674,13 +676,23 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
         // Clearing only hides uncommitted residue. The failed turn's own deferred
         // bookkeeping may still be landing in the timeline; only story text must hold.
         assertRollbackSnapshot(rollbackBodyMessages(current), rollbackBodyMessages(originalChat))
-        return { ...current, suppressedDshTurns: [...new Set([...(current.suppressedDshTurns || []), ...failedTurns])].sort((a, b) => a - b), updatedAt: Date.now() }
+        const next = { ...current, suppressedDshTurns: [...new Set([...(current.suppressedDshTurns || []), ...failedTurns])].sort((a, b) => a - b), updatedAt: Date.now() }
+        if (current.userInputEdits && typeof current.userInputEdits === 'object' && !Array.isArray(current.userInputEdits)) {
+          const edits = { ...current.userInputEdits }
+          let changed = false
+          for (const turn of failedTurns) if (Object.hasOwn(edits, String(turn))) { delete edits[String(turn)]; changed = true }
+          if (changed) next.userInputEdits = edits
+        }
+        return next
       }, { source: 'rollback.interrupted' })
       const result = await view(chat, card)
       result.clearedIncompleteTurns = failedTurns
       // The failed input never reached the story; hand it back so the player can edit and resend it.
+      // A failed-turn edit is stored as a Chat overlay; return that text when present.
       const tail = replayableFailedTurn({ events })
-      if (tail && failedTurns.includes(tail.turn)) result.clearedInput = tail.userText
+      if (tail && failedTurns.includes(tail.turn)) result.clearedInput = chat.userInputEdits && typeof chat.userInputEdits === 'object'
+        && chat.userInputEdits[String(tail.turn)] && typeof chat.userInputEdits[String(tail.turn)].text === 'string'
+        ? chat.userInputEdits[String(tail.turn)].text : tail.userText
       return result
     }
     if (!hasRollbackRound(chat)) throw new Error(availability.reason || '当前没有可回退的已提交轮次')

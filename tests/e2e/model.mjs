@@ -39,7 +39,6 @@ export function apply(ctx) {
         const after = input.messages.slice(latest + 1).flatMap(message => message.content || [])
         const called = name => after.some(block => block.type === 'tool-call' && block.name === name)
         const addition = request.includes('\\"addition\\"')
-        if (process.env.TAVERN_E2E_SCENE_AUDIT && !called('submit_scene_layout')) await appendFile(process.env.TAVERN_E2E_SCENE_AUDIT, JSON.stringify({ addition, request: addition ? /画柜台上的金币/.test(request) : false }) + '\n')
         const id = 'e2e-scene-' + latest
         const block = !called('submit_scene_layout') ? { type: 'tool-call', id: id + '-layout', name: 'submit_scene_layout', arguments: JSON.stringify({ description: addition ? '柜台上的金币' : '领取奖励', subjects: [], continuity: 'uncertain', moment: 'end', orientation: 'square', anchor: '',
           scene: { composition: addition ? { text: '柜台上的金币特写', tags: 'gold coins on a wooden counter, close-up' } : { text: '酒馆柜台前领取奖励', tags: 'tavern counter, receiving a reward' } } }) }
@@ -217,7 +216,7 @@ export function apply(ctx) {
       }
       // Story submitted through submit_story: the body travels as the tool argument.
       if (tools.has('submit_story') && blocks.length === 1 && blocks[0].type === 'text') {
-        const content = blocks[0].text
+        const content = process.env.TAVERN_E2E_STORY_TOOL_LONG ? blocks[0].text + '\n\n' + Array.from({ length: Number(process.env.TAVERN_E2E_STORY_TOOL_LONG) || 60 }, (_, index) => `第 ${index + 1} 段验收正文：雨声落在窗台上，掌柜把铜币一枚枚推过来。`).join('\n\n') : blocks[0].text
         blocks[0] = { type: 'tool-call', id: 'e2e-story-' + input.messages.length + '-' + Date.now(), name: 'submit_story', arguments: JSON.stringify({ content }) }
         if (process.env.TAVERN_E2E_STORY_TOOL_LOG) await appendFile(process.env.TAVERN_E2E_STORY_TOOL_LOG, JSON.stringify({ content }) + '\n')
       }

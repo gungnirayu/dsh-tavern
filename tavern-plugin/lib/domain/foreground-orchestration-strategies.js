@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { inputAttachments, projectPlayerContent } from './player-input-content.js'
+import { projectPlayerContent } from './player-input-content.js'
 import { resolveRuntimePresetMacros } from './runtime-presets.js'
-import { createEphemeralCompatibilityRequest, isCompatibilityConversationRequest } from './compatibility-request.js'
 import { projectRuntimePresetRequest } from './runtime-preset-lifecycle.js'
 import { STORY_SUBMIT_PROMPT, STORY_SUBMIT_TOOL_NAME } from './story-tool-submission.js'
 import { projectHistoryAsToolCalls } from './history-tool-call.js'
@@ -202,61 +201,46 @@ function projectDeepSeekThinkingPassback(messages, request) {
   return changed ? projected : messages
 }
 
+/**
+ * Anthropic binds each thinking signature to the exact conversation before it.
+ * Tavern retires the previous turn's frame to save tokens, which changes that
+ * prefix, so a replayed signature from an earlier turn is rejected (400 "Invalid
+ * `signature` in `thinking` block"). Anthropic accepts history without earlier
+ * turns' thinking; only the turn in progress (its tool loop) must keep its own.
+ * Drop those blocks from replies before this turn's input, nothing else.
+ */
+export function projectAnthropicPriorThinking(messages) {
+  const source = Array.isArray(messages) ? messages : []
+  let inputIndex = -1
+  for (let index = source.length - 1; index >= 0; index--) {
+    if (isTurnInput(source[index])) { inputIndex = index; break }
+  }
+  if (inputIndex <= 0) return messages
+  let changed = false
+  const projected = source.map(function (message, index) {
+    const origin = message && message.source
+    const replay = origin && origin.kind === 'model' ? origin.replayState : undefined
+    if (index >= inputIndex || !message || message.role !== 'assistant' || !Array.isArray(message.content)
+      || str(replay && replay.response && replay.response.api) !== 'anthropic-messages'
+      || !message.content.some(function (block) { return block && block.type === 'reasoning' })) return message
+    const blocks = Array.isArray(replay.blocks) && replay.blocks.length === message.content.length ? replay.blocks : null
+    const kept = message.content.map(function (block, at) { return block && block.type === 'reasoning' ? -1 : at }).filter(function (at) { return at >= 0 })
+    changed = true
+    // A reply that was nothing but thinking leaves no message to send.
+    if (kept.length === 0) return null
+    return Object.assign({}, message, {
+      content: kept.map(function (at) { return message.content[at] }),
+      // The replay envelope lists one entry per content block; keep it aligned,
+      // or drop it when it cannot be (the host then sends the plain content).
+      source: Object.assign({}, origin, { replayState: blocks === null ? undefined
+        : Object.assign({}, replay, { blocks: kept.map(function (at) { return blocks[at] }) }) })
+    })
+  })
+  return changed ? projected.filter(Boolean) : messages
+}
+
 // Copies made by later hooks (workspace presentation) must still count as projected.
 const PROJECTED = 'foreground-projection'
-
-export function createCompatibilityOrchestrationStrategy(options) {
-  const stagedRequests = new Map()
-
-  async function prepareStep(input) {
-    const sessionId = input.sessionId
-    const payload = input.payload
-    let chat = input.chat
-    const userText = userTextOf(payload.messages)
-    if (Number(payload.step) === 1) {
-      await options.beforeTurn({ sessionId, chat, userText })
-      const begun = await options.beginTurn({ sessionId, turn: payload.turn, requestId: input.requestId, userText })
-      if (begun && begun.duplicate) throw new Error('该消息已由酒馆处理，请勿重复发送')
-      chat = await options.chatForSession(sessionId)
-    }
-    const compiled = await options.compileTurn(chat, chat.runtimeInputs?.[String(payload.turn)]?.text ?? userText, inputAttachments(payload.messages.filter(isTurnInput).flatMap(message => message.content || [])))
-    await options.persistCompiled({ chat, compiled, turn: payload.turn })
-    stagedRequests.set(sessionId, {
-      turn: Number(payload.turn) || 0,
-      step: Number(payload.step) || 0,
-      messages: options.projectMessages(compiled)
-    })
-    return { kind: 'enter', messages: payload.messages }
-  }
-
-  function projectRequest(optionsValue, coordinates) {
-    const sessionId = str(optionsValue && optionsValue.sessionId)
-    const staged = stagedRequests.get(sessionId)
-    if (requestHandledBy(optionsValue, PROJECTED) || !isCompatibilityConversationRequest(optionsValue, staged, coordinates)) return null
-    return markRequestHandled(createEphemeralCompatibilityRequest(optionsValue, staged.messages), PROJECTED)
-  }
-
-  function completeRequest(optionsValue, completed) {
-    if (!completed || !requestHandledBy(optionsValue, PROJECTED)) return false
-    stagedRequests.delete(str(optionsValue && optionsValue.sessionId))
-    return true
-  }
-
-  function endTurn(sessionId) {
-    stagedRequests.delete(str(sessionId))
-  }
-
-  async function assembleSystemPrompt(assembly, input) {
-    assembly.sections = []
-    assembly.contexts = []
-    assembly.tools = input && input.chat && input.chat.webSearchEnabled === true
-      ? assembly.tools.filter(function (tool) { return tool && tool.name === 'web_search' })
-      : []
-    return assembly
-  }
-
-  return Object.freeze({ kind: 'compatibility', prepareStep, projectRequest, completeRequest, endTurn, assembleSystemPrompt })
-}
 
 // The preset front phase is part of the native system prompt, so it is recorded in
 // the session trajectory like the fixed card background. Every replay of that
@@ -329,7 +313,8 @@ export function createNativePlayOrchestrationStrategy(options) {
         scope: 'foreground',
         snapshot: snapshot || null,
         // Resolved here because the request projection below is synchronous.
-        historyToolCall: typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false
+        historyToolCall: typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false,
+        historyLayout: typeof options.historyLayout === 'function' ? String(await options.historyLayout() || 'story') : 'story'
       })
     }
     if (Number(payload.step) === 1) {
@@ -388,6 +373,8 @@ export function createNativePlayOrchestrationStrategy(options) {
     if (replayMessages !== request.messages) request = Object.assign({}, request, { messages: replayMessages })
     const passbackMessages = projectDeepSeekThinkingPassback(request.messages, request)
     if (passbackMessages !== request.messages) request = Object.assign({}, request, { messages: passbackMessages })
+    const thinkingMessages = projectAnthropicPriorThinking(request.messages)
+    if (thinkingMessages !== request.messages) request = Object.assign({}, request, { messages: thinkingMessages })
     // Past bodies replayed as the submission tool's arguments instead of prose the
     // model wrote. Runs last so the earlier passes see the shape the host built;
     // the save, the view and every floor control keep the plain text. Only this
@@ -400,7 +387,9 @@ export function createNativePlayOrchestrationStrategy(options) {
       }
       const historyMessages = projectHistoryAsToolCalls(source, {
         toolName: STORY_SUBMIT_TOOL_NAME,
-        preserve: (_message, index) => index === inputIndex
+        layout: staged.historyLayout,
+        // `everything` deliberately replays the input too, leaving a receipt last.
+        preserve: staged.historyLayout === 'everything' ? null : (_message, index) => index === inputIndex
       })
       if (historyMessages !== request.messages) request = Object.assign({}, request, { messages: historyMessages })
     }
@@ -475,12 +464,6 @@ export function createNativePlayOrchestrationStrategy(options) {
 
 export function createForegroundOrchestrationStrategies(options) {
   const nativePlay = createNativePlayOrchestrationStrategy(options.nativePlay)
-  const compatibility = createCompatibilityOrchestrationStrategy(options.compatibility)
-
-  function select(chat) {
-    return chat && chat.requestMode === 'sillytavern' ? compatibility : nativePlay
-  }
-
   async function prepareStep(input) {
     if (input.chat?.requestMode === 'sillytavern') throw new Error('silly 模式已停用')
     if (input.chat?.regenInProgress && Number(input.payload.step) === 1) {
@@ -491,15 +474,14 @@ export function createForegroundOrchestrationStrategies(options) {
         throw new Error('上一次正文重新生成尚未完成：请点「重新生成正文」完成或恢复它，再发送消息')
       }
     }
-    return await select(input.chat).prepareStep(input)
+    return await nativePlay.prepareStep(input)
   }
 
   function projectRequest(optionsValue, coordinates) {
-    return compatibility.projectRequest(optionsValue, coordinates) || nativePlay.projectRequest(optionsValue, coordinates)
+    return nativePlay.projectRequest(optionsValue, coordinates)
   }
 
   function completeRequest(optionsValue, completed) {
-    compatibility.completeRequest(optionsValue, completed)
     nativePlay.completeRequest(optionsValue, completed)
   }
 
@@ -507,13 +489,10 @@ export function createForegroundOrchestrationStrategies(options) {
     nativePlay.clearRequestState(sessionId)
   }
 
-  function endTurn(sessionId) {
-    compatibility.endTurn(sessionId)
-  }
-
   async function assembleSystemPrompt(assembly, input) {
-    return await select(input.chat).assembleSystemPrompt(assembly, input)
+    if (input.chat?.requestMode === 'sillytavern') throw new Error('silly 模式已停用')
+    return await nativePlay.assembleSystemPrompt(assembly, input)
   }
 
-  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, endTurn, assembleSystemPrompt })
+  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt })
 }

@@ -73,6 +73,9 @@ test('Tavern 源码里不再有退役的裸 plugin 消息源', async function ()
       if (!entry.name.endsWith('.js')) continue
       // 兼容垫层本身要按定义写这两种形态，故排除。
       if (full.endsWith(join('domain', 'message-source.js'))) continue
+      // Upgrade repairs V3 events before the historical encoder converts them to V4.
+      // session-upgrade.test.mjs verifies the published output with the real V4 reader.
+      if (full.endsWith(join('domain', 'session-upgrade.js'))) continue
       // plugin-worldbook.js 的 record.source 是 Tavern 自己的世界书记录来源标记
       // （plugin / card），不进入 Session，不是 DSH 的 message source。
       if (full.endsWith(join('domain', 'plugin-worldbook.js'))) continue

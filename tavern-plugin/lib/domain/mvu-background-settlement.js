@@ -501,7 +501,6 @@ export function createMvuSettlementModule(options = {}) {
       sessionId: input.sessionId, messageId: input.messageId, swipeId: input.swipeId,
       expectedLifecycleRevision: input.expectedLifecycleRevision, diagnosticId,
       baselineVariables: input.currentVariables,
-      preserveForeground: input.preserveForeground === true,
       storyText: frame.foregroundOutput.storyText,
       command: formatMvuUpdateCommand(submission),
       validate: ({ before, after }) => auditMvuSettlement(before, after, submission.operations)

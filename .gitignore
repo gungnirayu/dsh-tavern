@@ -23,11 +23,13 @@ output/
 # 用户数据（人物卡、聊天、剧本、素材、索引、设置、diff）
 data/
 
-# 按需重新取得的本地参考副本；来源见 docs/research/reference-projects.md
+# 按需重新取得的本地参考副本
 /references/
 
-# 私人请求快照，仅供本地诊断
-docs/research/sillytavern-successful-prompt-snapshot-*.json
+# 本地调研、实验与验收记录，不入库（结论写进提交说明或功能文档）
+/docs/research/
+/docs/verification/
+/docs/experiments/
 
 # Local installation context (host and isolated home)
 .dsh-tavern-local.json
@@ -35,3 +37,4 @@ docs/research/sillytavern-successful-prompt-snapshot-*.json
 # The 大肥鱼 demo card (examples/dafeiyu-card): too big to ship with the program.
 /examples/dafeiyu-card/*.dshcard
 /examples/dshcard-hello/*.dshcard
+*.bak-*

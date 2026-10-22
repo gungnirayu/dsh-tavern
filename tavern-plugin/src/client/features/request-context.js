@@ -130,9 +130,7 @@
             // Contexts reach 100k+ characters; filter off the typing path.
             const deferredQuery = React.useDeferredValue(query.toLowerCase());
             function downloadJson() {
-                const url = URL.createObjectURL(new Blob([text], { type: "application/json;charset=utf-8" }));
-                const link = document.createElement("a"); link.href = url; link.download = "request-context.json";
-                document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+                downloadTavernBlob(new Blob([text], { type: "application/json;charset=utf-8" }), "request-context.json");
             }
             const visibleSections = React.useMemo(() => sections.filter(section => !deferredQuery || section.searchText.includes(deferredQuery)), [sections, deferredQuery]);
             return h("section", { className: "dsh-tavern-full-context" },

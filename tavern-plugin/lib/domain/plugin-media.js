@@ -9,8 +9,10 @@ const MAX_ITEMS = 2000
 const MAX_DATA_BYTES = 64 * 1024
 const MAX_ISSUED_PER_TURN = 20
 const MAX_TEXT = 500
-
-export const PLUGIN_MEDIA_LIMITS = Object.freeze({ items: MAX_ITEMS, dataBytes: MAX_DATA_BYTES, text: MAX_TEXT })
+const MAX_PROMPT = 12000
+// Earlier pictures of one illustration kept when its attachment is replaced (redraws), newest last.
+const MAX_HISTORY = 8
+const ACTION_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'TAVERN_PLUGIN_INVALID' }) }
 
@@ -48,6 +50,36 @@ function progressOf(value) {
   return number
 }
 
+// Work under way on an item that may still show its current picture (e.g. a redraw).
+function activityOf(value) {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) throw invalid('activity 必须是对象或 null')
+  const label = optionalText(value.label, 'activity.label')
+  if (!label.trim() || label.length > 40) throw invalid('activity.label 需要 1–40 个字符')
+  return { label, progress: progressOf(value.progress), cancellable: value.cancellable === true }
+}
+
+// Extra buttons a plugin offers on its item; Tavern passes the click back to the plugin's illustrator.
+function actionsOf(value) {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value) || value.length > 4) throw invalid('actions 最多 4 个')
+  return value.map(action => {
+    if (!action || typeof action.id !== 'string' || !ACTION_ID.test(action.id)) throw invalid('actions[].id 只能用小写字母、数字和连字符')
+    const label = optionalText(action.label, 'actions[].label')
+    if (!label.trim() || label.length > 20) throw invalid('actions[].label 需要 1–20 个字符')
+    // Asked before the click goes to the plugin, e.g. when it may charge again.
+    const confirm = optionalText(action.confirm, 'actions[].confirm')
+    return { id: action.id, label, ...(confirm.trim() ? { confirm } : {}) }
+  })
+}
+
+function promptOf(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw invalid('prompt 必须是字符串')
+  if (value.length > MAX_PROMPT) throw invalid('prompt 不能超过 ' + MAX_PROMPT + ' 个字符')
+  return value
+}
+
 /** Normalize the writable fields of an item; `base` supplies values a patch leaves out. */
 function itemFields(input, base = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw invalid('item 必须是对象')
@@ -64,7 +96,10 @@ function itemFields(input, base = {}) {
     progress: has('progress') ? progressOf(input.progress) : base.progress ?? null,
     anchor: has('anchor') ? optionalText(input.anchor, 'anchor').trim() : base.anchor || '',
     caption: has('caption') ? optionalText(input.caption, 'caption') : base.caption || '',
-    error: has('error') ? optionalText(input.error, 'error') : base.error || ''
+    error: has('error') ? optionalText(input.error, 'error') : base.error || '',
+    activity: has('activity') ? activityOf(input.activity) : base.activity ?? null,
+    actions: has('actions') ? actionsOf(input.actions) : base.actions || [],
+    prompt: has('prompt') ? promptOf(input.prompt) : base.prompt || ''
   }
   const data = has('data') ? pluginData(input.data) : base.data
   if (data !== undefined) fields.data = data
@@ -87,6 +122,8 @@ export function publicPluginMedia(item, current) {
     id: item.id, owner: item.owner, turn: item.turn, textVersion: item.key, kind: item.kind, status: item.status,
     progress: item.progress, anchor: item.anchor, caption: item.caption, error: item.error,
     attachment: item.attachment ? { ...item.attachment } : null,
+    activity: item.activity ? { ...item.activity } : null, actions: (item.actions || []).map(action => ({ ...action })), prompt: item.prompt || '',
+    history: (item.history || []).map(entry => ({ caption: entry.caption, prompt: entry.prompt, createdAt: entry.createdAt })),
     ...(item.data !== undefined ? { data: structuredClone(item.data) } : {}),
     createdAt: item.createdAt, updatedAt: item.updatedAt,
     ...(current === undefined ? {} : { current })
@@ -142,7 +179,12 @@ export function createPluginMedia({ store, now = Date.now, id = randomUUID }) {
       if (index < 0) throw Object.assign(new Error('媒体项不存在或不属于本插件'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
       const blocked = ['id', 'owner', 'turn', 'textVersion', 'key'].find(key => Object.hasOwn(changes || {}, key))
       if (blocked) throw invalid(blocked + ' 不能修改')
-      const next = { ...value.items[index], ...itemFields(changes, value.items[index]), updatedAt: now() }
+      const previous = value.items[index]
+      const next = { ...previous, ...itemFields(changes, previous), updatedAt: now() }
+      // A new picture replacing an image keeps the old one as an earlier version.
+      if (previous.attachment?.mediaType && next.attachment?.attachmentId !== previous.attachment.attachmentId) {
+        next.history = [...(previous.history || []), { attachment: previous.attachment, caption: previous.caption || '', prompt: previous.prompt || '', createdAt: previous.updatedAt || previous.createdAt }].slice(-MAX_HISTORY)
+      }
       value.items[index] = next
       return next
     })
@@ -152,6 +194,26 @@ export function createPluginMedia({ store, now = Date.now, id = randomUUID }) {
       const before = value.items.length
       value.items = value.items.filter(item => !(item.id === itemId && item.owner === owner))
       return value.items.length !== before
+    })
+  }
+  /** The player removes one picture of an item: an earlier version, or the current one (the latest
+   * earlier version takes its place; with none left the item goes). Returns the item, or null when removed. */
+  async function removeVersion({ chatId, itemId, version }) {
+    return update(chatId, value => {
+      const index = value.items.findIndex(item => item.id === itemId)
+      if (index < 0) throw Object.assign(new Error('媒体项不存在'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      const item = value.items[index], history = [...(item.history || [])]
+      if (version === undefined || version === null || Number(version) === history.length) {
+        const last = history.pop()
+        if (!last) { value.items.splice(index, 1); return null }
+        value.items[index] = { ...item, attachment: last.attachment, caption: last.caption, prompt: last.prompt, history, updatedAt: now() }
+      } else {
+        const at = Number(version)
+        if (!Number.isInteger(at) || at < 0 || at >= history.length) throw invalid('版本不存在')
+        history.splice(at, 1)
+        value.items[index] = { ...item, history, updatedAt: now() }
+      }
+      return value.items[index]
     })
   }
   async function list({ chatId, owner, turn }) {
@@ -177,7 +239,10 @@ export function createPluginMedia({ store, now = Date.now, id = randomUUID }) {
       const key = keyMap.get(item.turn + '\u0000' + item.key)
       if (!key) return []
       const ref = item.attachment ? attachment(item.attachment) : null
-      return item.attachment && !ref ? [] : [{ ...structuredClone(item), id: pluginMediaId(targetSessionId, id()), key, attachment: ref ? { ...ref } : null }]
+      if (item.attachment && !ref) return []
+      // Earlier versions whose file did not come along are dropped.
+      const history = (item.history || []).flatMap(entry => { const earlier = attachment(entry.attachment); return earlier ? [{ ...structuredClone(entry), attachment: { ...earlier } }] : [] })
+      return [{ ...structuredClone(item), id: pluginMediaId(targetSessionId, id()), key, attachment: ref ? { ...ref } : null, ...(item.history ? { history } : {}) }]
     })
     if (!items.length) return 0
     await update(targetChatId, value => {
@@ -192,7 +257,7 @@ export function createPluginMedia({ store, now = Date.now, id = randomUUID }) {
     await store.remove(pathFor(chatId))
     for (const known of issuedKnown) if (known.startsWith(chatId + '\u0000')) issuedKnown.delete(known)
   }
-  return Object.freeze({ issue, attach, patch, remove, list, find, copyForFork, snapshot, importInto, turns, removeChat, pathFor })
+  return Object.freeze({ issue, attach, patch, remove, removeVersion, list, find, copyForFork, snapshot, importInto, turns, removeChat, pathFor })
 }
 
 const FILE_MEDIA_TYPES = {

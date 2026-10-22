@@ -162,6 +162,23 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   for(const row of page.messages)chat.messages.push(await t.get(row.message.runtimeRef))
   return {chat,messageCount:view.messageCount,from,to:end-1,revision:view.state.chatRevision,worldMessage:view.state.worldMessage??null}
  }
+ // Floor summaries (role, turn, greeting, MVU flags) of the latest `count` floors, from
+ // the page entries' inline summaries: never the bodies, never the whole history.
+ async function readRecentSummaries(id,count){
+  const view=await head(id)
+  if(!view)return null
+  const start=Math.max(0,view.messageCount-Math.max(0,Number(count)||0)),messages=new Array(view.messageCount-start),t=tree(id)
+  let cursor=view.snapshotCursor
+  while(cursor&&cursor.before>start){
+   const page=await pages.readHistoryPage(id,{cursor,limit:Math.min(500,cursor.before-start)})
+   for(const {position,message} of page.messages){
+    if(position<start)continue
+    messages[position-start]=projectSessionMessage((message.session||sessionSummary(await t.get(message.runtimeRef))).message)
+   }
+   cursor=page.previousCursor
+  }
+  return {messageCount:view.messageCount,from:start,messages}
+ }
  async function readSlice(id,indices=[],fields,pinned){
   const view=pinned||await head(id)
   if(!view)return null
@@ -349,7 +366,7 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   const view=await headAtRevision(id,options.revision??Infinity)
   if(!view)return null
   if(!view.state.sceneIndexRef||view.state.sceneIndexRevision!==view.state.chatRevision)return undefined
-  const chat=await selectedHeader(id,view,['id','sessionId','_storageRevision','mode','backgroundConfigVersion','conversationFeaturesVersion','sceneImagesEnabled'])
+  const chat=await selectedHeader(id,view,['id','sessionId','_storageRevision','mode','backgroundConfigVersion','conversationFeaturesVersion'])
   const t=tree(id),targets={},root=view.state.sceneIndexRef
   for(const turn of new Set(options.turns)){
    if(!Number.isSafeInteger(turn)||turn<1)continue
@@ -373,7 +390,7 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   }
   const view=await headAtRevision(id,options?.revision??Infinity)
   if(!view)return null
-  const chat=await selectedHeader(id,view,['id','sessionId','mode','backgroundConfigVersion','conversationFeaturesVersion','sceneImagesEnabled'])
+  const chat=await selectedHeader(id,view,['id','sessionId','mode','backgroundConfigVersion','conversationFeaturesVersion'])
   const t=tree(id),messages=new Array(view.messageCount)
   let cursor=view.snapshotCursor
   while(cursor){
@@ -664,5 +681,5 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   const result=await pages.sweep(id,{graceMs,dryRun,retainEntry:needed})
   return {...result,indexKeysRemoved:pruned.removed}
  }
- return Object.freeze({compact,readRetentionHeader,patch,read,readWindow,readSettlementBase,readChangedSlice,readRevisionMetadata,readHelperContext,readSlice,readSessionState,readDisplayRuntimeState,readSceneImageState,version,create,write})
+ return Object.freeze({compact,readRetentionHeader,patch,read,readWindow,readRecentSummaries,readSettlementBase,readChangedSlice,readRevisionMetadata,readHelperContext,readSlice,readSessionState,readDisplayRuntimeState,readSceneImageState,version,create,write})
 }

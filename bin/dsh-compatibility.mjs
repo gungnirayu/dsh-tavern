@@ -41,7 +41,7 @@ export function dshCompatibilityNotice(currentVersion = '', host = 'desktop') {
   if (/^0\.1\./.test(currentVersion)) {
     const upgrade = host === 'android'
       ? `先升级到 DSHA ${recommendedDshaVersion}（${dshaReleasesUrl}）`
-      : `先安装官方 DeepSeek Harness ${recommendedDesktopVersion}（${desktopReleasesUrl}）或社区版 DSH NEXT（https://github.com/anywhere-labs/dsh-desktop/releases），打开一次后从托盘退出`
+      : `先安装官方 DeepSeek Harness ${recommendedDesktopVersion}（${desktopReleasesUrl}），打开一次后从托盘退出`
     return `已停止安装，现有酒馆、存档和宿主都没有改动。\n当前宿主是 DSH ${currentVersion}（DSH Desktop 2.0.13 / 旧一键安装包 / DSHA 0.1.5），装不了这个版本（需要 DSH ${allowed}）。\n要用这个版本：${upgrade}，再重新运行安装；旧一键安装包的存档在它自己的目录里，换宿主后按 https://github.com/flizzywine/dsh-tavern/blob/main/docs/data-import.md 导入。\n想继续用现在的宿主：请改装稳定版，安装方法见 ${STABLE_GUIDE}`
   }
   return `当前 DSH ${currentVersion} 不在允许清单内；已停止安装，不会修改宿主版本。允许的版本：${allowed}；${hostGuidance(host)}`

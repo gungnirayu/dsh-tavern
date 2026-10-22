@@ -9,15 +9,35 @@ REPOSITORY="${DSH_TAVERN_REPOSITORY:-${DEFAULT_REPOSITORY}}"
 BRANCH="${DSH_TAVERN_BRANCH:-main}"
 DEFAULT_TARBALL_URL="https://codeload.github.com/flizzywine/dsh-tavern/tar.gz/refs/heads/main"
 TARBALL_URL="${DSH_TAVERN_TARBALL_URL:-${DEFAULT_TARBALL_URL}}"
+# 运行清单与 CDN 源：按文件哈希逐个比对，只下载有变化的文件（整包压缩包为备用方案）。
+CDN_METADATA_URL="${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json}"
+CDN_ROOT_URL="${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern}"
+SOURCE_CDN="${DSH_TAVERN_SOURCE_CDN:-1}"
 SOURCE_MARKER=".dsh-tavern-tarball-source"
+OFFLINE_TARBALL="/root/tavern-offline.tar"
+OFFLINE_DIR="${DSH_ROOT}/tavern-offline"
+# 独立 APK 升级时由原生层传入：用本次 APK 自带快照离线替换源码与依赖，
+# 并带上期望提交，避免复用上一个 APK 留下的解包目录。
+APK_BUNDLE_UPDATE="${DSH_TAVERN_APK_BUNDLE_UPDATE:-0}"
+APK_BUNDLE_REVISION="${DSH_TAVERN_APK_BUNDLE_REVISION:-}"
 TEMP_ROOT=""
 SOURCE_BACKUP=""
 SOURCE_SWAPPED=0
+NODE_MODULES_CARRIED=0
 
 fail() {
   printf 'DSH Tavern 安装失败：%s\n' "$1" >&2
   exit 1
 }
+
+# 全程带步骤序号与耗时，日志会原样落到 APK 的安装日志里，方便判断卡在哪一步。
+START_TIME=$(date +%s)
+STEP=0
+stage() {
+  STEP=$((STEP + 1))
+  printf '\n== [步骤 %s] %s（已用 %ss）==\n' "${STEP}" "$*" "$(( $(date +%s) - START_TIME ))"
+}
+info() { printf '   %s\n' "$*"; }
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "缺少命令 $1，请先完成 DSHA 的基础安装。"
@@ -44,18 +64,80 @@ verify_source() {
   [ -f "${source}/android/install.sh" ] || fail "下载内容不完整，缺少 android/install.sh。"
 }
 
+# APK 自带的离线包：{ revision, source/, store/, cache/, registry, pnpm-runtime/ }。
+# 首装完全离线；解包一次后保留在数据目录，失败重试时不必再解。
+OFFLINE_READY=0
+prepare_offline_bundle() {
+  [ "${OFFLINE_READY}" -eq 1 ] && return 0
+  # APK 升级时以本次 APK 的提交为准：旧 APK 失败后留下的解包目录不能复用。
+  if [ -n "${APK_BUNDLE_REVISION}" ] && [ -f "${OFFLINE_DIR}/revision" ] \
+    && [ "$(cat "${OFFLINE_DIR}/revision" 2>/dev/null || true)" != "${APK_BUNDLE_REVISION}" ]; then
+    info "内置快照版本变化（$(cat "${OFFLINE_DIR}/revision" 2>/dev/null || echo 未知) → ${APK_BUNDLE_REVISION}），重新解包"
+    rm -rf -- "${OFFLINE_DIR}" 2>/dev/null || true
+  fi
+  if [ -f "${OFFLINE_DIR}/revision" ] && [ -d "${OFFLINE_DIR}/store" ] && [ -d "${OFFLINE_DIR}/source" ]; then
+    # 新 APK 可能带更新的源码/缓存；只按目录存在复用会把旧 store 和缺失的
+    # metadata 缓存一直留着，首装继续退回联网。比对包内 revision，不同就重解。
+    local bundled_revision=""
+    if [ -f "${OFFLINE_TARBALL}" ]; then
+      bundled_revision="$(tar -xzOf "${OFFLINE_TARBALL}" revision 2>/dev/null || true)"
+    fi
+    if [ -z "${bundled_revision}" ] || [ "$(cat "${OFFLINE_DIR}/revision")" = "${bundled_revision}" ]; then
+      info "复用已解包的离线依赖：${OFFLINE_DIR}"
+      OFFLINE_READY=1
+      return 0
+    fi
+    info "内置依赖包版本变化（$(cat "${OFFLINE_DIR}/revision" 2>/dev/null) → ${bundled_revision}），重新解包"
+    rm -rf -- "${OFFLINE_DIR}" 2>/dev/null || true
+  fi
+  [ -f "${OFFLINE_TARBALL}" ] || return 1
+  stage "解开 APK 内置依赖包（$(du -h "${OFFLINE_TARBALL}" 2>/dev/null | cut -f1)，约 20-60s）"
+  info "源文件：${OFFLINE_TARBALL}"
+  mkdir -p "${OFFLINE_DIR}"
+  # 分步解，日志里能看到每个目录的落盘时间，便于判断是慢还是卡死。
+  tar -xzf "${OFFLINE_TARBALL}" -C "${OFFLINE_DIR}" \
+    || { info '离线包解压失败，改用联网安装。'; return 1; }
+  if [ ! -f "${OFFLINE_DIR}/revision" ] || [ ! -d "${OFFLINE_DIR}/store" ] || [ ! -d "${OFFLINE_DIR}/source" ]; then
+    info '离线包内容不完整，改用联网安装。'
+    return 1
+  fi
+  info "离线包就绪：源码 $(find "${OFFLINE_DIR}/source" -type f | wc -l) 个文件，store $(du -sh "${OFFLINE_DIR}/store" 2>/dev/null | cut -f1)"
+  # 已解包则可以删掉压缩包，省出与包体相当的空间。
+  rm -f -- "${OFFLINE_TARBALL}" 2>/dev/null || true
+  OFFLINE_READY=1
+  return 0
+}
+
+install_from_offline() {
+  prepare_offline_bundle || return 1
+  stage "使用 APK 内置源码快照（$(cat "${OFFLINE_DIR}/revision")）"
+  prepare_temp_root
+  # 复制而不是移动：离线目录保持完整，安装失败重试时不必重新解包。
+  local candidate="${TEMP_ROOT}/offline-source"
+  cp -a "${OFFLINE_DIR}/source" "${candidate}" || { info '复制内置源码失败，改用联网安装。'; return 1; }
+  verify_source "${candidate}"
+  info "源码已就绪：$(find "${candidate}" -type f | wc -l) 个文件"
+  # 快照没有 .git：写 tarball 标记，之后的更新走官方压缩包覆盖，行为与既有压缩包安装一致。
+  printf '%s\n' "${DEFAULT_TARBALL_URL}" >"${candidate}/${SOURCE_MARKER}"
+  replace_source "${candidate}"
+  return 0
+}
+
 download_file() {
   local url="$1"
   local destination="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 2 --connect-timeout 20 -o "${destination}" "${url}"
+    # 手机网络可能在传输中途停住：60 秒低于 1 KB/s 或 15 分钟总时长即失败，
+    # 交给上层回退/重试，而不是像以前那样无限等待、看起来像卡死。
+    curl -fL --retry 2 --connect-timeout 20 --speed-limit 1024 --speed-time 60 --max-time 900 \
+      -o "${destination}" "${url}"
     return
   fi
   printf '未检测到 curl，正在通过 Node.js 下载……\n'
   node - "${url}" "${destination}" <<'NODE'
 const fs = require('node:fs')
 const [url, destination] = process.argv.slice(2)
-fetch(url, { redirect: 'follow' })
+fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(15 * 60 * 1000) })
   .then(response => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     return response.arrayBuffer()
@@ -68,11 +150,30 @@ fetch(url, { redirect: 'follow' })
 NODE
 }
 
+# 依赖锁文件没变时，已装的 node_modules 可以原样复用；整体替换源码时把它搬进新目录，
+# 后续 pnpm install 只是校验一遍，不再把 287 个包重新复制或下载。
+same_lockfile() {
+  local candidate="$1"
+  cmp -s "${APP_DIR}/pnpm-lock.yaml" "${candidate}/pnpm-lock.yaml" || return 1
+  cmp -s "${APP_DIR}/pnpm-workspace.yaml" "${candidate}/pnpm-workspace.yaml" || return 1
+  # 依赖补丁变了也要重装，不能只看 lockfile。
+  if [ -d "${APP_DIR}/patches" ] || [ -d "${candidate}/patches" ]; then
+    diff -rq "${APP_DIR}/patches" "${candidate}/patches" >/dev/null 2>&1 || return 1
+  fi
+  return 0
+}
+
 replace_source() {
   local candidate="$1"
   verify_source "${candidate}"
   if [ -d "${APP_DIR}/data" ] && [ ! -e "${candidate}/data" ]; then
     cp -a "${APP_DIR}/data" "${candidate}/data"
+  fi
+  if [ -d "${APP_DIR}/node_modules" ] && [ ! -e "${candidate}/node_modules" ] && same_lockfile "${candidate}"; then
+    if mv -- "${APP_DIR}/node_modules" "${candidate}/node_modules" 2>/dev/null; then
+      NODE_MODULES_CARRIED=1
+      info '依赖未变化，复用已安装的 node_modules'
+    fi
   fi
   if [ -e "${APP_DIR}" ]; then
     SOURCE_BACKUP="${TEMP_ROOT}/previous-source"
@@ -103,9 +204,44 @@ NODE
     TEMP_ROOT=""
     return 1
   fi
+  # 复用过去的 node_modules 跟着新源码一起回滚，别让旧版本失去可用依赖。
+  if [ "${NODE_MODULES_CARRIED}" = 1 ] && [ -d "${APP_DIR}/node_modules" ] \
+    && [ -n "${SOURCE_BACKUP}" ] && [ -d "${SOURCE_BACKUP}" ] && [ ! -e "${SOURCE_BACKUP}/node_modules" ]; then
+    mv -- "${APP_DIR}/node_modules" "${SOURCE_BACKUP}/node_modules" 2>/dev/null || true
+  fi
   if [ -e "${APP_DIR}" ]; then mv -- "${APP_DIR}" "${TEMP_ROOT}/failed-source"; fi
   if [ -n "${SOURCE_BACKUP}" ] && [ -d "${SOURCE_BACKUP}" ]; then mv -- "${SOURCE_BACKUP}" "${APP_DIR}"; fi
   SOURCE_SWAPPED=0
+}
+
+# 增量更新：按 jsDelivr 运行清单逐文件比对，只下载有变化的文件，其余直接复用
+# 已安装目录。完整源码包十几 MB，而一次更新真正变化的文件往往只有几百 KB。
+install_from_cdn() {
+  [ "${SOURCE_CDN}" != 0 ] || return 1
+  [ -f "${APP_DIR}/bin/download.cjs" ] || return 1
+  prepare_temp_root
+  local candidate="${TEMP_ROOT}/cdn-source"
+  local version=""
+  version="$(node -e 'process.stdout.write(String(require(process.argv[1]).version || ""))' "${APP_DIR}/package.json" 2>/dev/null || true)"
+  local args=(runtime "${CDN_METADATA_URL}" "${CDN_ROOT_URL}" "${candidate}" "${APP_DIR}" --stall 15 --budget 90)
+  if [ -n "${version}" ]; then args+=(--min-version "${version}"); fi
+  stage "增量下载源码（只下载有变化的文件）"
+  if ! node "${APP_DIR}/bin/download.cjs" "${args[@]}"; then
+    info '增量下载不可用，改用完整源码包。'
+    return 1
+  fi
+  # 旧版运行清单还没有 android/：保留已安装的安装脚本，保证源码校验通过。
+  if [ ! -f "${candidate}/android/install.sh" ]; then
+    rm -rf -- "${candidate}/android"
+    if ! cp -a "${APP_DIR}/android" "${candidate}/android"; then
+      info '无法保留 Android 安装脚本，改用完整源码包。'
+      return 1
+    fi
+  fi
+  # 快照没有 .git：写 tarball 标记，之后继续走 CDN/压缩包覆盖。
+  printf '%s\n' "${DEFAULT_TARBALL_URL}" >"${candidate}/${SOURCE_MARKER}"
+  replace_source "${candidate}"
+  return 0
 }
 
 install_from_tarball() {
@@ -129,7 +265,7 @@ install_source() {
     local attempt
     for attempt in 1 2 3; do
       printf '正在通过 Git 下载 DSH Tavern（第 %s/3 次）……\n' "${attempt}"
-      if git clone --filter=blob:none --no-checkout --branch "${BRANCH}" --single-branch "${REPOSITORY}" "${candidate}" \
+      if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 clone --filter=blob:none --no-checkout --branch "${BRANCH}" --single-branch "${REPOSITORY}" "${candidate}" \
         && git -C "${candidate}" sparse-checkout set --no-cone '/*' '!**/docs/' \
         && git -C "${candidate}" checkout "${BRANCH}"; then
         replace_source "${candidate}"
@@ -151,6 +287,17 @@ is_disposable_upgrade_residue() {
 }
 
 update_source() {
+  # APK 升级：新 APK 自带比已装源码更新的快照时，直接离线换源码 + 依赖。
+  # 原生层已经确认“用户没在应用内更新过”，所以这里不需要再比较版本。
+  if [ "${APK_BUNDLE_UPDATE}" = 1 ]; then
+    if [ -f "${OFFLINE_TARBALL}" ] || [ -d "${OFFLINE_DIR}/source" ]; then
+      if install_from_offline; then
+        info '已用 APK 内置快照完成离线升级'
+        return
+      fi
+      info '内置快照不可用，改为常规方式更新。'
+    fi
+  fi
   if [ -d "${APP_DIR}/.git" ]; then
     require_command git
     if ! git -C "${APP_DIR}" diff --quiet || ! git -C "${APP_DIR}" diff --cached --quiet; then
@@ -161,7 +308,8 @@ update_source() {
     git -C "${APP_DIR}" config remote.origin.promisor true
     git -C "${APP_DIR}" config remote.origin.partialclonefilter blob:none
     git -C "${APP_DIR}" sparse-checkout set --no-cone '/*' '!**/docs/'
-    if git -C "${APP_DIR}" fetch origin "${BRANCH}"; then
+    # 60 秒低于 1 KB/s 就中止：GitHub 不可达时不要让 fetch 无限挂起。
+    if git -C "${APP_DIR}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch origin "${BRANCH}"; then
       if ! git -C "${APP_DIR}" merge-base --is-ancestor HEAD "origin/${BRANCH}"; then
         local generated_only=1
         local commit subject files
@@ -184,6 +332,8 @@ update_source() {
       git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
       return
     fi
+    # Git 走不通时优先按清单增量替换（jsDelivr 通常比 codeload 更容易连通）。
+    if install_from_cdn; then return; fi
     install_from_tarball
     return
   fi
@@ -192,6 +342,7 @@ update_source() {
       TARBALL_URL="$(sed -n '1p' "${APP_DIR}/${SOURCE_MARKER}")"
       [ -n "${TARBALL_URL}" ] || TARBALL_URL="${DEFAULT_TARBALL_URL}"
     fi
+    if install_from_cdn; then return; fi
     install_from_tarball
     return
   fi
@@ -206,20 +357,33 @@ update_source() {
 require_command bash
 require_command node
 
+stage "准备酒馆源码"
 if [ ! -e "${APP_DIR}" ]; then
-  install_source
+  # 全新安装优先用 APK 内置快照：不联网、不受网络质量影响。
+  if install_from_offline; then
+    info '使用 APK 内置源码（离线）'
+  else
+    info '未找到可用的内置依赖包，改为联网下载。'
+    install_source
+  fi
 else
+  info '已有安装，检查更新。'
   update_source
 fi
 
 verify_source "${APP_DIR}"
 
-if ! DSH_HOME="${DSH_ROOT}" bash "${APP_DIR}/android/install.sh"; then
+stage "安装依赖并配置 Profile（最慢的一步，日志会持续输出）"
+if ! DSH_HOME="${DSH_ROOT}" DSH_TAVERN_OFFLINE_DIR="${OFFLINE_DIR}" bash "${APP_DIR}/android/install.sh"; then
   rollback_source || fail "无法确认服务已停止，未回滚源码，请检查进程后重试。"
   fail "依赖或 Profile 安装失败，源码已恢复到更新前版本。"
 fi
 
 SOURCE_SWAPPED=0
+# 安装成功后内置依赖包已无用，清掉可释放数百 MB（失败时保留，重试更快）。
+if [ -d "${OFFLINE_DIR}" ]; then
+  rm -rf -- "${OFFLINE_DIR}" 2>/dev/null || true
+fi
 if [ "${DSH_TAVERN_ANDROID_STANDALONE:-0}" = 1 ]; then
   printf '\n全部完成。请返回 DSH Tavern 应用并重新启动酒馆。\n'
 else

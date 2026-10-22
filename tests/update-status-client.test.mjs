@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createUpdateStatusController } from '../tavern-plugin/lib/domain/update-status-controller.js'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
@@ -12,27 +13,29 @@ const ok = () => Response.json({ ok: true, status: { phase: 'update-available' }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
 function updaterHarness({ call, initial = { phase: 'loading', host: 'cli' }, askConfirm = async () => true, polling = false } = {}) {
-  const marker = source.indexOf('async function refreshUpdateStatus()')
-  const pollStart = source.lastIndexOf('React.useEffect(function () {', marker)
-  const pollEnd = source.indexOf('\n\t\t\tReact.useEffect(', marker)
-  const helperStart = source.indexOf('function publishUpdateStatus(')
-  const helperEnd = source.indexOf('const updateStartedAtRef', helperStart)
-  const actionStart = source.indexOf('async function checkUpdate()')
-  const actionEnd = source.indexOf('const h = React.createElement;', actionStart)
-  const reports = [], cleared = [], states = [], calls = [], signals = [], timers = new Map()
+  const reports = [], cleared = [], states = [], calls = [], signals = [], timers = new Map(), intervals = new Map()
   let timerId = 0
-  const updateStatusRef = { current: initial }, updateActionRef = { current: { pending: false, generation: 0 } }
-  let current = initial, poll, cleanup
-  const actions = new Function('React', 'window', 'call', 'setUpdateStatus', 'tavernErrorHub', 'updateStartedAtRef', 'isMissingUpdateApiError', 'updateStatusRef', 'updateActionRef', 'askConfirm', 'updateRecoveryRef',
-    source.slice(helperStart, helperEnd) + source.slice(actionStart, actionEnd) + source.slice(pollStart, pollEnd) + ';return { checkUpdate, performUpdate, cancelUpdate, isUpdateBusy }')(
-    { useEffect(fn) { if (polling) cleanup = fn() } },
-    { setInterval(fn) { poll = fn; return 1 }, clearInterval() {}, setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id }, clearTimeout(id) { timers.delete(id) } },
-    (method, args, options) => { calls.push(method); signals.push(options?.signal); return call(method, args, undefined, options) },
-    state => { current = typeof state === 'function' ? state(current) : state; states.push(current) },
-    { report: (label, error) => reports.push({ label, error }), resolve: label => cleared.push(label) },
-    { current: 0 }, error => /未知方法: getUpdateStatus/.test(error.message), updateStatusRef, updateActionRef, askConfirm,
-    { current: { sawOffline: false, reloading: false } })
-  return { ...actions, reports, cleared, states, calls, signals, expire: () => { for (const timer of [...timers.values()]) timer() }, updateActionRef, status: () => current, poll: () => poll(), stop: () => cleanup?.() }
+  const controller = createUpdateStatusController({ initial, confirm: askConfirm,
+    call: (method, args, options) => {
+      if (!polling && method === 'getUpdateStatus') return Promise.resolve({})
+      calls.push(method); signals.push(options?.signal); return call(method, args, undefined, options)
+    },
+    errors: { report: (label, error) => reports.push({ label, error }), resolve: label => cleared.push(label) },
+    browser: {
+      setInterval(fn, ms) { const id = ++timerId; intervals.set(id, { fn, ms }); return id },
+      clearInterval(id) { intervals.delete(id) },
+      setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id }, clearTimeout(id) { timers.delete(id) },
+      fetch: async () => ({ ok: true }), location: { origin: 'http://localhost', reload() {} }
+    }
+  })
+  controller.subscribe(() => states.push(controller.getSnapshot()))
+  controller.start()
+  return { checkUpdate: controller.check, performUpdate: controller.perform, cancelUpdate: controller.cancel,
+    isUpdateBusy: controller.isBusy, reports, cleared, states, calls, signals,
+    expire: () => { for (const timer of [...timers.values()]) timer() },
+    status: controller.getSnapshot, poll: () => [...intervals.values()].find(item => item.ms === 2500)?.fn(),
+    stop: controller.stop, intervals, timers }
+
 }
 function pollHarness(fetch) { return updaterHarness({ call: rpcFor(fetch), polling: true }) }
 function deferred() {
@@ -101,7 +104,6 @@ for (const [action, initial, busyPhase] of [
     h.expire()
     await pending
     assert.equal(h.status().phase, busyPhase)
-    assert.equal(h.updateActionRef.current.pending, false)
     assert.equal(h.signals.at(-1).aborted, true)
     await h.poll()
     assert.equal(h.status().phase, 'repair-required')
@@ -112,3 +114,77 @@ for (const [action, initial, busyPhase] of [
     h.stop()
   })
 }
+
+test('确认期间重复点击不发送更新，停止后确认结果与迟到请求失效', async () => {
+  const confirmation = deferred()
+  const h = updaterHarness({ initial: { phase: 'update-available' }, askConfirm: () => confirmation.promise,
+    call: async () => assert.fail('closed controller must not start an update') })
+  const action = h.performUpdate()
+  await h.performUpdate()
+  h.stop()
+  confirmation.resolve(true)
+  await action
+  assert.equal(h.intervals.size, 0)
+  assert.equal(h.timers.size, 0)
+  assert.deepEqual(h.calls, [])
+})
+
+test('停止取消挂起请求并忽略迟到状态', async () => {
+  const response = deferred()
+  const h = updaterHarness({ polling: true, call: () => response.promise })
+  h.stop()
+  await tick()
+  assert.equal(h.signals[0].aborted, true)
+  response.resolve({ status: { phase: 'update-available' } })
+  await tick()
+  assert.equal(h.status().phase, 'loading')
+  assert.equal(h.intervals.size, 0)
+  assert.equal(h.timers.size, 0)
+  assert.deepEqual(h.reports, [])
+})
+
+test('恢复探测不重叠，断线恢复只重载一次并在停止时清理', async () => {
+  const intervals = new Map(), probes = [], waiting = deferred()
+  let reloads = 0, online = false
+  const controller = createUpdateStatusController({ initial: { phase: 'running', host: 'cli' },
+    call: async () => ({}), confirm: async () => true, errors: { report() {}, resolve() {} },
+    browser: { setTimeout, clearTimeout,
+      setInterval(fn, ms) { intervals.set(ms, fn); return ms }, clearInterval(id) { intervals.delete(id) },
+      location: { origin: 'http://localhost', reload() { reloads++ } },
+      async fetch() { probes.push(1); if (!online) throw new TypeError('offline'); return waiting.promise }
+    }
+  })
+  controller.start(); await tick()
+  online = true
+  const probe = intervals.get(400)()
+  await intervals.get(400)()
+  assert.equal(probes.length, 2, 'pending recovery probe is not duplicated')
+  waiting.resolve({ ok: true }); await probe
+  assert.equal(reloads, 1)
+  await intervals.get(400)()
+  assert.equal(reloads, 1)
+  controller.stop()
+  assert.equal(intervals.size, 0)
+})
+
+test('空闲时状态轮询放慢到 30 秒一次，更新进行中仍每 2.5 秒一次', async () => {
+  let clock = 0, phase = 'update-available', reads = 0, tickPoll
+  const controller = createUpdateStatusController({ now: () => clock, confirm: async () => true,
+    call: async () => { reads++; return { status: { phase } } },
+    errors: { report() {}, resolve() {} },
+    browser: { setInterval(fn, ms) { if (ms === 2500) tickPoll = fn; return 1 }, clearInterval() {}, setTimeout() { return 1 }, clearTimeout() {},
+      fetch: async () => ({ ok: true }), location: { origin: 'http://localhost', reload() {} } } })
+  controller.start()
+  await tick()
+  assert.equal(reads, 1)
+  for (let i = 0; i < 11; i++) { clock += 2500; await tickPoll() }
+  assert.equal(reads, 1)
+  clock += 2500; await tickPoll()
+  assert.equal(reads, 2)
+  phase = 'running'
+  clock += 30000; await tickPoll()
+  assert.equal(controller.getSnapshot().phase, 'running')
+  for (let i = 0; i < 3; i++) { clock += 2500; await tickPoll() }
+  assert.equal(reads, 6)
+  controller.stop()
+})

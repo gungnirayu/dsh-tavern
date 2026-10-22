@@ -5,7 +5,7 @@ export const templateStateFields = Object.freeze([
   'id', 'sessionId', '_storageRevision', 'tavernHelperLifecycleRevision',
   'backgroundConfigVersion', 'conversationFeaturesVersion', 'mode', 'cardPath',
   'macroState.userName', 'settleStatus', 'variables', 'tavernPluginMetadata',
-  'promptTemplateInput', 'cardDefinitionSnapshot', 'openingWorldbookSnapshot'
+  'promptTemplateInput', 'runtimePresetSnapshot', 'cardDefinitionSnapshot', 'openingWorldbookSnapshot'
 ])
 
 /** A complete short history uses the cursor/delta protocol. Only truncate when

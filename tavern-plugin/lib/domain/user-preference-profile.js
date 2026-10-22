@@ -214,8 +214,6 @@ function createSingleProfile({ store, now = Date.now }) {
   return Object.freeze({ read, save, saveDraft, confirm, updateConfirmed, setDefaultEnabled, stableContext })
 }
 
-export const USER_PREFERENCE_PROFILE_PATH = PROFILE_PATH
-
 /** Resolve the configured default, independently of the profile being edited. */
 export async function defaultUserPreferenceProfile(profiles, selected) {
   if (!profiles) return null

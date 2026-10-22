@@ -2,7 +2,6 @@ import { createReadStream } from 'node:fs'
 import { FULL_PROMPT_TEMPLATE_ASSET_PREFIX, readFullPromptTemplateAsset } from '../domain/full-prompt-template-assets.js'
 import { OFFICIAL_MVU_VERSION, readOfficialMvuBundle } from '../domain/official-mvu-assets.js'
 import { TAVERN_CLIENT_ASSET_PREFIX, readTavernClientAsset } from '../domain/tavern-client-assets.js'
-import { TAVERN_RELEASE_CAPABILITIES } from '../domain/release-capabilities.js'
 import { TAVERN_RUNTIME_ASSET_PREFIX, readTavernRuntimeAsset } from '../domain/tavern-runtime-assets.js'
 import { observeHttpRequests } from '../domain/http-performance-diagnostics.js'
 import { projectCachedResourceBody } from '../domain/tavern-static-resource-cache.js'
@@ -28,7 +27,7 @@ export function registerTavernHttpRoutes({
   tavernStaticResources,
   castAssets,
   speech,
-  exportCardCharx,
+  exportCardFile,
   assetPacks,
   uploads,
   exposeHandler,
@@ -95,7 +94,8 @@ export function registerTavernHttpRoutes({
         if (gameplayRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host) {
           res.writeHead(403); res.end('forbidden'); return
         }
-        const sceneImageRoute = TAVERN_RELEASE_CAPABILITIES.sceneImages && /^\/api\/dsh-tavern\/(?:scene-image|scene-image-artist-preview|scene-image-stored|listSceneImageHistory|removeSceneImageHistory|getSceneImageSettings|saveSceneImageSettings|testSceneImageConnection|listSceneImageModels|testSceneImageGeneration|sceneImageStatus|recordSceneImageInteraction|generateSceneImage|retrySceneImageSave|cancelSceneImage|removeSceneImage|setSceneImageReference)$/.test(pathname)
+        // Old pictures Tavern drew: shown, listed in the gallery and deleted there.
+        const sceneImageRoute = /^\/api\/dsh-tavern\/(?:scene-image|scene-image-stored|listSceneImageHistory|removeSceneImageHistory|sceneImageStatus)$/.test(pathname)
         const pluginMediaRoute = /^\/api\/dsh-tavern\/(?:plugin-media|pluginMediaForTurn|pluginMediaTurns)$/.test(pathname)
         if (pluginMediaRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
           res.writeHead(403)
@@ -132,9 +132,13 @@ export function registerTavernHttpRoutes({
           if (readsFullTemplate) {
             const asset = await readFullPromptTemplateAsset(pathname)
             if (!asset) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
-            res.writeHead(200, { 'Content-Type': asset.mediaType, 'Content-Length': asset.body.length,
+            const headers = { 'Content-Type': asset.mediaType,
               'ETag': asset.etag, 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*',
-              'Cross-Origin-Resource-Policy': 'cross-origin', 'X-Content-Type-Options': 'nosniff' })
+              'Cross-Origin-Resource-Policy': 'cross-origin', 'X-Content-Type-Options': 'nosniff' }
+            if (String(req.headers['if-none-match'] || '').split(',').some(tag => tag.trim().replace(/^W\//, '') === asset.etag || tag.trim() === '*')) {
+              res.writeHead(304, headers); res.end(); return
+            }
+            res.writeHead(200, { ...headers, 'Content-Length': asset.body.length })
             res.end(asset.body)
             return
           }
@@ -230,13 +234,13 @@ export function registerTavernHttpRoutes({
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
             return
           }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-charx') {
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-export') {
             let file
-            try { file = await exportCardCharx(new URL(req.url, 'http://x').searchParams.get('path')) }
+            try { file = await exportCardFile(new URL(req.url, 'http://x').searchParams.get('path')) }
             catch (error) { res.writeHead(error?.code === 'TAVERN_NOT_FOUND' || /路径|不存在/.test(String(error?.message)) ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }); res.end(String(error?.message || error)); return }
-            const name = file.name.replace(/[\\/:*?"<>|\r\n]/g, '_') + '.charx'
-            res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': file.bytes.byteLength, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
-              'Content-Disposition': "attachment; filename=\"card.charx\"; filename*=UTF-8''" + encodeURIComponent(name) })
+            const name = file.name.replace(/[\\/:*?"<>|\r\n]/g, '_') + '.' + file.extension
+            res.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.bytes.byteLength, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+              'Content-Disposition': 'attachment; filename="card.' + file.extension + '"; filename*=UTF-8\'\'' + encodeURIComponent(name) })
             res.end(file.bytes)
             return
           }
@@ -273,21 +277,14 @@ export function registerTavernHttpRoutes({
             res.end(thumbnail.body)
             return
           }
-          if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-artist-preview') {
-            const image = await sceneIllustrations.readArtistPreview(new URL(req.url, 'http://x').searchParams.get('id'))
-            // The URL carries the preview revision, so a replaced image gets a new URL.
-            res.writeHead(200, { 'Content-Type': image.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' })
-            res.end(image.data)
-            return
-          }
-          if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image') {
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image') {
             const query = new URL(req.url, 'http://x').searchParams
             const image = await sceneIllustrations.readImage(query.get('sessionId'), Number(query.get('turn')), query.get('key'), query.get('versionId'))
             res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
             res.end(image.data)
             return
           }
-          if (TAVERN_RELEASE_CAPABILITIES.sceneImages && req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-stored') {
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-stored') {
             const query = new URL(req.url, 'http://x').searchParams
             const image = await sceneIllustrations.readStoredImage(query.get('chatId'), query.get('key'), query.get('versionId'))
             res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
@@ -296,7 +293,7 @@ export function registerTavernHttpRoutes({
           }
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/plugin-media') {
             const query = new URL(req.url, 'http://x').searchParams
-            const file = await readPluginMediaFile(query.get('sessionId'), query.get('id'))
+            const file = await readPluginMediaFile(query.get('sessionId'), query.get('id'), query.get('version'))
             const headers = { 'Content-Type': file.mediaType, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" }
             if (file.mediaType === 'application/octet-stream') headers['Content-Disposition'] = 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(file.name || 'file')
             if (file.data) {
@@ -379,9 +376,8 @@ export function registerTavernHttpRoutes({
             res.end()
             return
           }
-          // Ordinary scene-image calls carry ids and text: a hand-written prompt may be
-          // 12000 characters (36 KB of Chinese) and a gallery batch delete 500 items.
-          const sceneImageBodyLimit = method === 'saveSceneImageSettings' ? 2 * 1024 * 1024 : 256 * 1024
+          // Scene-image calls carry ids only: a gallery batch delete of 500 items fits easily.
+          const sceneImageBodyLimit = 256 * 1024
           const bodyChunks = []
           let bodyBytes = 0
           for await (const chunk of req) {
@@ -389,9 +385,7 @@ export function registerTavernHttpRoutes({
             bodyBytes += bytes.length
             if (gameplayRoute && bodyBytes > 2 * 1024 * 1024) throw new Error('游戏 API 请求超过 2 MB')
             if (sceneImageRoute && bodyBytes > sceneImageBodyLimit) {
-              throw new Error(method === 'saveSceneImageSettings'
-                ? '无法保存生图配置：工作流与配置数据超过当前 2 MB 请求大小限制。请精简工作流后重试；这不是图片尺寸或显存不足。'
-                : '生图请求数据超过 256 KB 大小限制，请缩短提示词或减少一次批量删除的图片后重试；这不是图片尺寸或显存不足。')
+              throw new Error('图片请求数据超过 256 KB 大小限制，请减少一次批量删除的图片后重试。')
             }
             bodyChunks.push(bytes)
           }

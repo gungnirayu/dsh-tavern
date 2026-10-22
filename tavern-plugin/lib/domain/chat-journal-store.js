@@ -1,3 +1,5 @@
+import { createLegacyChatJournal } from './legacy-chat-journal.js'
+import { createChatStorageMigration } from './chat-storage-migration.js'
 import {projectTavernHelperContext,hydrateTavernHelperMessages} from './tavern-helper-context.js'
 import { createNativeConversationStorage } from './native-conversation-storage.js'
 import { createLegacyCompatibleStorage } from './legacy-compatible-storage.js'
@@ -8,42 +10,21 @@ import { createScopedMessages, isScopedMessages } from './scoped-messages.js'
 import { createIndexedArrayApi } from './indexed-array.js'
 import { copyJsonTree } from './copy-json-tree.js'
 import { projectSceneImageState, projectChatSessionState, projectDisplayRuntimeState, projectChatBackgroundConfig, projectSettlementCheckpoint } from './chat-session-state.js'
-import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, truncate, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
-import { isDeepStrictEqual, promisify } from 'node:util'
-import { gzip, gunzip } from 'node:zlib'
+import { mkdir, open, readdir, rename, rm, stat, truncate } from 'node:fs/promises'
 import path from 'node:path'
 
 import { applyJsonChangesShared, diffJson } from './json-mutation.js'
 
 const STORAGE_REVISION = '_storageRevision'
 const SNAPSHOT_PATTERN = /^(\d{12})\.json(?:\.gz)?$/
-const JOURNAL_PATTERN = /^(\d{12})-(open|(\d{12}))\.jsonl$/
-const compress = promisify(gzip)
-const decompress = promisify(gunzip)
-const SNAPSHOT_COMPRESSION_BYTES = 64 * 1024
 
 function revisionOf(value) {
   return Math.max(0, Number(value && value[STORAGE_REVISION]) || 0)
 }
 
-function revisionName(value) {
-  const revision = Number(value)
-  if (!Number.isSafeInteger(revision) || revision < 0 || revision > 999999999999) throw new Error('Chat storage revision 超出范围: ' + String(value))
-  return String(revision).padStart(12, '0')
-}
-
 function jsonClone(value) {
   if (value === undefined) return undefined
   return JSON.parse(JSON.stringify(value))
-}
-
-function encodeSnapshot(value) {
-  return JSON.stringify(value, null, 2) + '\n'
-}
-
-function encodeFrame(value) {
-  return JSON.stringify(value) + '\n'
 }
 
 function safeChatId(value) {
@@ -67,10 +48,6 @@ async function directoryBytes(target) {
   return total
 }
 
-async function readJson(target) {
-  try { return JSON.parse(await readFile(target, 'utf8')) } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error }
-}
-
 /** Append-oriented JSON storage for one materialized Tavern Chat per directory. */
 export function createChatJournalStore(options = {}) {
   const dataRoot = path.resolve(String(options.dataRoot || ''))
@@ -80,9 +57,7 @@ export function createChatJournalStore(options = {}) {
   const legacyData = options.legacyData
   const logger = options.logger || console
   const now = typeof options.now === 'function' ? options.now : Date.now
-  const frameLimit = Math.max(1, Number(options.frameLimit) || 200)
   const maxSnapshotBytes = Number.isSafeInteger(options.maxSnapshotBytes) && options.maxSnapshotBytes > 0 ? options.maxSnapshotBytes : 256 * 1024 * 1024
-  const byteLimit = Math.max(1, Number(options.byteLimit) || 1024 * 1024)
   const mutationTails = new Map()
   const maintenancePending = new Map()
   let maintenanceRunning = null
@@ -145,6 +120,13 @@ export function createChatJournalStore(options = {}) {
     if (!state) throw new Error('Snapshot chat disappeared')
     return {path:await writeSnapshot({...paths,snapshots:path.join(paths.root,'maintenance')},state.chat,revision),revision}
   }
+  const journal = createLegacyChatJournal({ layout, chatsRoot, legacyData, logger, now, maxSnapshotBytes,
+    frameLimit: Math.max(1, Number(options.frameLimit) || 200), byteLimit: Math.max(1, Number(options.byteLimit) || 1024 * 1024),
+    backgroundSnapshots: options.backgroundSnapshots, requestSnapshot })
+  const { read: materializeLegacy, version: legacyVersion, writeSnapshot, migrateLegacy, appendFrame, maybeRotate } = journal
+  const { upgradeStorage, migrateCompatibility, restoreLegacy } = createChatStorageMigration({
+    native, compatible, journal, serialize, flushMaintenance, materialize, version, forgetState, layout, safeChatId, now, logger })
+
   // Approximate retained JS size, bounded independently of the number of games.
   const limit = (value, fallback) => Number.isSafeInteger(value) && value >= 0 ? value : fallback
   const cacheMaxBytes = limit(options.cacheMaxBytes, 256 * 1024 * 1024)
@@ -269,233 +251,9 @@ export function createChatJournalStore(options = {}) {
     return current.finally(function () { if (mutationTails.get(id) === current) mutationTails.delete(id) })
   }
 
-  async function legacyRead(paths) {
-    if (legacyData && typeof legacyData.readJson === 'function') return await legacyData.readJson(paths.legacyRelative)
-    return await readJson(paths.legacy)
-  }
-
-  async function snapshotRows(paths) {
-    let names
-    try { names = await readdir(paths.snapshots) } catch (error) { if (error?.code === 'ENOENT') return []; throw error }
-    return names.map(function (name) {
-      const match = SNAPSHOT_PATTERN.exec(name)
-      return match === null ? null : { name, revision: Number(match[1]), path: path.join(paths.snapshots, name) }
-    }).filter(Boolean).sort(function (left, right) { return left.revision - right.revision })
-  }
-
-  async function journalRows(paths) {
-    let names
-    try { names = await readdir(paths.journals) } catch (error) { if (error?.code === 'ENOENT') return []; throw error }
-    return names.map(function (name) {
-      const match = JOURNAL_PATTERN.exec(name)
-      if (match === null) return null
-      return {
-        name,
-        start: Number(match[1]),
-        end: match[2] === 'open' ? Number.POSITIVE_INFINITY : Number(match[3]),
-        open: match[2] === 'open',
-        path: path.join(paths.journals, name)
-      }
-    }).filter(Boolean).sort(function (left, right) { return left.start - right.start || Number(left.open) - Number(right.open) })
-  }
-
-  async function parseJournal(row, afterRevision, targetRevision) {
-    const text = await readFile(row.path, 'utf8')
-    const lines = text.split('\n')
-    const frames = []
-    let validBytes = 0
-    let invalidLine = 0
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index]
-      if (line === '') {
-        validBytes += index < lines.length - 1 ? 1 : 0
-        continue
-      }
-      let frame
-      try { frame = JSON.parse(line) } catch (error) {
-        invalidLine = index + 1
-        if (logger && typeof logger.warn === 'function') logger.warn('dsh-tavern: Chat journal 尾行损坏，忽略该行及后续内容:', row.path + ':' + invalidLine, String(error?.message || error))
-        break
-      }
-      validBytes += Buffer.byteLength(line + '\n')
-      const revision = Number(frame && frame.revision)
-      if (!Number.isSafeInteger(revision) || revision < 1 || !Array.isArray(frame.changes)) {
-        invalidLine = index + 1
-        if (logger && typeof logger.warn === 'function') logger.warn('dsh-tavern: Chat journal frame 不合法，忽略该行及后续内容:', row.path + ':' + invalidLine)
-        break
-      }
-      if (revision > afterRevision && revision <= targetRevision) frames.push(frame)
-    }
-    return { frames, lineCount: frames.length, bytes: Buffer.byteLength(text), validBytes, invalidLine }
-  }
-
-  async function materializeDirectory(paths, targetRevision = Number.POSITIVE_INFINITY) {
-    const snapshots = await snapshotRows(paths)
-    const eligible = snapshots.filter(function (row) { return row.revision <= targetRevision })
-    let selected = null, chat
-    for (const row of eligible.slice().reverse()) {
-      chat = await readSnapshot(paths, row)
-      if (chat !== undefined) { selected = row; break }
-    }
-    if (!selected) chat = await legacyRead(paths)
-    const journals = await journalRows(paths)
-    if (chat === undefined) {
-      // An interrupted first write may have left only staging files/directories.
-      if (snapshots.length === 0 && journals.length === 0) return null
-      throw new Error('Chat Journal 缺少可用 snapshot: ' + paths.id)
-    }
-    let revision = selected ? selected.revision : revisionOf(chat)
-    if (!selected && (chat === null || typeof chat !== 'object' || Array.isArray(chat) || chat.id !== paths.id)) {
-      throw new Error('Legacy Chat 不合法: ' + paths.id)
-    }
-    let open = null
-    let openFrameCount = 0
-    let openValidBytes = 0
-    let openInvalidLine = 0
-    const changes = []
-    for (const row of journals) {
-      if (row.end <= revision || row.start > targetRevision) continue
-      const parsed = await parseJournal(row, revision, targetRevision)
-      for (const frame of parsed.frames) {
-        if (Number(frame.baseRevision) !== revision || Number(frame.revision) !== revision + 1) {
-          const error = new Error('Chat journal revision 不连续: ' + row.path + '，期望 ' + (revision + 1) + '，实际 ' + frame.revision)
-          error.code = 'DSH_TAVERN_JOURNAL_GAP'
-          throw error
-        }
-        if (!Array.isArray(frame.changes)) throw new Error('JSON mutation changes 必须是数组')
-        for (const change of frame.changes) changes.push(change)
-        revision = Number(frame.revision)
-      }
-      if (row.open) {
-        open = row
-        openFrameCount = parsed.frames.length
-        openValidBytes = parsed.validBytes
-        openInvalidLine = parsed.invalidLine
-      }
-    }
-    // A corrupt published snapshot proves this revision once existed. Do not
-    // silently return an older state when its replay chain is missing.
-    const requiredRevision = eligible.at(-1)?.revision ?? revision
-    if (revision < requiredRevision) throw new Error('Chat snapshot 恢复缺少完整 journal，期望 revision ' + requiredRevision + ': ' + paths.id)
-    if (targetRevision !== Number.POSITIVE_INFINITY && revision !== targetRevision) {
-      const error = new Error('Chat Journal 找不到 revision ' + targetRevision + ': ' + paths.id)
-      error.code = 'DSH_TAVERN_REVISION_NOT_FOUND'
-      throw error
-    }
-    // The parsed snapshot is private to this materialization. Replay by copying
-    // changed ancestors; historical variables need no additional full clone.
-    chat = applyJsonChangesShared(chat, changes)
-    chat[STORAGE_REVISION] = revision
-    return { chat, revision, snapshot: selected, open, openFrameCount, openValidBytes, openInvalidLine, legacy: selected === null }
-  }
-
   async function materialize(chatId, targetRevision = Number.POSITIVE_INFINITY) {
     return await native.read(chatId,targetRevision) || await compatible?.read(chatId,targetRevision) || materializeLegacy(chatId,targetRevision)
   }
-  async function materializeLegacy(chatId, targetRevision = Number.POSITIVE_INFINITY) {
-    const paths = layout(chatId)
-    if (await exists(paths.root)) return await materializeDirectory(paths, targetRevision)
-    const chat = await legacyRead(paths)
-    if (chat === undefined) return null
-    const revision = revisionOf(chat)
-    if (targetRevision !== Number.POSITIVE_INFINITY && targetRevision !== revision) {
-      const error = new Error('Legacy Chat 只有 revision ' + revision + '，无法读取 revision ' + targetRevision)
-      error.code = 'DSH_TAVERN_REVISION_NOT_FOUND'
-      throw error
-    }
-    chat[STORAGE_REVISION] = revision
-    return { chat: jsonClone(chat), revision, snapshot: null, open: null, openFrameCount: 0, legacy: true }
-  }
-
-  async function readSnapshot(paths, row) {
-    try {
-      const bytes = await readFile(row.path)
-      const chat = JSON.parse((row.path.endsWith('.gz') ? await decompress(bytes, { maxOutputLength: maxSnapshotBytes }) : bytes).toString('utf8'))
-      if (chat && typeof chat === 'object' && !Array.isArray(chat) && chat.id === paths.id &&
-        Number.isSafeInteger(chat[STORAGE_REVISION]) && chat[STORAGE_REVISION] === row.revision) return chat
-    } catch (error) {
-      if (!(error instanceof SyntaxError) && !['Z_DATA_ERROR', 'Z_BUF_ERROR', 'ENOENT'].includes(error?.code)) throw error
-    }
-    logger?.warn?.('dsh-tavern: Chat snapshot 损坏，尝试历史快照与 journal:', row.path)
-    return undefined
-  }
-
-  async function writeSnapshot(paths, chat, revision) {
-    await mkdir(paths.snapshots, { recursive: true })
-    const plainTarget = path.join(paths.snapshots, revisionName(revision) + '.json')
-    for (const target of [plainTarget, plainTarget + '.gz']) {
-      if (!(await exists(target))) continue
-      const previous = await readSnapshot(paths, { path: target, revision })
-      if (previous !== undefined) {
-        if (!isDeepStrictEqual(previous, chat)) throw new Error('Chat snapshot revision 冲突: ' + target)
-        return target
-      }
-    }
-    // Encode only at the file boundary. Preserve property order for JSON/YAML
-    // variable macros and LLM prefix caching; never reconstruct MVU display deltas.
-    const json = JSON.stringify(chat)
-    if (Buffer.byteLength(json) > maxSnapshotBytes) throw new Error('Chat snapshot 超过大小上限')
-    const compressed = Buffer.byteLength(json) >= SNAPSHOT_COMPRESSION_BYTES
-    const bytes = compressed ? await compress(json, { level: 1 }) : encodeSnapshot(chat)
-    const target = plainTarget + (compressed ? '.gz' : '')
-    if (await exists(target)) {
-      // Preserve the failed old writer's bytes for diagnosis before replacement.
-      await rename(target, target + '.corrupt-' + randomUUID())
-    }
-    const staging = target + '.staging-' + randomUUID()
-    let handle
-    try {
-      handle = await open(staging, 'wx')
-      await handle.writeFile(bytes)
-      await handle.sync()
-      await handle.close(); handle = null
-      await rename(staging, target)
-      // Flush the published directory entry before migration removes its source.
-      if (process.platform !== 'win32') {
-        handle = await open(paths.snapshots, 'r')
-        try { await handle.sync() } catch (error) { if (!['EINVAL', 'ENOTSUP', 'EISDIR'].includes(error?.code)) throw error }
-      }
-    } finally {
-      if (handle) await handle.close()
-      await rm(staging, { force: true })
-    }
-    return target
-  }
-
-  async function migrateLegacy(paths, current) {
-    await mkdir(paths.journals, { recursive: true })
-    await writeSnapshot(paths, current, revisionOf(current))
-    if (!(await exists(paths.legacy)) && !(legacyData && typeof legacyData.remove === 'function')) return
-    const backup = path.join(chatsRoot, paths.id + '.legacy-' + now() + '.json')
-    await writeFile(backup, encodeSnapshot(current), { encoding: 'utf8', flag: 'wx' })
-    if (legacyData && typeof legacyData.remove === 'function') await legacyData.remove(paths.legacyRelative)
-    else await rm(paths.legacy, { force: true })
-  }
-
-  async function appendFrame(paths, frame, currentOpen) {
-    await mkdir(paths.journals, { recursive: true })
-    const openPath = currentOpen === null
-      ? path.join(paths.journals, revisionName(frame.revision) + '-open.jsonl')
-      : currentOpen.path
-    await appendFile(openPath, encodeFrame(frame), 'utf8')
-    return { path: openPath, start: currentOpen === null ? frame.revision : currentOpen.start, open: true }
-  }
-
-  async function maybeRotate(paths, state, open, frameCount) {
-    const info = await stat(open.path)
-    if (frameCount < frameLimit && info.size < byteLimit) return false
-    if (options.backgroundSnapshots === true) {
-      const sealed = path.join(paths.journals, revisionName(open.start) + '-' + revisionName(state.revision) + '.jsonl')
-      await rename(open.path,sealed)
-      requestSnapshot(paths.id,state.revision)
-      return {background:true}
-    }
-    const snapshotPath = await writeSnapshot(paths, state.chat, state.revision)
-    const sealed = path.join(paths.journals, revisionName(open.start) + '-' + revisionName(state.revision) + '.jsonl')
-    await rename(open.path, sealed)
-    return { path: snapshotPath, name: path.basename(snapshotPath), revision: state.revision }
-  }
-
   // Each cached game remains verified against disk on every read.
   async function cachedState(chatId) {
     const stamp = await version(chatId)
@@ -505,8 +263,10 @@ export function createChatJournalStore(options = {}) {
       return entry.state
     }
     forgetState(chatId)
+    // Native saves can read floors alone: building one whole on a per-turn path is reported.
+    const built = state => { if (state?.native) reportWhole(chatId, state); return state }
     const pending = pendingReads.get(chatId)
-    if (pending?.stamp === stamp) return pending.promise
+    if (pending?.stamp === stamp) return pending.promise.then(built)
     const load = { stamp }
     load.promise = (async () => {
       try {
@@ -520,15 +280,18 @@ export function createChatJournalStore(options = {}) {
       }
     })()
     pendingReads.set(chatId, load)
-    return load.promise
+    return load.promise.then(built)
   }
+  function reportWhole(chatId, state, site) { options.wholeReadGuard?.report(chatId, state.chat?.messages?.length, site) }
   async function read(chatId) {
     if(options.migrateLegacy === true && compatible && !mutationTails.has(safeChatId(chatId)))await migrateCompatibility(chatId)
     const state = await cachedState(chatId)
+    if (state?.native) reportWhole(chatId, state)
     return state ? copyJsonTree(state.chat) : undefined
   }
   // Native-only opt-in. Null keeps legacy readers on their complete contract.
   async function readWindow(chatId,options) { return native.readWindow(chatId,options) }
+  async function readRecentSummaries(chatId,count) { return native.readRecentSummaries(chatId,count) }
   async function readHelperContext(chatId, range) {
     const selected = await native.readHelperContext(chatId, range)
     if (selected !== null) return selected
@@ -548,6 +311,7 @@ export function createChatJournalStore(options = {}) {
     // Internal readers opt into lazy, detached rows. Default callers retain
     // ordinary arrays (including structuredClone compatibility).
     const state = await cachedState(chatId)
+    if (state?.native) reportWhole(chatId, state)
     return state ? projectChatSessionState(state.chat, options.scoped === true ? sessionMessages.project(state.chat) : {}) : undefined
   }
   async function readSettlementCheckpoint(chatId, messageId, operationId) {
@@ -580,7 +344,7 @@ export function createChatJournalStore(options = {}) {
     const cached=readCache.get(chatId)
     if(!cached||cached.stamp!==await version(chatId)){
       const selected=await native.readSlice(chatId,[],['id','sessionId','mode','backgroundConfigVersion','conversationFeaturesVersion',
-       'backgroundModelSelection','backgroundModelRevision','imageModelSelection','backgroundTasks','webSearchEnabled','sceneImagesEnabled','cardContextRevision','timeline.participants.background.status','mvu.enabled','mvu.owner'])
+       'backgroundModelSelection','backgroundModelRevision','backgroundTasks','webSearchEnabled','cardContextRevision','timeline.participants.background.status','mvu.enabled','mvu.owner'])
       if(selected!==null)return selected?projectChatBackgroundConfig(selected.chat):undefined
     }
     const state = await cachedState(chatId)
@@ -620,12 +384,16 @@ export function createChatJournalStore(options = {}) {
   }
   /** Detached metadata and selected native rows, never an editable full-chat snapshot. */
   async function readSlice(chatId, indices=[], fields) {
-    const cached=readCache.get(chatId)
-    if(!cached||cached.stamp!==await version(chatId)){
+    // A cached state at the current stamp answers directly. Otherwise read the selected rows:
+    // re-checking the stamp in cachedState would load the whole Chat whenever a write lands
+    // between the two checks.
+    const stamp=await version(chatId),cached=readCache.get(chatId)
+    const fresh=stamp&&cached?.stamp===stamp
+    if(!fresh){
       const selected=await native.readSlice(chatId,indices,fields)
       if(selected!==null)return selected
     }
-    const state=await cachedState(chatId)
+    const state=fresh?cached.state:await cachedState(chatId)
     return state && !indices.some(i=>i>=(state.chat.messages?.length||0)) ? slice(state.chat,indices,fields) : undefined
   }
   // Trusted settlement input: immutable revision-bound index, detached header,
@@ -832,9 +600,12 @@ export function createChatJournalStore(options = {}) {
 
   async function update(chatId, updater, metadata = {}) {
     if (typeof updater !== 'function') throw new Error('Chat Journal Store 缺少 updater')
+    const site = options.wholeReadGuard?.site()
     return await serialize(chatId, async function () {
       const paths = layout(chatId)
       const currentState = await cachedState(paths.id)
+      // The updater gets a copy of the whole Chat and the result is diffed against it.
+      if (currentState?.native) reportWhole(chatId, currentState, site)
       const current = currentState == null ? undefined : currentState.chat
       const produced = await updater(copyJsonTree(current))
       if (produced === undefined) return copyJsonTree(current)
@@ -905,140 +676,6 @@ export function createChatJournalStore(options = {}) {
   }
 
   async function version(chatId) {return await native.version(chatId) || await compatible?.version(chatId) || legacyVersion(chatId)}
-  async function legacyVersion(chatId) {
-    const paths = layout(chatId)
-    if (!(await exists(paths.root))) {
-      if (legacyData && typeof legacyData.version === 'function') return await legacyData.version(paths.legacyRelative)
-      try {
-        const info = await stat(paths.legacy, { bigint: true })
-        return ['legacy', info.size, info.mtimeNs].join(':')
-      } catch (error) { if (error?.code === 'ENOENT') return ''; throw error }
-    }
-    const snapshots = await snapshotRows(paths)
-    const journals = await journalRows(paths)
-    const latestSnapshot = snapshots[snapshots.length - 1]
-    // Recovery may use any earlier snapshot/journal, or the legacy source during
-    // migration. All of those files must participate in cache invalidation.
-    const stamps = await Promise.all([...snapshots, ...journals].map(async row => {
-      const info = await stat(row.path, { bigint: true })
-      return [row.name,info.ino,info.size,info.mtimeNs,info.ctimeNs].join(':')
-    }))
-    let legacyStamp = ''
-    if (legacyData && typeof legacyData.version === 'function') legacyStamp = await legacyData.version(paths.legacyRelative)
-    else {
-      try {
-        const info = await stat(paths.legacy, { bigint: true })
-        legacyStamp = [info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
-      } catch (error) { if (error?.code !== 'ENOENT') throw error }
-    }
-    if (!stamps.length && !legacyStamp) return ''
-    return ['journal', latestSnapshot?.name || '', ...stamps, legacyStamp].join(':')
-  }
-
-  // Explicit cutover only: original journals and compatible history remain intact.
-  // All current writers share serialize()'s cross-process conversation lock.
-  async function upgradeStorage(chatId,{onProgress=()=>{},assertCanMigrate=()=>{}}={}){
-    safeChatId(chatId)
-    if(!compatible)throw new Error('Migration requires the shared conversation lock')
-    await flushMaintenance()
-    return serialize(chatId,async()=>{
-      if(await native.version(chatId))return {status:'native',alreadyActive:true}
-      await mkdir(layout(chatId).root,{recursive:true})
-      onProgress('reading')
-      const captured=await version(chatId)
-      const state=await materialize(chatId)
-      if(!state)return {status:'missing'}
-      if(state.chat.mode==='card')throw new Error('Card configuration is not a playable conversation')
-      if(!Number.isSafeInteger(state.chat._storageRevision)||state.chat._storageRevision<1)throw new Error('Legacy Chat has no valid storage revision')
-      await assertCanMigrate(state.chat)
-      onProgress('converting')
-      await native.create(chatId,state.chat,undefined,{migration:true,verifyBeforePublish:async restored=>{
-        onProgress('verifying')
-        if(!isDeepStrictEqual(restored,state.chat))throw new Error('Native migration round-trip verification failed')
-        if(await version(chatId)!==captured)throw new Error('Source changed during native migration')
-      }})
-      forgetState(chatId)
-      return {status:'native',alreadyActive:false,sourceRevision:state.revision,retainedLegacy:true}
-    })
-  }
-
-  const migrationFailures=new Map()
-  async function migrateCompatibility(chatId,{force=false}={}){
-    if(await native.version(chatId))return {status:'native'}
-    if(!compatible)throw new Error('Compatible storage is disabled')
-    const current=await compatible.status(chatId)
-    if(current?.mode==='legacy'&&!force)return {status:'legacy',reason:'explicit-restore'}
-    if(current?.mode==='compatible'){await compatible.version(chatId);return {status:'compatible',alreadyActive:true}}
-    const before=await legacyVersion(chatId)
-    if(!force&&migrationFailures.get(chatId)?.version===before)return migrationFailures.get(chatId).result
-    try{
-      const result=await serialize(chatId,async()=>{
-        if((await compatible.status(chatId))?.mode==='compatible')return {status:'compatible',alreadyActive:true}
-        const paths=layout(chatId)
-        await mkdir(paths.root,{recursive:true})
-        const captured=await legacyVersion(chatId),state=await materializeLegacy(chatId)
-        if(!state)return {status:'missing'}
-        const result=await compatible.migrate(chatId,state.chat,captured,async()=>{
-          if(await legacyVersion(chatId)!==captured)throw new Error('Source changed during migration')
-        })
-        forgetState(chatId);migrationFailures.delete(chatId)
-        return result
-      })
-      return result
-    }catch(error){
-      // Publication may have succeeded even if acknowledgement was lost. Never
-      // call that a legacy fallback or hide a damaged active target.
-      if((await compatible.status(chatId))?.mode==='compatible')throw error
-      const result={status:'legacy',reason:error.message}
-      migrationFailures.set(chatId,{version:await legacyVersion(chatId),result})
-      if(migrationFailures.size>128)migrationFailures.delete(migrationFailures.keys().next().value)
-      logger?.warn?.('dsh-tavern: 旧档转换未完成，继续使用原存档:',chatId,error.message)
-      return result
-    }
-  }
-  async function restoreLegacy(chatId){
-    if(await native.version(chatId))throw new Error('Native conversations are not legacy migrations')
-    if(!compatible)throw new Error('Compatible storage is disabled')
-    await flushMaintenance()
-    return serialize(chatId,async()=>{
-      const state=await compatible.read(chatId)
-      if(!state)return {status:await materializeLegacy(chatId)?'legacy':'missing',alreadyActive:true}
-      const paths=layout(chatId)
-      await mkdir(paths.journals,{recursive:true})
-      const legacy=await materializeLegacy(chatId)
-      if(!legacy||legacy.revision>state.revision)throw new Error('Legacy restore source diverged')
-      if(legacy.legacy)await writeSnapshot(paths,legacy.chat,legacy.revision)
-      let previous=legacy.chat,openJournal=legacy.open
-      if(openJournal&&legacy.openInvalidLine>0)await truncate(openJournal.path,legacy.openValidBytes)
-      // Export every post-cutover revision, not only the newest snapshot: an
-      // older release must retain rollback points created after migration.
-      for(let revision=legacy.revision+1;revision<=state.revision;revision++){
-        const historical=await compatible.read(chatId,revision)
-        if(!historical)throw new Error('Missing compatible revision during restore')
-        let changes=diffJson(previous,historical.chat)
-        if(JSON.stringify(applyJsonChangesShared(previous,changes))!==JSON.stringify(historical.chat))changes=[{op:'set',path:[],value:historical.chat}]
-        openJournal=await appendFrame(paths,{schemaVersion:1,chatId,baseRevision:revision-1,revision,timestamp:now(),source:'compatible-restore',changes},openJournal)
-        previous=historical.chat
-      }
-      if(openJournal){
-        const handle=await open(openJournal.path,'r+')
-        try{await handle.sync()}finally{await handle.close()}
-        if(process.platform!=='win32'){
-          const directory=await open(paths.journals,'r')
-          try{await directory.sync()}catch(error){if(!['EINVAL','ENOTSUP','EISDIR'].includes(error.code))throw error}finally{await directory.close()}
-        }
-      }
-      await writeSnapshot(paths,state.chat,state.revision)
-      const restored=await materializeLegacy(chatId)
-      if(JSON.stringify(restored.chat)!==JSON.stringify(state.chat))throw new Error('Legacy restore verification failed')
-      await compatible.deactivate(chatId)
-      forgetState(chatId)
-      // Explicit restore must not be immediately undone by auto migration.
-      migrationFailures.set(chatId,{version:await legacyVersion(chatId),result:{status:'legacy',reason:'explicit-restore'}})
-      return {status:'legacy',revision:state.revision}
-    })
-  }
-
   async function remove(chatId) {
     await flushMaintenance()
     await serialize(chatId, async function () {
@@ -1082,5 +719,5 @@ export function createChatJournalStore(options = {}) {
     })
   }
 
-  return Object.freeze({ compact, readRetentionHeader, removeLegacyFiles, detachedUpdate: true, upgradeStorage, migrateCompatibility, restoreLegacy, read, readWindow, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
+  return Object.freeze({ compact, readRetentionHeader, removeLegacyFiles, detachedUpdate: true, upgradeStorage, migrateCompatibility, restoreLegacy, read, readWindow, readRecentSummaries, readHelperContext, readSessionState, readSceneImageState, readSettlementCheckpoint, readBackgroundConfig, readDisplayRuntimeState, flushMaintenance, prepareSnapshot, readSlice, readSettlementBase, readChangedSlice, readChangedIndices, readViewDelta, patch, readRevision, update, version, remove })
 }

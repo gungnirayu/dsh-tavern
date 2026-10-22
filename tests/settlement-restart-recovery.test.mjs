@@ -1,34 +1,23 @@
-import { createSettlementProgressGuard } from '../tavern-plugin/lib/domain/settlement-progress-guard.js'
-import { readSettlementInput } from '../tavern-plugin/lib/domain/settlement-input.js'
+import { createMvuSettlementEngine } from '../tavern-plugin/lib/domain/mvu-settlement-engine.js'
+import { createPlainSettlementEngine } from '../tavern-plugin/lib/domain/plain-settlement-engine.js'
+import { createSettlementRun } from '../tavern-plugin/lib/domain/settlement-run.js'
+import { createSettlementControls } from '../tavern-plugin/lib/domain/settlement-controls.js'
+import { createMvuSettlementResume } from '../tavern-plugin/lib/domain/mvu-settlement-resume.js'
 import {applyJsonChanges} from '../tavern-plugin/lib/domain/json-mutation.js'
 import { createSettlementJobs } from '../tavern-plugin/lib/domain/settlement-jobs.js'
-import { createSessionStateView, projectChatSessionState, pendingMvuSettlementState } from '../tavern-plugin/lib/domain/chat-session-state.js'
-import { collectMvuHelperContext, createMvuSettlementModule } from '../tavern-plugin/lib/domain/mvu-background-settlement.js'
+import { createTurnSettledEvents } from '../tavern-plugin/lib/domain/turn-settled-events.js'
+import { createSessionStateView, projectChatSessionState } from '../tavern-plugin/lib/domain/chat-session-state.js'
+import { createMvuSettlementModule } from '../tavern-plugin/lib/domain/mvu-background-settlement.js'
 import { createTavernScriptHostAdapter } from '../tavern-plugin/lib/domain/tavern-script-host-adapter.js'
 import { createTavernScriptDispatch } from '../tavern-plugin/lib/domain/tavern-script-dispatch.js'
-import { normalizeBackgroundTasks } from '../tavern-plugin/lib/domain/tavern-settings.js'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import vm from 'node:vm'
 import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.js'
 import { createBackgroundTaskCoordinator } from '../tavern-plugin/lib/domain/background-task-coordinator.js'
 import { createRoundHistory } from '../tavern-plugin/lib/domain/round-history.js'
-import { applyMvuSettlementEffect, createMvuSettlementEffect } from '../tavern-plugin/lib/domain/mvu-settlement-effect.js'
-import { createMvuSettlementReconciler } from '../tavern-plugin/lib/domain/mvu-settlement-reconciler.js'
-import { LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission } from '../tavern-plugin/lib/domain/story-ledger.js'
-import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, lastSubmittedPosture, normalizePostureSubmission } from '../tavern-plugin/lib/domain/posture-submission.js'
-import { CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL } from '../tavern-plugin/lib/domain/character-design-document.js'
+import { createMvuSettlementEffect } from '../tavern-plugin/lib/domain/mvu-settlement-effect.js'
+import { POSTURE_SUBMIT_TOOL } from '../tavern-plugin/lib/domain/posture-submission.js'
 import { createPostureItem, plainSettlementPlan, runPipelineStages } from '../tavern-plugin/lib/domain/background-pipeline.js'
-import { producerSource } from '../tavern-plugin/lib/domain/message-source.js'
-
-const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
-function section(start, end) {
-  const from = server.indexOf(start)
-  const to = server.indexOf(end, from)
-  assert.ok(from >= 0 && to > from)
-  return server.slice(from, to)
-}
 
 async function harness({ beginRunning = true, mvu = true } = {}) {
   let current = { backgroundTasks: { posture: true, characterDesign: true, variables: true }, id: 'chat', sessionId: 'session', mode: 'story', messages: [], mvu: { enabled: mvu, owner: mvu ? 'official' : null } }
@@ -48,12 +37,10 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     }
   }).chat
   const running = beginRunning ? await tasks.begin(current, 'settlement') : null
-  const sandbox = vm.createContext({
-    createSettlementProgressGuard, readSettlementInput, chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
+  // The settlement's dependencies. The factories read them on every call, so tests swap services here.
+  const sandbox = {
+    turnSettled: createTurnSettledEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
-    collectMvuHelperContext, normalizeBackgroundTasks, pendingMvuSettlementState, structuredClone, Date, AbortController, console: { log() {}, error() {} },
-    str: value => value == null ? '' : String(value),
-    producerSource,
     backgroundTasks: tasks, storyTimeline: timeline,
     readChat: store.readChat, chatForSession: store.readChat, writeChat: store.writeChat,
     patchChat: async (_id,revision,changes)=>{
@@ -65,36 +52,40 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
     },
     sessionStateForSession: async () => projectChatSessionState(await store.readChat()),
     prepareNextWorldBookContext: async chat => chat, worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
-    view: async chat => chat, settlementTurn: () => 2,
-    projectAgentMessageText: message => message.text, mvuUpdateRules: async () => [],
-    readTavernSettings: async () => ({ backgroundTasks: { posture: true, characterDesign: true } }),
+    view: async chat => chat,
+    mvuUpdateRules: async () => [],
     backgroundModelSelection: () => ({}), runtimePrompt: () => '',
-    settleUserText: () => '【本轮正文】\n门开了',
-    applySettlement: () => ({ postureUpdated: false }), applyMvuSettlementEffect, createMvuSettlementReconciler,
     backgroundAgentRunner: { async run() { throw new Error('backgroundAgentRunner not configured') } },
-    characterDesignDocuments: { async execute() { return JSON.stringify({ ok: true }) } },
-    CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL,
-    POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, normalizePostureSubmission, lastSubmittedPosture,
     agentRegistry: { get: () => undefined }, sessionStore: { get: () => undefined },
-    LEDGER_SUBMIT_TOOL, LEDGER_RULES, ledgerContext, createLedgerSubmission,
-    conversationRegistry: { list: async () => [] }, ctx: { effect() {} },
+    conversationRegistry: { list: async () => [] },
     mvuSettlement: { settleVariables: async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } }) },
     pluginApi: { replaceSettlement: async () => null, checkVersions: async () => {} }
-  })
+  }
   sandbox.postureItem = createPostureItem({ prompt: () => sandbox.runtimePrompt('posture-settlement'), tool: POSTURE_SUBMIT_TOOL })
   sandbox.plainSettlementPlan = plainSettlementPlan
   sandbox.runPipelineStages = runPipelineStages
   sandbox.mvuReceiptsOf = createSessionStateView({activity:chat=>tasks.activity(chat),evidence:()=>({})}).receipts
-  vm.runInContext(section('  function pendingMvuTarget(', '  async function mvuUpdateRules('), sandbox)
-  vm.runInContext(section('  async function runSettlement(', '  const mvuSettlementReconciler'), sandbox)
+  // Read through the sandbox on every call, so the tests below can swap MVU services.
+  sandbox.mvuSettlementEngine = createMvuSettlementEngine(sandbox)
+  sandbox.plainSettlementEngine = createPlainSettlementEngine(sandbox)
+  const settlementRun = createSettlementRun(sandbox)
+  Object.assign(sandbox, {
+    settlementRun,
+    runSettlement: (...args) => settlementRun.runSettlement(...args),
+    runSettlementCycle: (...args) => settlementRun.runCycle(...args),
+    onSettlementSettled: (...args) => settlementRun.onSettled(...args),
+    startPluginTask: (...args) => settlementRun.startPluginTask(...args),
+    queueSettlement: chatId => sandbox.settlementJobs.start(chatId),
+    cancelSettlement: (chatId, options) => sandbox.settlementJobs.cancel(chatId, options)
+  })
   sandbox.settlementJobs = createSettlementJobs({run:(...args)=>sandbox.runSettlement(...args),onSettled:(...args)=>sandbox.onSettlementSettled(...args)})
-  vm.runInContext(section('  async function retrySettlement(', '  async function pullBackgroundCycle('), sandbox)
+  Object.assign(sandbox, createSettlementControls(sandbox))
   let onReady
-  sandbox.tavernScriptDispatch = { subscribeSettled(fn) { onReady = fn }, status() { return { ready: true } } }
-  vm.runInContext(section('  const mvuSettlementReconciler', '  async function retrySettlement'), sandbox)
+  sandbox.tavernScriptDispatch = { subscribeSettled(fn) { onReady = fn; return () => {} }, status() { return { ready: true } } }
+  const reconciler = createMvuSettlementResume(sandbox)
   const history = createRoundHistory({ chats: { read: store.readChat, forSession: store.readChat, readCard: async () => ({}) },
     sessions: { get: () => undefined }, scripts: {}, timeline, queueSettlement: async () => {}, present() {} })
-  return { tasks, timeline, store, running, body, sandbox, history, onReady, reconciler: vm.runInContext('mvuSettlementReconciler', sandbox), get: () => structuredClone(current) }
+  return { tasks, timeline, store, running, body, sandbox, history, onReady, reconciler, get: () => structuredClone(current) }
 }
 
 test('重启丢失 MVU 回执：显示中断、保留正文变量、可从真实重试入口完成同一 Round', async () => {
@@ -193,23 +184,20 @@ test('non-MVU settlement binds session before first response so interruption can
 
 test('插件替换结算：采用插件交回的姿势，不再运行 Tavern 自己的后台结算；插件退回时照常运行', async () => {
   const h = await harness({ beginRunning: false, mvu: false })
-  const applied = [], requests = []
+  const requests = []
   let runs = 0
-  h.sandbox.applySettlement = (_draft, result) => { applied.push(result); return { postureUpdated: Boolean(result.posture) } }
   h.sandbox.backgroundAgentRunner.run = async input => { runs++; await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
   h.sandbox.pluginApi.replaceSettlement = async input => { requests.push(input); return { owner: 'anchor', posture: '插件的姿势' } }
   await h.sandbox.queueSettlement('chat')
   assert.equal(runs, 0)
-  assert.deepEqual(JSON.parse(JSON.stringify(applied)), [{ posture: '插件的姿势' }])
+  assert.equal(h.get().posture, '插件的姿势')
   assert.deepEqual(JSON.parse(JSON.stringify([requests[0].gameId, requests[0].turn, requests[0].text, requests[0].tasks])), ['session', 2, '门开了', { posture: true }])
   assert.equal(h.get().settleStatus, 'done')
 
   const fallback = await harness({ beginRunning: false, mvu: false })
-  const fellBack = []
-  fallback.sandbox.applySettlement = (_draft, result) => { fellBack.push(result); return { postureUpdated: true } }
   fallback.sandbox.backgroundAgentRunner.run = async input => { await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
   await fallback.sandbox.queueSettlement('chat')
-  assert.deepEqual(JSON.parse(JSON.stringify(fellBack)), [{ posture: 'Tavern 的姿势' }], 'no replacement: Tavern settles as before')
+  assert.equal(fallback.get().posture, 'Tavern 的姿势', 'no replacement: Tavern settles as before')
 })
 
 test('MVU 执行器失联保留持久任务，恢复后自动续办且不重开模型', async () => {
@@ -454,12 +442,11 @@ test('手动插件任务：登记为独占的后台任务，跑完后关闭；�
   assert.equal(busy.role, 'plugin-task')
   assert.equal(busy.busy, true)
   await assert.rejects(h.sandbox.startPluginTask('session', 'alpha:summary'), /已有插件任务/)
-  const jobs = vm.runInContext('pluginTaskJobs', h.sandbox)
-  const job = jobs.get('chat')
+  const job = h.sandbox.settlementRun.pluginTaskJob('chat')
   release()
   await job
   assert.equal(h.tasks.activity(h.get()).busy, false)
-  assert.equal(jobs.size, 0)
+  assert.equal(h.sandbox.settlementRun.pluginTaskJob('chat'), undefined)
 })
 
 // Guards for the background task pipeline refactor (docs/design/background-task-pipeline.md):
@@ -484,7 +471,7 @@ test('管线护栏：普通卡开姿势时，结算请求的提示词、工具�
   }
   await h.sandbox.queueSettlement('chat')
   assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '〈posture-settlement〉\n\nposture_submit 是本任务最后一步。', tools: ['posture_submit'],
-    messages: ['【本轮正文】\n门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false } }])
+    messages: ['【上一轮结算姿势】\n（无）\n【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false } }])
   assert.equal(h.get().settleStatus, 'done')
 })
 
@@ -496,7 +483,7 @@ test('管线护栏：只开台词标注时照样跑结算（不提交姿势）�
   cast.sandbox.backgroundAgentRunner.run = async input => { requests.push(settlementRequest(input)); assert.equal(input.acceptWithoutText(), false); return { text: '完成' } }
   await cast.sandbox.queueSettlement('chat')
   assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '本轮不生成或提交姿势。完成启用的后台任务后简短回复完成。\n\n', tools: [],
-    messages: ['【本轮正文】\n门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false } }])
+    messages: ['【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false, styleReference: false } }])
   assert.equal(cast.get().settleStatus, 'done')
 
   const off = await harness({ beginRunning: false, mvu: false })
@@ -514,13 +501,13 @@ test('管线护栏：官方 MVU 卡的变量结算收到的提示词与开关逐
   h.sandbox.runtimePrompt = name => '〈' + name + '〉'
   const inputs = []
   h.sandbox.mvuSettlement.settleVariables = async input => {
-    inputs.push(JSON.parse(JSON.stringify({ system: input.system, backgroundTasks: input.backgroundTasks, guidance: input.guidance, preserveForeground: input.preserveForeground,
+    inputs.push(JSON.parse(JSON.stringify({ system: input.system, backgroundTasks: input.backgroundTasks, guidance: input.guidance,
       storyText: input.storyText, turn: input.turn, messageId: input.messageId, swipeId: input.swipeId, webSearchEnabled: input.webSearchEnabled })))
     return { receipt: { version: 1, status: 'unchanged', changes: [] } }
   }
   await h.sandbox.queueSettlement('chat')
-  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false }, guidance: '',
-    preserveForeground: false, storyText: '门开了', turn: 2, messageId: 1, swipeId: 0, webSearchEnabled: false }])
+  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false }, guidance: '',
+    storyText: '门开了', turn: 2, messageId: 1, swipeId: 0, webSearchEnabled: false }])
 })
 
 test('管线护栏：一轮的阶段顺序是前置任务、主结算、后置任务、收尾', async () => {

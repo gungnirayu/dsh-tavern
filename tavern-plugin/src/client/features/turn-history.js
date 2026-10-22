@@ -56,6 +56,42 @@
 			}
 			return null;
 		}
+		function nodeTurn(node) {
+			// Legacy flat nodes carry the native turn directly; layout nodes keep it
+			// under location.turn.
+			const direct = Number(node && node.turn);
+			if (Number.isSafeInteger(direct) && direct > 0) return direct;
+			const location = node && node.location;
+			return location && (location.kind === "turn" || location.kind === "step") ? Number(location.turn && location.turn.turn) || 0 : 0;
+		}
+		// The last player input the page actually shows is the only message the quick
+		// edit action offers. The user node has no turn of its own; the next
+		// assistant/step node does. Rolled back, failed and regenerated turns stay in
+		// the host's node list forever (only their rows are hidden), so the row plan
+		// decides which input is really the visible tail.
+		function latestTavernUserTurn(snapshot, plan) {
+			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
+			let turn = 0;
+			for (let index = nodes.length - 1; index >= 0; index -= 1) {
+				const node = nodes[index];
+				turn = nodeTurn(node) || turn;
+				if (node.kind !== "user") continue;
+				if (tavernPlanShowsRow(plan, turn, "user")) return turn;
+			}
+			return 0;
+		}
+		// A user message belongs to the round drawn by the assistant of the same
+		// native turn; its closing message carries the fork target.
+		function tavernAssistantMessageIdForTurn(snapshot, turn) {
+			const expected = Number(turn) || 0;
+			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
+			for (let index = nodes.length - 1; index >= 0; index -= 1) {
+				const node = nodes[index];
+				if (node.kind !== "assistant" || !node.messageId) continue;
+				if (nodeTurn(node) === expected) return node.messageId;
+			}
+			return null;
+		}
 
 		// @include turn-error-controls.js
 
@@ -111,245 +147,80 @@
 			}
 			return { apply: apply, dispose: dispose };
 		}
-		// One owner for persisted suppression and legacy browser-only history records.
-		// Kept in the loader bundle so DSH needs no new browser module protocol.
+		// The conversation page shows the rows the server's row plan names
+		// (docs/design/transcript-row-plan.md): for each saved round, the native turn that
+		// draws its input and the one that draws its reply. The plan lists exceptions only,
+		// keyed by native turn; a turn absent from it shows its own input and reply, and
+		// native turns before a windowed plan's first round are left as the host draws them.
+		// Same rule as planShowsRow in lib/domain/transcript-row-plan.js.
+		function tavernPlanShowsRow(plan, turnValue, kind) {
+			if (!plan || !plan.turns || turnValue === null || turnValue === "") return true;
+			if (plan.from !== null && plan.from !== undefined && Number(turnValue) < plan.from) return true;
+			const entry = plan.turns[String(turnValue)];
+			if (!entry) return true;
+			// A kept input turn draws the player's own message and nothing else.
+			if (entry.kept) return kind === "user" || kind === "steering";
+			// Host notes (context rows) of a turn that draws nothing go with it.
+			if (kind === "context") return entry.input === 1 || entry.reply === 1;
+			return kind === "user" || kind === "turn-trigger" ? entry.input === 1 : entry.reply === 1;
+		}
+		function tavernPlanOf(view) {
+			return view && view.transcriptTurns ? { turns: view.transcriptTurns, from: view.transcriptFrom } : null;
+		}
 		function createTurnHistoryProjection(options) {
 			options = options || {};
 			const root = options.root || function () { return document; };
 			const storage = options.storage || function () { return window.localStorage; };
-        const hiddenRows = new Map();
-        function hideRow(row) {
-            if (!hiddenRows.has(row)) hiddenRows.set(row, row.style.display);
-            row.style.display = "none";
-        }
-        function restoreHiddenRows() {
-            for (const [row, previous] of hiddenRows) {
-                if (row.style.display === "none") row.style.display = previous;
-            }
-            hiddenRows.clear();
-        }
-		const HIDDEN_TURNS_KEY = "dsh-tavern-hidden-turns";
-		const ROLLED_BACK_TURNS_KEY = "dsh-tavern-rolled-back-turns";
-		const HIDDEN_REGEN_USER_TURNS_KEY = "dsh-tavern-hidden-regen-user-turns";
-		function forgetHiddenTurn(storageKey, sessionId, turn) {
-			try {
-				const all = JSON.parse(storage().getItem(storageKey) || "{}");
-				const list = Array.isArray(all[sessionId]) ? all[sessionId].filter(function (item) { return Number(item) !== Number(turn); }) : [];
-				if (list.length) all[sessionId] = list;
-				else delete all[sessionId];
-				storage().setItem(storageKey, JSON.stringify(all));
-			} catch (err) {}
-		}
-		// Rows of the same turn before its tail, nearest first. Every DSH conversation row
-		// carries data-chat-flow-kind; anything without it (pagination, host controls)
-		// is outside the conversation and ends the turn as surely as the previous tail.
-		function turnRowsBefore(tail, owner) {
-			const rows = [];
-			for (let sib = tail.previousElementSibling; sib; sib = sib.previousElementSibling) {
-				const kind = sib.getAttribute("data-chat-flow-kind");
-				if (!kind || kind === "turn-tail") break;
-				const siblingTurn = sib.getAttribute("data-chat-turn");
-				if (owner && siblingTurn && siblingTurn !== owner) break;
-				rows.push(sib);
+			const hiddenRows = new Map();
+			function hideRow(row) {
+				if (!hiddenRows.has(row)) hiddenRows.set(row, row.style.display);
+				row.style.display = "none";
 			}
-			return rows;
-		}
-		// Rows up to, but not including, the turn's user input.
-		function turnReplyRowsBefore(tail, owner) {
-			const rows = turnRowsBefore(tail, owner);
-			const user = rows.findIndex(function (row) { return row.getAttribute("data-chat-flow-kind") === "user"; });
-			return user === -1 ? rows : rows.slice(0, user);
-		}
-		function hideUserForTurnTail(tail) {
-			if (!tail) return;
-			const user = turnRowsBefore(tail, tailTurnOf(tail)).find(function (row) { return row.getAttribute("data-chat-flow-kind") === "user"; });
-			if (user) hideRow(user);
-		}
-		function applyHiddenRegenUserTurns(sessionId) {
-			try {
-				const all = JSON.parse(storage().getItem(HIDDEN_REGEN_USER_TURNS_KEY) || "{}");
-				const turns = all[sessionId];
-				if (!Array.isArray(turns) || turns.length === 0) return;
-				const set = new Set(turns.map(String));
-				const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-				for (let i = 0; i < tails.length; i++) {
-					const tail = tails[i];
-					if (!set.has(tailTurnOf(tail))) continue;
-					hideUserForTurnTail(tail);
+			function restoreHiddenRows() {
+				for (const [row, previous] of hiddenRows) {
+					if (row.style.display === "none") row.style.display = previous;
 				}
-			} catch (err) {}
-		}
-		function hideTurnTail(el) {
-			if (!el) return;
-			hideRow(el);
-			turnReplyRowsBefore(el, tailTurnOf(el)).forEach(hideRow);
-		}
-		function showTurnTail(el) {
-			if (!el) return;
-			el.style.display = "";
-			turnReplyRowsBefore(el, tailTurnOf(el)).forEach(function (row) { row.style.display = ""; });
-		}
-		function hideTurnTailWithUser(el) {
-			if (!el) return;
-			hideRow(el);
-			// System prompts precede the user row. Hide through the turn boundary,
-			// not just through its input; alpha also supplies explicit ownership.
-			turnRowsBefore(el, el.getAttribute("data-chat-turn")).forEach(hideRow);
-		}
-		function tailTurnOf(el) {
-			if (!el) return "";
-			if (el.getAttribute("data-chat-turn")) return el.getAttribute("data-chat-turn");
-			if (el.getAttribute("data-turn-tail")) return el.getAttribute("data-turn-tail");
-			const inner = el.querySelector("[data-turn-tail]");
-			return inner ? inner.getAttribute("data-turn-tail") : "";
-		}
-		function applyHiddenTurns(sessionId) {
-			try {
-				const all = JSON.parse(storage().getItem(HIDDEN_TURNS_KEY) || "{}");
-				const turns = all[sessionId];
-				if (!Array.isArray(turns) || turns.length === 0) return;
-				const set = new Set(turns.map(String));
-				const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-				for (let i = 0; i < tails.length; i++) {
-					const tail = tails[i];
-					if (!set.has(tailTurnOf(tail))) continue;
-					hideTurnTail(tail);
+				hiddenRows.clear();
+			}
+			// Earlier versions kept hidden turns in this browser; the plan covers them now.
+			try { for (const key of ["dsh-tavern-hidden-turns", "dsh-tavern-rolled-back-turns", "dsh-tavern-hidden-regen-user-turns"]) storage().removeItem(key); } catch (err) {}
+			function tailTurnOf(el) {
+				if (el.getAttribute("data-chat-turn")) return el.getAttribute("data-chat-turn");
+				if (el.getAttribute("data-turn-tail")) return el.getAttribute("data-turn-tail");
+				const inner = el.querySelector("[data-turn-tail]");
+				return inner ? inner.getAttribute("data-turn-tail") : "";
+			}
+			// Every conversation row with its native turn. A row the host mounted without
+			// one belongs to the turn whose tail closes it.
+			function rowsWithTurns() {
+				const result = [];
+				let pending = [];
+				for (const row of root().querySelectorAll("[data-chat-flow-kind]")) {
+					const kind = row.getAttribute("data-chat-flow-kind");
+					const turn = row.getAttribute("data-chat-turn") || (kind === "turn-tail" ? tailTurnOf(row) : "");
+					if (!turn) { pending.push(row); continue; }
+					for (const owned of pending) result.push([owned, turn]);
+					pending = [];
+					result.push([row, turn]);
 				}
-			} catch (err) {}
-		}
-		function applyRolledBackTurns(sessionId) {
-			try {
-				const all = JSON.parse(storage().getItem(ROLLED_BACK_TURNS_KEY) || "{}");
-				const turns = all[sessionId];
-				if (!Array.isArray(turns) || turns.length === 0) return;
-				const set = new Set(turns.map(String));
-				const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-				for (let i = 0; i < tails.length; i++) {
-					const tail = tails[i];
-					if (!set.has(tailTurnOf(tail))) continue;
-					hideTurnTailWithUser(tail);
+				return result;
+			}
+			// `wholeTurns`: background Agent sessions have no plan; their rolled-back turns hide whole.
+			function apply(sessionId, plan, wholeTurns) {
+				// Reconcile both directions: rows a previous plan hid may show now.
+				restoreHiddenRows();
+				const whole = new Set((Array.isArray(wholeTurns) ? wholeTurns : []).map(String));
+				for (const [row, turn] of rowsWithTurns()) {
+					const kind = row.getAttribute("data-chat-flow-kind");
+					if (whole.has(turn) || !tavernPlanShowsRow(plan, turn, kind)) hideRow(row);
 				}
-			} catch (err) {}
-		}
-		function applySuppressedDshTurns(turns, regeneratedDshTurns) {
-			const set = new Set((Array.isArray(turns) ? turns : []).map(String));
-			if (set.size === 0) return;
-			const visibleRegenerations = new Set(Object.values(regeneratedDshTurns && typeof regeneratedDshTurns === "object" ? regeneratedDshTurns : {}).map(String));
-			const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-			for (let i = 0; i < tails.length; i++) {
-				const tail = tails[i];
-				const turn = tailTurnOf(tail);
-				if (!set.has(turn)) continue;
-				if (visibleRegenerations.has(turn)) {
-					showTurnTail(tail);
-					hideUserForTurnTail(tail);
-				} else hideTurnTailWithUser(tail);
+				for (const row of root().querySelectorAll('[data-chat-flow-kind="context"]')) {
+					const source = row.querySelector('[data-context-source]');
+					if (source && source.textContent.trim() === "dsh-tavern-surface-restore") hideRow(row);
+				}
 			}
-		}
-		// 重生成期间的那一楼：只藏会被替代的旧正文（和它的尾行），玩家输入留着。
-		// 整轮隐掉输入会让页面看起来像"我刚发的那条被删了"，这是他自己的话。
-		function hideReplacingReply(tail, turn) {
-			hideRow(tail);
-			const rows = turnRowsBefore(tail, turn);
-			for (let i = 0; i < rows.length; i++) {
-				if (rows[i].getAttribute("data-chat-flow-kind") === "user") continue;
-				hideRow(rows[i]);
-			}
-		}
-		function applyReplacingDshTurns(turns) {
-			const set = new Set((Array.isArray(turns) ? turns : []).map(String));
-			if (set.size === 0) return;
-			const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-			for (let i = 0; i < tails.length; i++) {
-				const tail = tails[i];
-				const turn = tailTurnOf(tail);
-				if (!set.has(turn)) continue;
-				hideReplacingReply(tail, turn);
-			}
-		}
-		function applyRegeneratedDshTurns(regeneratedDshTurns) {
-			const mappings = regeneratedDshTurns && typeof regeneratedDshTurns === "object" ? regeneratedDshTurns : {};
-			const hiddenStoryTurns = new Set(Object.keys(mappings).map(String));
-			if (hiddenStoryTurns.size === 0) return;
-			const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-			for (let i = 0; i < tails.length; i++) {
-				const tail = tails[i];
-				if (hiddenStoryTurns.has(tailTurnOf(tail))) hideTurnTail(tail);
-			}
-		}
-		// 被替换掉的正文不会自己消失：宿主已经为那个原生回合画好了行，即使节点早已
-		// 从消息面移除，重渲染也会把它再画出来。replacingDshTurns 只管生成那一刻，
-		// regeneratedDshTurns 的键是剧情轮次、宿主行上是原生轮次，两边对不上。
-		// 这里按服务端从日志里算出的「曾被替换的正文所在原生回合」隐藏，只藏回复，
-		// 玩家输入永远留着。刷新后照样生效，因为它来自日志而不是内存标记。
-		function applySupersededDshTurns(turns) {
-			const set = new Set((Array.isArray(turns) ? turns : []).map(String));
-			if (set.size === 0) return;
-			const rows = root().querySelectorAll('[data-chat-turn]');
-			for (let i = 0; i < rows.length; i++) {
-				const row = rows[i];
-				if (!set.has(row.getAttribute("data-chat-turn"))) continue;
-				if (row.getAttribute("data-chat-flow-kind") === "user") continue;
-				hideRow(row);
-			}
-		}
-			function apply(sessionId, turns, regeneratedDshTurns, replacingTurns, supersededTurns) {
-                // Reconcile both directions: an older observer may have hidden a
-                // restored turn after the action's immediate DOM update.
-                restoreHiddenRows();
-				applySuppressedDshTurns(turns, regeneratedDshTurns);
-				applyReplacingDshTurns(replacingTurns);
-				applyRegeneratedDshTurns(regeneratedDshTurns);
-				applySupersededDshTurns(supersededTurns);
-                // Native rows can mount without their turn tail. Explicit ownership
-                // must remain authoritative during streaming and partial hydration.
-                const suppressed = new Set((Array.isArray(turns) ? turns : []).map(String));
-                const replacing = new Set((Array.isArray(replacingTurns) ? replacingTurns : []).map(String));
-                const mappings = regeneratedDshTurns || {};
-                const replacements = new Set(Object.values(mappings).map(String));
-                for (const row of root().querySelectorAll('[data-chat-turn]')) {
-                    const turn = row.getAttribute("data-chat-turn");
-                    const kind = row.getAttribute("data-chat-flow-kind");
-                    if (!kind) continue;
-                    // 正在被替换的那一楼只藏回复，玩家的输入永远留着。
-                    if (replacing.has(turn) && kind === "user") continue;
-                    if (suppressed.has(turn) && (!replacements.has(turn) || kind === "user")) hideRow(row);
-                    // mappings 的键是剧情轮次，宿主行上是原生轮次；用键去匹配这里的
-                    // turn 只会在两个编号碰巧相等时误藏，真正的替换由 superseded 负责。
-                }
-				applyHiddenTurns(sessionId);
-				applyRolledBackTurns(sessionId);
-				applyHiddenRegenUserTurns(sessionId);
-                for (const row of root().querySelectorAll('[data-chat-flow-kind="context"]')) {
-                    const source = row.querySelector('[data-context-source]');
-                    if (source && source.textContent.trim() === "dsh-tavern-surface-restore") hideRow(row);
-                }
-			}
-			function regenerated(sessionId, view, tail) {
-				const adopted = view && view.adopted;
-				if (adopted && Number(adopted.hiddenTurn) > 0) forgetHiddenTurn(HIDDEN_TURNS_KEY, sessionId, Number(adopted.hiddenTurn));
-				if (adopted && Number(adopted.syntheticTurn) > 0) forgetHiddenTurn(HIDDEN_REGEN_USER_TURNS_KEY, sessionId, Number(adopted.syntheticTurn));
-				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
-			}
-            function restored(sessionId, view) {
-                const turn = Number(view && view.undoneRollback && view.undoneRollback.turn);
-                const turns = [turn].concat(Object.values(view && view.regeneratedDshTurns || {})).map(String);
-                for (const restoredTurn of turns) {
-                    forgetHiddenTurn(ROLLED_BACK_TURNS_KEY, sessionId, restoredTurn);
-                    forgetHiddenTurn(HIDDEN_TURNS_KEY, sessionId, restoredTurn);
-                }
-                const tails = root().querySelectorAll('[data-chat-flow-kind="turn-tail"]');
-                for (const tail of tails) {
-                    if (!turns.includes(tailTurnOf(tail))) continue;
-                    tail.style.display = "";
-                    turnRowsBefore(tail, tail.getAttribute("data-chat-turn")).forEach(function (row) { row.style.display = ""; });
-                }
-                apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
-            }
-			function rolledBack(sessionId, view) {
-				apply(sessionId, view && view.suppressedDshTurns, view && view.regeneratedDshTurns, view && view.replacingDshTurns, view && view.supersededDshTurns);
-			}
-			return Object.freeze({ apply: apply, regenerated: regenerated, rolledBack: rolledBack, restored: restored });
+			function refresh(sessionId, view) { apply(sessionId, tavernPlanOf(view)); }
+			return Object.freeze({ apply: apply, regenerated: refresh, rolledBack: refresh, restored: refresh });
 		}
 		function applyBodyRegenerationResult(options) {
 			options.liveTavernView.setView(options.sessionId, options.view);

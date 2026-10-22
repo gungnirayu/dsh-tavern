@@ -34,5 +34,6 @@ for (const content of ['hp: 50', 'hp: <%= 25 * 2 %>']) test('同名初值不额�
   const draft = await preparation.create('card', { runtime: true })
   assert.equal(draft.worldbook.entries.length, 2)
   assert.deepEqual(draft.diagnostics, [])
-  assert.equal(preparation.resolve(draft.id, 'card', 'primary').worldbookSnapshot.version, 1)
+  // Starting a game hands over the projection instead of a copy of the book.
+  assert.equal(preparation.resolve(draft.id, 'card', 'primary').worldbook.view.entries.length, 2)
 })

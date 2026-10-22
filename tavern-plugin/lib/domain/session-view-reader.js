@@ -111,6 +111,12 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
   async function read(sessionId, options) { return (await load(sessionId, options)).view }
   async function response(args = {}) {
     const sessionId = args.sessionId
+    // New clients read the worldbook from Helper context; old clients keep the alias.
+    const transportView = view => {
+      if (args.helperWorldbookSync !== 1 || !view?.tavernHelper || !Object.hasOwn(view.tavernHelper, 'worldbook')) return view
+      const { tavernHelperWorldbook: _alias, ...result } = view
+      return result
+    }
     // Bounded views have their own contract and never enter the complete view
     // cache. Explicit full reads retain the existing compatibility path.
     if (args.openingWindow === 1 && args.viewSync === 1 && args.fullView !== true && readOpeningWindow && project.opening) {
@@ -118,7 +124,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       if (window) {
         const view = await trace.stage('projectOpeningWindow', () => project.opening(window, {deferResources:args.resourceSync === 1}))
         trace.state({viewRebuild:'window',helperMessageCount:window.chat.messages.length})
-        return synchronize(String(sessionId),view,args.viewCursor,{revision:window.revision,receiptSync:args.receiptSync})
+        return synchronize(String(sessionId),transportView(view),args.viewCursor,{revision:window.revision,receiptSync:args.receiptSync})
       }
     }
     const previous = args.viewSync === 1 ? synchronize.peek?.(args.viewCursor) : null
@@ -126,10 +132,10 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       deferResources: args.resourceSync === 1,
       windowHelperMessages: args.fullView !== true && args.viewSync === 1 && (args.viewCursor === undefined || args.viewCursor === null || args.viewCursor === '')
     })
-    if (args.viewSync !== 1) return { view: result.view }
+    if (args.viewSync !== 1) return { view: transportView(result.view) }
     const dirtyMessageIndices = result.chat && previous?.sessionId === String(sessionId)
       && Number.isSafeInteger(previous.revision) ? await changes(result.chat, previous.revision) : null
-    return synchronize(String(sessionId), result.view, args.viewCursor, { revision: result.revision, dirtyMessageIndices, receiptSync:args.receiptSync })
+    return synchronize(String(sessionId), transportView(result.view), args.viewCursor, { revision: result.revision, dirtyMessageIndices, receiptSync:args.receiptSync })
   }
   function acceptHelperMessages(sessionId, chatId, revision, payload) {
     const pending = helperWindows.get(chatId)

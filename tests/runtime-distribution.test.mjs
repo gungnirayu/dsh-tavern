@@ -9,7 +9,7 @@ import test from 'node:test'
 const attributes = readFileSync(new URL('../.gitattributes', import.meta.url), 'utf8')
 const unix = readFileSync(new URL('../install.sh', import.meta.url), 'utf8')
 const windows = readFileSync(new URL('../install.ps1', import.meta.url), 'utf8')
-const docs = ['docs/images/readme/overview.png', 'tavern-plugin/packages/dsh-image-gen/docs/assets/gallery-preview.png']
+const docs = ['docs/images/readme/overview.png', 'tavern-plugin/packages/dsh-dream-skin/docs/assets/gallery-preview.png']
 const icon = 'tavern-plugin/lib/vendor/runtime-assets/jquery-ui/themes/base/images/ui-icons_444444_256x240.png'
 function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'tavern-distribution-'))

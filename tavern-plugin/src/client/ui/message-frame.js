@@ -148,15 +148,25 @@
                 }
             }, React.createElement(FullscreenIcon, { on: on }));
         }
+		// The first click both activates the panel and expands it; the iframe only
+		// mounts after React commits that state, so wait briefly for it to appear.
+		async function waitForTavernFrame(root, timeout = 3000) {
+            const start = Date.now();
+            for (;;) {
+                const frame = root?.querySelector('iframe:not([aria-hidden="true"])');
+                if (frame || !root || Date.now() - start > timeout) return frame || null;
+                await new Promise(resolve => requestAnimationFrame(() => resolve()));
+            }
+        }
 		async function expandTavernFrame(root) {
-            const frame = root?.querySelector('iframe:not([aria-hidden="true"])');
             try {
+                const frame = await waitForTavernFrame(root);
                 if (!frame) throw new Error("面板尚未加载，请稍后重试。");
                 // Fullscreen the page, not the iframe: a fullscreened iframe hides every
                 // host control, leaving only Esc to get out. The frame fills the page instead.
                 openTavernPageFullscreen(frame);
-                const root = frame.ownerDocument.documentElement;
-                try { if (typeof root.requestFullscreen === "function") await root.requestFullscreen(); }
+                const pageRoot = frame.ownerDocument.documentElement;
+                try { if (typeof pageRoot.requestFullscreen === "function") await pageRoot.requestFullscreen(); }
                 catch (_) { /* Embedded hosts may deny native fullscreen; the page overlay remains. */ }
             } catch (error) { tavernErrorHub.report("展开大屏", error); }
         }
@@ -477,7 +487,7 @@
 				// Rounds past the render depth keep their prose; the card's HTML waits for one click.
 				if (typeof options.deferHtml === "function") {
 					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== index) return null;
-					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "超出渲染深度的轮次只显示文字；点击后渲染本轮的卡片界面", onClick: options.deferHtml }, "渲染此轮");
+					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近 3 轮渲染卡片界面，更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
 				}
 				// Plugin markers inside card HTML cannot be split out; show them after that part.
 				const pluginHtml = options.plugin && !options.openingPreview ? options.plugin.renderHtmlMarkers(String(part.content !== undefined ? part.content : part.html || "")) : null;
@@ -493,7 +503,11 @@
 		function TavernScriptLayerPart(props) {
 			const native = React.useRef(null), layer = React.useRef(null);
 			React.useLayoutEffect(function () {
-				return mountTavernScriptLayer({ native: native.current, layer: layer.current, sessionId: props.layer.sessionId, messageId: props.layer.messageId });
+				const unmount = mountTavernScriptLayer({ native: native.current, layer: layer.current, sessionId: props.layer.sessionId, messageId: props.layer.messageId });
+				// Once a card script takes the layer over, the native prose (and its quote colors) is hidden;
+				// the layer is a copy of plain DOM and needs its own (#305). A hidden layer yields no ranges.
+				const colors = installTavernTextColors(layer.current, {}, findTavernQuoteRanges);
+				return function () { colors.dispose(); unmount(); };
 			}, [props.layer.sessionId, props.layer.messageId, props.partIndex, props.text]);
 			// Visibility is toggled by the layer itself; React never sets `hidden` here.
 			return React.createElement("div", { className: "dsh-tavern-script-part" },

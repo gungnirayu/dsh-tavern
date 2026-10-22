@@ -85,24 +85,48 @@ const crc32 = typeof zlib.crc32 === 'function' ? data => zlib.crc32(data) : data
 
 export function isPng(bytes) { return Buffer.isBuffer(bytes) && bytes.length > 8 && bytes.readUInt32BE(0) === 0x89504e47 && bytes.readUInt32BE(4) === 0x0d0a1a0a }
 
-/** A PNG cover carrying the card as a `ccv3` text chunk, its other text chunks dropped. */
-export function pngWithCard(png, cardText) {
+const PNG_TEXT_TYPES = ['tEXt', 'zTXt', 'iTXt']
+
+/** A `tEXt` chunk holding `text` base64-encoded under `keyword`, the way card PNGs store cards. */
+export function pngCardTextChunk(keyword, text) {
+  const body = Buffer.concat([Buffer.from('tEXt'), Buffer.from(keyword + '\u0000', 'latin1'), Buffer.from(Buffer.from(text, 'utf8').toString('base64'), 'latin1')])
+  const chunk = Buffer.alloc(body.length + 8)
+  chunk.writeUInt32BE(body.length - 4, 0); body.copy(chunk, 4); chunk.writeUInt32BE(crc32(body), body.length + 4)
+  return chunk
+}
+
+/** The raw text chunks (tEXt/zTXt/iTXt, length and CRC included) of a PNG, in order. */
+export function pngRawTextChunks(png) {
+  const found = []
+  if (!isPng(png)) return found
+  let offset = 8
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset), type = png.toString('ascii', offset + 4, offset + 8), end = offset + 12 + length
+    if (end > png.length || type === 'IEND') break
+    if (PNG_TEXT_TYPES.includes(type)) found.push(png.subarray(offset, end))
+    offset = end
+  }
+  return found
+}
+
+/** `png`'s pixels with its own text chunks dropped and `chunks` (raw chunk buffers) put before IEND. */
+export function pngWithTextChunks(png, chunks) {
+  if (!isPng(png)) throw new Error('卡面不是有效的 PNG')
   const parts = [png.subarray(0, 8)]
   let offset = 8
   while (offset + 12 <= png.length) {
     const length = png.readUInt32BE(offset), type = png.toString('ascii', offset + 4, offset + 8), end = offset + 12 + length
     if (end > png.length) throw new Error('卡面 PNG 损坏')
-    if (type === 'IEND') {
-      const body = Buffer.concat([Buffer.from('tEXt'), Buffer.from('ccv3\u0000', 'latin1'), Buffer.from(Buffer.from(cardText, 'utf8').toString('base64'), 'latin1')])
-      const chunk = Buffer.alloc(body.length + 8)
-      chunk.writeUInt32BE(body.length - 4, 0); body.copy(chunk, 4); chunk.writeUInt32BE(crc32(body), body.length + 4)
-      parts.push(chunk, png.subarray(offset, end))
-      return Buffer.concat(parts)
-    }
-    if (!['tEXt', 'zTXt', 'iTXt'].includes(type)) parts.push(png.subarray(offset, end))
+    if (type === 'IEND') return Buffer.concat([...parts, ...chunks, png.subarray(offset, end)])
+    if (!PNG_TEXT_TYPES.includes(type)) parts.push(png.subarray(offset, end))
     offset = end
   }
   throw new Error('卡面 PNG 缺少结束块')
+}
+
+/** A PNG cover carrying the card as a `ccv3` text chunk, its other text chunks dropped. */
+export function pngWithCard(png, cardText) {
+  return pngWithTextChunks(png, [pngCardTextChunk('ccv3', cardText)])
 }
 
 function decodeCardText(text) {
@@ -193,12 +217,6 @@ export function collectCardAssets(card, resolve) {
       voices: character.voices && typeof character.voices === 'object' ? Object.fromEntries(Object.entries(character.voices).filter(([, voice]) => typeof voice === 'string')) : {} })
   }
   return result
-}
-
-/** The main background first: named 'main', else the first one. */
-export function orderBackgrounds(backgrounds) {
-  const main = backgrounds.findIndex(item => item.name === 'main')
-  return main > 0 ? [backgrounds[main], ...backgrounds.slice(0, main), ...backgrounds.slice(main + 1)] : backgrounds.slice()
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'])

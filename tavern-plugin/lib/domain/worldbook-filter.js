@@ -33,7 +33,7 @@ export function createWorldbookFilter({ runAgent, selection, beginTask }) {
         persistentSessionId: taskRun.participantRequest.sessionId,
         rewindTo: taskRun.participantRequest.rewindTo,
         rewindFormatVersion: taskRun.participantRequest.formatVersion,
-        onPersistentSessionReady: id => taskRun.bindSession(id),
+        onPersistentSessionReady: id => taskRun.bindSession(id, { stateOnly: true }),
         turn: Number(chat.messages?.at(-1)?.turn || 0) + 1,
         selection: selection(chat), webSearchEnabled: false, signal,
         backgroundTasks: { variables: false, posture: false, characterDesign: false },
@@ -69,7 +69,7 @@ export function createWorldbookFilter({ runAgent, selection, beginTask }) {
       const excluded = new Set(candidates.map(item => item.ref).filter(ref => !selected.includes(ref)))
       const entries = (corpus || []).filter(entry => excluded.has(entry.ref))
       const turn = Number((chat.messages || []).findLast(message => message.role === 'assistant')?.turn) || 0
-      const completed = await taskRun.commit({ participant: taskRun.participant(run), stateChanged: false,
+      const completed = await taskRun.commit({ participant: taskRun.participant(run), stateChanged: false, headerFields: ['worldBookReads'],
         apply(draft) { if (entries.length) draft.worldBookReads = recordScreenedExclusions(draft.worldBookReads, entries, turn) } })
       if (completed.status !== 'committed') throw new Error('剧情已变化，本次世界书筛选结果已过期')
     } catch (error) {

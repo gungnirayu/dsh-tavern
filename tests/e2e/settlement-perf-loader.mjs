@@ -27,6 +27,20 @@ export async function load(url, context, next) {
     replace("    const chat = window?.chat || (reuse ? selected.chat : changed ? changed.chat : await resolveChat(sessionId))", "    console.log('[settlement-perf]'+JSON.stringify({stage:'template-read',at:performance.timeOrigin+performance.now(),windowed,window:Boolean(window),reuse:Boolean(reuse),changed:Boolean(changed),hasCursor:Boolean(cursor)}));\n    const chat = window?.chat || (reuse ? selected.chat : changed ? changed.chat : await resolveChat(sessionId))")
     replace("  async function saveTemplatePatch(sessionId, request) {", "  async function saveTemplatePatch(sessionId, request) {\nconsole.log('[settlement-perf]'+JSON.stringify({stage:'template-save',at:performance.timeOrigin+performance.now(),stateRevision:request?.stateRevision,changes:Array.isArray(request?.changes)?request.changes.slice(0,6).map(c=>({path:c.path,op:c.op,value:JSON.stringify(c.value)?.slice(0,120)})):null}));")
     replace("    const patch = Array.isArray(request?.changes)\n    if (!patch) validateFullPromptTemplateSave(request)", "    console.log('[settlement-perf]'+JSON.stringify({stage:'template-save-full',at:performance.timeOrigin+performance.now(),patch:Array.isArray(request?.changes),paths:Array.isArray(request?.changes)?[...new Set(request.changes.map(c=>c.path.slice(0,3).map(p=>typeof p==='number'?'#':p).join('.')))].slice(0,20):null,stateRevision:request?.stateRevision}));\n    const patch = Array.isArray(request?.changes)\n    if (!patch) validateFullPromptTemplateSave(request)")
+  } else if (url.endsWith('/foreground-handoff.js')) {
+    // Each wait the next turn's preparation goes through, to see which one holds a send.
+    replace('    await options.waitReconcile?.(input.sessionId)', mark('prepare-start') + '\n    await options.waitReconcile?.(input.sessionId)')
+    replace('    if (chat !== undefined) await options.waitBackground?.(chat.id)', '    if (chat !== undefined) await options.waitBackground?.(chat.id)\n' + mark('prepare-background-waited'))
+    replace('    if (chat !== undefined) await options.cancelPrefilter?.(chat.id)', '    if (chat !== undefined) await options.cancelPrefilter?.(chat.id)\n' + mark('prepare-prefilter-cancelled'))
+    replace('    if (chat !== undefined) await options.syncWorldBook?.(chat)', '    if (chat !== undefined) await options.syncWorldBook?.(chat)\n' + mark('prepare-worldbook-synced'))
+  } else if (url.endsWith('/worldbook-prefilter.js')) {
+    replace('    const job = { controller: new AbortController(), promise: null }', mark('prefilter-start') + '\n    const job = { controller: new AbortController(), promise: null }')
+    replace('    }).finally(() => { if (jobs.get(chatId) === job) jobs.delete(chatId) })', '    }).finally(() => {' + mark('prefilter-end') + ' if (jobs.get(chatId) === job) jobs.delete(chatId) })')
+    replace('  async function cancel(chatId) {', '  async function cancel(chatId) {\n' + mark('prefilter-cancel'))
+  } else if (url.endsWith('/style-reference.js')) {
+    replace('    const taskRun = await beginTask(chat)', mark('style-reference-start') + '\n    const taskRun = await beginTask(chat)\n' + mark('style-reference-begun'))
+    replace("      if (!submitted) throw new Error('文风联想 Agent 未提交结果')", mark('style-reference-agent-done') + "\n      if (!submitted) throw new Error('文风联想 Agent 未提交结果')")
+    replace("      if (completed.status !== 'committed')", mark('style-reference-committed') + "\n      if (completed.status !== 'committed')")
   } else if (url.endsWith('/background-task-coordinator.js')) {
     replace('      async commit(input = {}) {', '      async commit(input = {}) {\n' + mark('commit-start') + '\ntry {')
     replace('      },\n      async fail(trace)', '} finally {' + mark('commit-return') + '}\n      },\n      async fail(trace)')

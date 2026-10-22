@@ -12,7 +12,12 @@ function settingsObject(value) {
 export function createTavernExtensionSettings(profileData) {
   const project = settingsObject
   const writable = settingsObject
-  async function read() { return project(await profileData.readJson(settingsPath) ?? {}) }
+  async function read() {
+    // ProfileDataStore parses a fresh JSON object on each read; it is already detached.
+    const value = await profileData.readJson(settingsPath) ?? {}
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('插件设置必须是 JSON 对象')
+    return value
+  }
 
   async function save(settings, expectedSettings) {
     const next = writable(settings)

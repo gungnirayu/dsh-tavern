@@ -27,11 +27,13 @@ test('移动端真实输入器、插槽和菜单回归', { skip: !process.env.TA
       await page.setViewportSize(size)
       await viewport(page, { ...size, offsetTop: 0 })
       assert.equal(await page.locator('[contenteditable]').evaluate(el => getComputedStyle(el).fontSize), '16px')
+      // 宿主的「+」保持 28px 外观，靠 ::after 外扩出 40px 热区。
       const rects = await page.locator('[data-composer-card] button:not([role="menuitem"])').evaluateAll(es => es.map(el => {
-        const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }
+        const r = el.getBoundingClientRect(), after = getComputedStyle(el, '::after'), grow = after.content === 'none' ? 0 : -2 * (parseFloat(after.left) || 0)
+        return { x: r.x, y: r.y + r.height / 2, width: r.width, height: r.height, hitWidth: r.width + grow, hitHeight: r.height + grow }
       }))
       for (const rect of rects) {
-        assert.ok(rect.width >= 40 && rect.height >= 40, '输入工具触摸区域至少 40px')
+        assert.ok(rect.hitWidth >= 40 && rect.hitHeight >= 40, '输入工具触摸区域至少 40px')
         assert.ok(rect.x >= 0 && rect.x + rect.width <= size.width, '输入工具完整可见')
         assert.ok(Math.abs(rect.y - rects[0].y) <= 1, '发送与其余图标垂直对齐')
       }
@@ -51,9 +53,7 @@ test('移动端真实输入器、插槽和菜单回归', { skip: !process.env.TA
   await t.test('真实 utilities 插槽不重复展示日志，嵌套面板标签关闭和新增保持可触摸', async () => {
     await page.setViewportSize({ width: 320, height: 720 }); await install(page)
     await page.evaluate(() => {
-      const utilities = document.querySelector('header [class*="_headerUtilities"]'), slot = document.createElement('div')
-      slot.dataset.slot = 'conversation.session.header.utilities'; slot.style.display = 'contents'
-      slot.append(...utilities.children); utilities.append(slot)
+      const slot = document.querySelector('[data-slot="conversation.session.header.utilities"]')
       const log = document.createElement('button'); log.id = 'duplicate-log'; log.textContent = 'Session 日志'; slot.prepend(log)
     }); await settle()
     assert.equal(await page.locator('#duplicate-log').isVisible(), false)
@@ -68,7 +68,8 @@ test('移动端真实输入器、插槽和菜单回归', { skip: !process.env.TA
     const panel = await box('[data-sidebar-right-panel]')
     assert.equal(panel.y, 20); assert.equal(panel.height, 300)
     await page.getByRole('button', { name: '折叠资源面板' }).click()
-    assert.equal(await page.locator('[data-sidebar-right-panel]').isVisible(), false)
+    // 0.2.x 收起时保留面板外壳，只把 dock 移出并隐藏。
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-dockkit-host="dock"]')).visibility === 'hidden')
   })
 
   await t.test('真实分组和行菜单随键盘高度、可视区偏移与横屏变化重定位并可关闭', async () => {

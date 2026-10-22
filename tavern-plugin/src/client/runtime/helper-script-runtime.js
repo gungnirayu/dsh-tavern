@@ -153,7 +153,7 @@
 				context.chatId = String(view && view.chatId || "");
 				context.playerName = String(view && view.playerName || "你");
 				context.characterName = String(character && character.name || "角色");
-				context.worldbook = clone(view && view.tavernHelperWorldbook || null);
+				if (!Object.prototype.hasOwnProperty.call(context, "worldbook")) context.worldbook = clone(view && view.tavernHelperWorldbook || null);
 				return decorateHelperContext(context);
 			}
 			function post(record, message) {
@@ -322,6 +322,10 @@
                     const timer = hostWindow.setTimeout(function check() {
                         const pending = pendingEvents.get(eventId);
                         if (!pending) return;
+                        // A suspended page sends no probes, so its silence says nothing about
+                        // the sandbox: discount the stall and probe before judging.
+                        const stalledMs = now() - pending.probeDueAt - probeIntervalMs;
+                        if (stalledMs > 0) pending.contactAt = Math.min(now(), pending.contactAt + stalledMs + probeIntervalMs);
                         // A responsive sandbox may execute indefinitely. Probe the same
                         // identity: a lost completion replays its receipt, never its handler.
                         if (now() - pending.contactAt >= eventTimeoutMs) {
@@ -338,9 +342,10 @@
                             return;
                         }
                         post(record, { type: "dsh-tavern-helper-event-query", eventId: eventId });
+                        pending.probeDueAt = now() + probeIntervalMs;
                         pending.timer = hostWindow.setTimeout(check, probeIntervalMs);
                     }, probeIntervalMs);
-                    pendingEvents.set(eventId, { record: record, resolve: resolve, reject: reject, timer: timer, envelope: envelope, contactAt: startedAt, name: String(name), activeScriptId: "", diagnostics: diagnostics });
+                    pendingEvents.set(eventId, { record: record, resolve: resolve, reject: reject, timer: timer, envelope: envelope, contactAt: startedAt, probeDueAt: startedAt + probeIntervalMs, probeIntervalMs: probeIntervalMs, name: String(name), activeScriptId: "", diagnostics: diagnostics });
                     post(record, envelope);
 				});
 			}
@@ -882,7 +887,8 @@
 					if (!record || !record.scripts.has(String(scriptId))) return Promise.reject(new Error("人物卡脚本尚未运行"));
 					return emitToRecord(record, buttonEvent(scriptId, name), [], record.context);
 				},
-                eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && now() - pending.contactAt < eventTimeoutMs); },
+                // An overdue probe means the page itself stalled; the watchdog re-probes before judging.
+                eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && (now() - pending.contactAt < eventTimeoutMs || now() - pending.probeDueAt > pending.probeIntervalMs)); },
 				dispose: function () { hostWindow.removeEventListener("message", receive); clear(); releaseHostStylesheetBridge(); },
 				inspect: function () {
 					const record = records.get("shared");

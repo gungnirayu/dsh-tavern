@@ -18,8 +18,13 @@ const content = [
   '      name: ./tavern-plugin/packages/dsh-better-sidebar/lib/index.js',
   read('tavern-plugin/packages/dsh-dream-skin/cordis.patch.yml')
     .replace("name: 'dsh-dream-skin'", 'name: ./tavern-plugin/packages/dsh-dream-skin/lib/index.js'),
+  // A `dsh plugin` install has no dsh-tavern-plugin package to resolve bare names
+  // against (the installers add it as a profile dependency); point every entry,
+  // the preset's own plugin lines included, into this package instead.
   read('tavern-plugin/cordis.patch.yml')
     .replace('name: dsh-tavern-plugin/cordis-inspect', 'name: ./tavern-plugin/lib/cordis-inspect.js')
+    .replaceAll('name: dsh-tavern-plugin/user-tools-bridge', 'name: ./tavern-plugin/lib/user-tools-bridge.js')
+    .replaceAll('name: dsh-tavern-plugin/compaction', 'name: ./tavern-plugin/lib/agent-compaction.js')
     .replace('name: dsh-tavern-plugin\n', 'name: ./tavern-plugin/lib/index.js\n'),
   read('tavern-plugin/packages/dsh-tavern-remote/cordis.patch.yml')
     .replace('name: dsh-tavern-remote', 'name: ./tavern-plugin/packages/dsh-tavern-remote/lib/index.js'),

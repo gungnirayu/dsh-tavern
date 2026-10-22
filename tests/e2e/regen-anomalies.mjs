@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { currentSessionLogs } from './session-files.mjs'
 
 // Probes regeneration after anomalous turns (failures, truncation, stops, reloads)
 // and records whether the surface-ownership guard rejects it and whether the game
@@ -147,8 +148,8 @@ export async function regenTemplateChecks({ page, step, savedChat, output, repor
   })
   async function events(sessionId) {
     const dir = join(root, 'profile-data/tavern/sessions')
-    for (const file of await readdir(dir, { recursive: true })) if (file.endsWith('session.v3.jsonl.zstd')) {
-      const parsed = parseSessionLog(await readFile(join(dir, file)))
+    for (const { path: file } of await currentSessionLogs(dir)) {
+      const parsed = parseSessionLog(await readFile(file))
       if (parsed.header.id === sessionId) return parsed.events
     }
     return []
