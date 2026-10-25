@@ -67,6 +67,18 @@ ctx.tavern.cardImporter({
 - `convert` 抛错、120 秒没返回或交回的东西不合格时，这次导入失败并把原因告诉玩家。`imported` 出错只记进 Tavern 日志，不影响已经导入的卡。
 - 卡内插件不能注册导入器。
 
+### `toolNetwork({ name, capability })`
+
+插件用 DSH 注册工具后，可以声明它需要联网：
+
+```js
+ctx.tavern.toolNetwork({ name: 'reference_lookup', capability: 'search' })
+```
+
+`capability` 为 `search`（默认）或 `fetch`。游玩时随本局联网开关和前台逐工具开关过滤；卡片工作台允许搜索，`fetch` 还需全局开启网页读取。Tavern 在组装工具列表和实际执行前均检查。后台仍受任务自己的工具白名单与联网限制，不会因为声明而自动获得工具。插件子会话继承可识别的父会话联网开关；非酒馆会话不受影响。
+
+此接口只声明插件自己的工具，不能覆盖 `web_search`、`web_fetch` 等内置工具。返回注销函数，卸载插件时也会自动清理。无需读取 Tavern 的存储文件。`toolModes` 与联网声明独立，可同时使用。
+
 ### `toolModes({ name, modes })`
 
 插件用 DSH 的 `tools` 服务注册的工具，默认在游玩和卡片工作台的对话里都会出现。用这个接口限定它出现在哪：`modes` 取 `play`（游玩时写正文的请求）、`card`（卡片工作台），一项或两项。
@@ -100,7 +112,7 @@ ctx.tavern.skillSource({ dir: fileURLToPath(new URL('./skills', import.meta.url)
 
 ## 演出：台词标注与角色素材（第 2 版）
 
-玩家在「设置 → DSH Tavern → 显示与交互」打开「对话头像」后，后台结算会顺带标注每轮引号台词的说话人和情绪，人物卡还可以配上各人物的头像和表情立绘（见[角色演出](design/cast-presentation.md)）。这些是给配音、立绘、Galgame 式演出这类插件用的公共数据：插件读它们，不用自己再让模型标一遍。
+玩家在「舞台设置」打开「对话气泡」后，后台结算会顺带标注每轮引号台词的说话人和情绪，人物卡还可以配上各人物的头像和表情立绘（见[角色演出](design/cast-presentation.md)）。这些是给配音、立绘、Galgame 式演出这类插件用的公共数据：插件读它们，不用自己再让模型标一遍。
 
 ### `getCast({ gameId, turn })`
 
@@ -112,7 +124,7 @@ ctx.tavern.skillSource({ dir: fileURLToPath(new URL('./skills', import.meta.url)
 
 - `quote` 是引号里的原话（不含引号），用它在正文里找到这句；`speaker` 是正文里的人名；`emotion` 是 SillyTavern 表情扩展的 28 个情绪名之一（`joy`、`anger`、`neutral`…），可以直接对应 ST 立绘包的文件名。
 - 标注跟着正文版本走：重新生成、编辑后旧标注读不到，新版本要等这一轮结算完才有。没被标注的台词（看不出是谁说的）不在列表里。
-- 玩家关掉「对话头像」后不再产生新标注，已有的照常可读。
+- 玩家关掉「对话气泡」后不再产生新标注，已有的照常可读。
 
 ### `onCastAnnotated(handler)`
 
@@ -120,7 +132,7 @@ ctx.tavern.skillSource({ dir: fileURLToPath(new URL('./skills', import.meta.url)
 
 ### `getCastAssets({ gameId })`
 
-这局人物卡的角色素材：`{ player, card: { name, imageUrl }, characters: [{ name, aliases, avatarUrl, avatars, sprites, voices }] }`。`player` 是玩家名；`avatars` 是各情绪的头像、`sprites` 是各情绪的立绘，都是 `{ 情绪名: 图片地址 }`；`voices` 是 `{ 配音渠道: 声音 }`；地址都可以直接放进 `<img src>`。素材由玩家在舞台页上传或导入 ST 立绘包，跟着人物卡走，所有用这张卡的局共用。找人物时同时比对 `name` 和 `aliases`。
+这局人物卡的角色素材：`{ player, card: { name, imageUrl }, characters: [{ name, aliases, avatarUrl, avatars, sprites, voices }] }`。`player` 是玩家名；`avatars` 是各情绪的头像、`sprites` 是各情绪的立绘，都是 `{ 情绪名: 图片地址 }`；`voices` 是 `{ 配音渠道: 声音 }`；地址都可以直接放进 `<img src>`。素材由玩家在全屏舞台上传或导入 ST 立绘包，跟着人物卡走，所有用这张卡的局共用。找人物时同时比对 `name` 和 `aliases`。
 
 ### `castAssetSource({ name, characters })`（第 2 版）
 
@@ -136,7 +148,7 @@ DSH 人物卡（`.dshcard`，见[格式设计](design/dsh-card-format.md)）带�
 
 ### 写角色素材：`setCastImage`、`removeCastImage`、`setCastCharacter`、`setCastVoice`、`removeCastCharacter`（第 3 版）
 
-和玩家在舞台页「角色素材」里做的一样，按人物卡写（`card` 是 `listCards` 的 `id`，或 `onTurnSettled` 里 `card.id`）。适合生图插件把画好的立绘存进卡、导入器插件导入素材、配音插件给人物配上声音：
+和玩家在「舞台素材」里做的一样，按人物卡写（`card` 是 `listCards` 的 `id`，或 `onTurnSettled` 里 `card.id`）。适合生图插件把画好的立绘存进卡、导入器插件导入素材、配音插件给人物配上声音：
 
 ```js
 await ctx.tavern.setCastImage({ card, name: '林岚', slot: 'joy', data: pngBytes })   // slot：'avatar' 或 28 个情绪名之一
@@ -147,7 +159,7 @@ await ctx.tavern.removeCastCharacter({ card, name: '林岚' })
 ```
 
 - 图片 `data` 是 `Uint8Array` 或 `Buffer`，PNG、JPEG、WebP、GIF，单张最多 8 MB；同样的内容只存一份。规则和限制与玩家上传相同，不合格时抛错。
-- 写的是玩家自己的素材：玩家在舞台页里看得到、改得了、删得掉；与 `castAssetSource`（插件临时提供、玩家清不掉）不同。
+- 写的是玩家自己的素材：玩家在「酒馆状态」里看得到、改得了、删得掉；与 `castAssetSource`（插件临时提供、玩家清不掉）不同。
 - 写完后这张卡的各局（正文头像、舞台）自动刷新。卡内插件只能写自己的卡。
 
 ### `saveCardPack({ card, id, format?, title?, files })`、`removeCardPack({ card, id })`（第 3 版）
@@ -181,7 +193,7 @@ ctx.tavern.speechProvider({
 ```
 
 - `id` 用小写字母、数字、点、下划线和连字符，渠道全名是 `插件名/id`；`label` 1–30 字。
-- `voice` 是这个人物在这个渠道上的声音（玩家在舞台页「角色素材」里填），没填时是玩家填的默认声音，再没有就是 `defaultVoice`；`emotion` 是台词标注的情绪名，旁白为 `neutral`。
+- `voice` 是这个人物在这个渠道上的声音（玩家在「舞台素材」里填），没填时是玩家填的默认声音，再没有就是 `defaultVoice`；`emotion` 是台词标注的情绪名，旁白为 `neutral`。
 - `synthesize` 还收到（第 3 版）：`gameId`（为某一局合成时）、`speaker`（正文里的人名，设置页试听时为空字符串）、`narration`（是不是旁白）。渠道可以据此自己决定怎么读，例如按人物挑参考音频。
 - `version`（第 3 版，最多 40 字）：渠道的合成方式变了（换了模型、参数）时改它，旧缓存就不再使用。
 - 渠道自己的地址、Key 等设置由插件自己保存（DSH 的设置区或凭据服务），Tavern 只保存每个人物用哪个声音。

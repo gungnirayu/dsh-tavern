@@ -22,7 +22,7 @@ for (const action of ['保存此项', '恢复默认']) test(action + '只清除�
     useRef() { return {} },
     useEffect(fn) { if (initial) effects.push(fn) }
   }
-  const Component = vm.runInNewContext(body + '; SystemPromptSidebarTab', {
+  const Component = vm.runInNewContext(body + '\n; SystemPromptSidebarTab', {
     React, useTavernConfirm: () => async () => true,
     rpc: async (method, args) => {
       if (method === 'updateSystemPrompt') persisted.find(row => row.name === args.name).text = args.text ?? 'default A'

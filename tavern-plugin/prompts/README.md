@@ -7,7 +7,7 @@
 Agent 的固定规则、新会话欢迎语和卡片对话起始入口追加的任务模板属于这里。普通按钮文字、工具参数说明以及人物卡内用户自定义的 `system_prompt` 不属于这里。
 
 
-- `card-system.md`：卡片 Agent 的自定义 system 指令，包含改卡记忆的记录与验证边界。直接编辑此文件，下一次请求读取最新内容；空白时不注入自定义 system 段，工作区说明仍保留。各入口的 `card-task-*.md` 任务指令独立保留。
+- `card-personas/*.md`：内置的卡片工作台性格，在前台“预设 → 卡片工作台性格”中选择和修改；选中的性格作为卡片 Agent 的自定义 system 指令，选「空白」时不注入。用户修改只存在设置里，未修改的内置性格随版本更新。增减内置性格时同步修改 `lib/prompt-catalog.js` 的 `CARD_PERSONA_DEFINITIONS`。
 
 - `card-workspace.md`：卡片 Agent 工作区说明默认模板，可在前台“系统提示词 → 卡片 Agent 工作区说明”修改、保存或恢复默认。`{{resourceRoot}}` 和 `{{projectionPaths}}` 在发送前替换为当前会话路径。
 

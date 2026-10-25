@@ -33,3 +33,18 @@ test('cache hits refresh activity and script progress without reading card/histo
   assert.equal(full.scriptProgress.progress, 1)
   assert.equal(cached.tavernHelper, full.tavernHelper)
 })
+
+test('card save stays readable as turn/path after full, cached and dirty projections', async () => {
+  const f = projectionFixture()
+  const chat = { ...f.chat, mode: 'card', lastCardSave: { turn: 4, path: 'cards/新卡.json', createsCard: true, changed: true } }
+  const full = await f.projection.project.full(chat)
+  assert.deepEqual(full.cardSave, { turn: 4, path: 'cards/新卡.json', createsCard: true, changed: true })
+  const cached = await f.projection.project.cached(chat, full, { busy: true, phase: 'running' })
+  assert.deepEqual(cached.cardSave, full.cardSave)
+  const storyFull = await f.projection.project.full(f.chat)
+  const dirty = await f.projection.project.dirty({ ...f.chat, _storageRevision: 2, lastCardSave: { turn: 4, path: 'cards/新卡.json', createsCard: false, changed: true } },
+    storyFull, new Set(), { busy: false }, { layoutChanged: false })
+  assert.deepEqual(dirty.cardSave, { turn: 4, path: 'cards/新卡.json', createsCard: false, changed: true })
+  const play = await f.projection.project.full({ ...f.chat, lastCardSave: undefined })
+  assert.equal(play.cardSave, null)
+})

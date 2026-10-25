@@ -107,6 +107,107 @@ new Audio(ctx.tavernUi.assetUrl('sfx/hit.mp3')).play()
 
 `getTurnState` 返回 Promise，结果与宿主侧 `tavern.getTurnState` 相同。`watchTurnState` 先用当前状态调用一次 `listener(state)`，之后每次状态变化（开始或写完正文、结算开始或结束、回退等）再调用；返回取消函数，插件卸载时自动取消。只在这一局在当前页面打开时有通知。
 
+## `watchReply(sessionId, listener)`（第 6 版）
+
+读正在写的这条回复，**卡片工作台也能用**（其他 `getTurnState` 一类接口在工作台不可用）。先用当前状态调用一次 `listener(state)`，之后每次变化（逐字生成、写完、工具开始或结束、卡片落盘）再调用；返回取消函数，插件卸载时自动取消。只在这一局在当前页面打开时有通知。
+
+```js
+const stop = ctx.tavernUi.watchReply(gameId, (state) => {
+  bubble.text = state.text
+  bubble.streaming = state.streaming
+  if (state.cardSaved) showBuiltCard(state.cardSaved)
+})
+```
+
+| 字段 | 含义 |
+|---|---|
+| `mode` | `'card'` 是卡片工作台，`'story'` / `'script'` 是游玩 |
+| `turn` | 这一轮的轮次（工作台里同样是 DSH 的轮次） |
+| `text` | 最新一条助手回复的纯文本；生成中是当前已写出的部分 |
+| `streaming` | 正在逐字写（已经拿到部分文字） |
+| `busy` | 这一轮还在跑（生成正文或执行工具），此时 `text` 可能还是上一轮 |
+| `tool` | 正在执行的工具名（如 `tavern_update_card`），拿不到时 `null` |
+| `cardSave` | 工作台最近一次落盘：`{ turn, path, createsCard, changed }`，没有时 `null` |
+| `cardSaved` | 这一轮刚创建的新卡路径（`createsCard`），否则 `null` |
+| `changed` | 这一轮改过或创建了这张卡（含工具直接保存），否则 `false` |
+
+工具调用不会改动 `text`；想在工作台里判断「建好了」，用 `cardSaved`，不要匹配正文。
+
+## `watchWorkStatus(sessionId, listener)`、`getWorkStatus(sessionId)`（第 7 版）
+
+读这一局现在在做什么，给桌宠、陪玩这类要跟着状态换表情的插件用。`watchWorkStatus` 先用当前状态调用一次 `listener(status)`，之后每次变化再调用，返回取消函数；只在这一局于当前页面打开时有通知。`getWorkStatus` 同步读当前值，不订阅。
+
+```js
+const stop = ctx.tavernUi.watchWorkStatus(gameId, (status) => {
+  pet.face(status.state) // idle / thinking / working / waiting / success / error
+})
+```
+
+| 字段 | 含义 |
+|---|---|
+| `state` | `idle` 空闲；`thinking` 正在写正文；`working` 正在跑工具或后台结算；`waiting` 在等玩家回答（`ask_user_question`）；`success` 刚忙完；`error` 出错 |
+| `reason` | 细分来源：`idle` / `busy` / `streaming` / `tool` / `settlement` / `question` / `settled` / `load` |
+| `busy` | 这一局现在是否在跑 |
+| `turn` | 最新一轮的轮次；还没有正文时为 `0` |
+| `tool` | 正在执行的工具名，拿不到时 `null` |
+| `phase`、`role` | Tavern 的原始活动字段（`role` 如 `settlement`） |
+| `error` | `state === 'error'` 时的原因，否则空字符串 |
+| `updatedAt` | 这次状态的生成时刻 |
+
+- `success` 只在**看着这一局从忙变闲**时出现，持续 4 秒后回到 `idle`；第一次订阅一个早就写完的局不会补一次成功。
+- 换局、关掉这一局、插件卸载都会自动停掉订阅。
+- 只读，不改变游戏。
+
+## `acquireLease({ sessionId, scope, ttlMs?, reason? })`、`getLease(sessionId, scope)`、`watchLease(sessionId, scope, listener)`（第 7 版）
+
+「占用锁」：同一局同一个 `scope` 同时只给一个插件。给桌宠这类会抢气泡、动作、舞台的插件协调用，避免两个插件同时说话或同时换画面。
+
+```js
+const lease = ctx.tavernUi.acquireLease({ sessionId: gameId, scope: 'voice', ttlMs: 30000, reason: '引导提问' })
+try { /* 这段归我说话 */ } finally { lease.release() }
+```
+
+- `scope` 只能用小写字母、数字、点、下划线和连字符，以字母开头；建议用 `voice`、`bubble`、`stage`、`composer` 这类语义名。
+- `ttlMs` 默认 30 秒，范围 1 秒–10 分钟。过期是懒判的：`getLease` 和下一次 `acquireLease` 会清掉，`watchLease` 会收到 `expired`。
+- 返回 `{ leaseId, holder, expiresAt, renew(ttlMs?), release(), active() }`。`holder` 是插件名（`package.json` 的 `name`）。
+- 别人持有这个 `scope` 时 `acquireLease` 抛错，`error.code === 'TAVERN_PLUGIN_LEASED'`，另带 `holder` 与 `expiresAt`；同一个插件重拿是续期，`leaseId` 不变。
+- 续期时锁已经丢了，抛 `TAVERN_PLUGIN_LEASE_LOST`；`release()` 是幂等的。
+- `getLease(sessionId, scope)` 返回当前持有者快照或 `null`；`watchLease` 先给一次当前值（`cause === 'current'`），之后在 `acquired` / `renewed` / `released` / `expired` 时回调，返回取消函数。
+- 插件卸载时自动释放。Tavern 保证同一 `scope` 只有一个持有者；拿不到锁的插件应当自己让路（检查 `getLease` / `watchLease`），Tavern 不会替它改已经注册的界面。
+
+## `registerReplyPresenter({ id, modes, present })`（第 6 版）
+
+让插件把会话里的**已完成**回复折叠成一行，例如卡片工作台里已经由桌宠念过的提问。Tavern 在画每条助手消息时同步调用 `present(message)`；返回 `null` 或不认识就保持原文。
+
+```js
+ctx.tavernUi.registerReplyPresenter({
+  id: 'question', modes: ['card'],
+  present: ({ text }) => parseQuestion(text) ? { fold: { summary: '第 2 题：核心定位是什么？' } } : null,
+})
+```
+
+- `message = { sessionId, turn, text, changed, streaming }`，`streaming` 恒为 `false`（生成中不调用）。
+- 返回 `{ fold: { summary } }` 时，这条消息显示成 `🐾 摘要 · 展开`；`summary` 压成一行、最多 60 字，点击就地展开原文，再点「收起」回到一行。
+- `modes` 目前只有 `'card'` 有效；同一会话注册多个时，按注册顺序取第一个返回非 `null` 的。
+- `present` 必须同步且快；抛错会记到插件错误里，连续 3 次后这一会话不再调用它。插件卸载后恢复原文。
+- 只修改显示，存档里的正文不变。
+
+## `registerComposerSlot({ id, modes, render })`（第 6 版）
+
+在输入框正上方加一块插件自己的界面（与对话栏同宽），给卡片工作台的引导员这类需要常驻的角色用。
+
+```js
+ctx.tavernUi.registerComposerSlot({
+  id: 'guide', modes: ['card'],
+  render: ({ sessionId, busy }) => h(GuideDock, { sessionId, busy }),
+})
+```
+
+- `render` 返回 React 元素，收到 `{ sessionId, busy }`（`busy` 是这一轮是否在跑）。
+- 同一会话只显示一个停靠区（先注册者），`modes` 不符合的会话不显示；插件卸载后移除。
+- 高度由内容决定，最高 40vh，超出内部滚动；Tavern 会把输入区上移，不会盖住最新一条消息。
+- 出错时只显示一行错误；卡内插件按它那张卡的局生效。
+
 ## `setInput({ gameId, text })`、`submitInput({ gameId, text })`（第 2 版）
 
 `setInput` 把文字填进这一局的输入框，不发送，玩家可以改了再发。`submitInput` 直接作为玩家输入发送并生成正文，返回 Promise（提交后完成，不等正文写完；要等结果用 `watchTurnState`）。正在生成时会排在当前这轮之后。这一局没有在当前页面打开时报错。
@@ -229,11 +330,11 @@ ctx.tavernUi.registerTurnView({
 
 ## `getStage(gameId, { count? })`、`watchStage(gameId, listener)`（第 2 版）
 
-舞台要显示的东西：`{ enabled, player, card, background, characters, turns }`。`background` 是人物卡带的主背景图地址，没有时为空字符串。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, text, lines }`，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`characters` 同宿主侧 `getCastAssets`；`enabled` 是玩家是否打开了「对话头像」。`watchStage` 先回调一次，之后在新的一轮、新的标注、素材变化后再回调，只在这一局在当前页面打开时有效。
+舞台要显示的东西：`{ enabled, player, card, background, music, stage, characters, turns }`。`stage` 是导演持续状态 `{ figures: [{ speaker, emotion }], background: string | null, music: string | null }`，背景和音乐的状态值是素材名称，省略增量保持原状，明确清空才消失。外层 `background` 是导演选定背景的已解析地址，未选择或缺失时为空字符串；外层 `music` 是 `{ name, url } | null`，只读投影，不授予写入或自动播放权限。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, key, text, lines, pages, performances }`，`key` 绑定正文版本，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`pages` 是宿主按非空行编号的 `{at,text,kind,speaker?,emotion?,quotes?}`，`performances` 是该轮已接纳的页级一次性事件（见[舞台设计](design/cast-presentation.md)），不属于持续 `stage`，读取不等于播放；`characters` 同宿主侧 `getCastAssets`；`enabled` 是人物卡的舞台开关。`watchStage` 先回调一次，之后在新的一轮、新的标注、导演提交、素材变化后再回调，只在这一局在当前页面打开时有效。人物/表情、背景、音乐来自已接受的导演事务；台词标注不再推导舞台状态。
 
 ## `registerStageView({ id, label, render })`（第 2 版）
 
-换掉舞台的画面：右侧栏的「舞台」页和「全屏舞台」都会用它。Tavern 保留阅读流程（逐句翻页、自动播放、读到最后一句时的输入框），插件只画场景，例如加背景、镜头、Live2D、特效。
+换掉舞台的画面：只有全屏舞台使用它。Tavern 保留阅读流程（逐句翻页、自动播放、读到最后一句时的输入框），插件只画场景，例如加背景、镜头、Live2D、特效。
 
 ```js
 ctx.tavernUi.registerStageView({
@@ -254,15 +355,15 @@ ctx.tavernUi.registerStageView({
 | `stage` | 同 `getStage` 的返回值 |
 | `beats` | 最新一轮拆成的「句」：`{ kind: 'line', text, speaker, emotion, turn }`（标注过的台词所在的一行）或 `{ kind: 'narration', text, turn }`（旁白段落） |
 | `index`、`beat` | 当前读到第几句、这一句 |
-| `fullscreen` | 是否在全屏舞台里 |
+| `fullscreen` | 固定为 true（仅保留全屏舞台） |
 | `advance()` | 翻到下一句，点击场景时调用 |
 | `footer` | Tavern 的翻页、自动、退出按钮，请放进插件自己的文字框里 |
 
-- 注册后舞台默认用插件的画面；舞台页顶部出现「舞台样式」选择，玩家可以选回内置，这台浏览器记住选择。插件卸载后回到内置舞台。
-- `render` 返回 `null` 或出错时用内置画面，错误写进错误提示。只想换全屏、不换右侧栏时，对 `fullscreen === false` 返回 `null`。
+- 注册后舞台默认用插件的画面；「舞台设置」出现「舞台样式」选择，玩家可以选回内置，这台浏览器记住选择。插件卸载后回到内置舞台。
+- `render` 返回 `null` 或出错时用内置画面，错误写进错误提示。
 - 全屏时读到最后一句，Tavern 会在底部 88px 内显示输入框；插件的画面请把这块空出来，别把文字框放在那里。
-- 舞台入口只在玩家打开「对话头像」后出现。
-- 完整示例见 [`examples/tavern-plugin-director`](../examples/tavern-plugin-director/)：宿主侧用结算任务做「导演」，每轮定下地点、时间和气氛；浏览器侧按它画舞台。
+- 舞台入口只在「舞台设置」里「对话气泡」和「舞台模式」都开着时出现。
+- 内置独立导演负责舞台数据，插件视图只呈现宿主投影，不再附带第二个导演示例；流式前缀与最终正文共用阅读来源，刷新不重播演出。见[角色演出](design/cast-presentation.md)。
 
 ## `speak({ gameId, speaker?, text, emotion?, narration? })`、`stopSpeech()`（第 2 版）
 
@@ -270,4 +371,4 @@ ctx.tavernUi.registerStageView({
 
 ## `playMusic(url | { url, title?, volume? })`、`stopMusic()`（第 2 版）
 
-背景音乐由 Tavern 播放：同一时间一首、循环；传入同一个地址时接着放，换地址时淡入新曲，传空字符串或调 `stopMusic()` 时淡出。玩家在舞台上方的「♪ 音乐」开关决定听不听得到（记在这个浏览器里），所有卡的音乐都受这一个开关管。离开这一局（切换、删除对话）或这一局不再显示舞台时，Tavern 会停掉音乐；插件换局后要重新调 `playMusic`。`volume` 为 0–1，默认 0.45。
+背景音乐由 Tavern 播放：同一时间一首、循环；传入同一个地址时接着放，换地址时淡入新曲，传空字符串或调 `stopMusic()` 时淡出。玩家在全屏舞台控制栏的「♪ 音乐」开关决定听不听得到（记在这个浏览器里），所有卡的音乐都受这一个开关管。离开这一局（切换、删除对话）或这一局不再显示舞台时，Tavern 会停掉音乐；插件换局后要重新调 `playMusic`。`volume` 为 0–1，默认 0.45。

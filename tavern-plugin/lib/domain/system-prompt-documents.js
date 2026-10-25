@@ -23,7 +23,7 @@ export function createSystemPromptDocuments({ definitions = SYSTEM_PROMPT_DEFINI
     const values = {}
     for (const name of names) {
       if (name === 'system-append' && source[name] === undefined) continue
-      if (typeof source[name] !== 'string' || (source[name].trim() === '' && name !== 'system-append' && name !== 'card-system')) throw new Error('系统提示词文件缺少有效内容: ' + name)
+      if (typeof source[name] !== 'string' || (source[name].trim() === '' && name !== 'system-append')) throw new Error('系统提示词文件缺少有效内容: ' + name)
       if (source[name].length > 100000) throw new Error('系统提示词不能超过 100000 字符: ' + name)
       // Store only what differs from this version's defaults, so later default updates still apply.
       if (source[name].trim() !== prompt(name).trim()) values[name] = source[name]

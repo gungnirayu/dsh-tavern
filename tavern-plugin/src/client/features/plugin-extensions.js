@@ -15,6 +15,28 @@
 			const statusSections = [];
 			const turnViews = [];
 			const illustrators = [];
+			const replyPresenters = [];
+			const composerSlots = [];
+			// Latest reply per session, fed by the observer in the composer dock (reply-observer.js):
+			// the card workbench has no transcript in Tavern's session view, so DSH's own Chat
+			// snapshot (running step blocks + finalized nodes) is the source for every mode.
+			const replyStates = new Map();
+			const replySubscribers = new Map();
+			const replyPresenterFailures = new Map();
+			const replyPresenterDisabled = new Set();
+			// Work status (apiVersion 7): what a game is doing right now, for plugins such as a
+			// companion pet. One shared record per session, fed by Tavern's live view and the
+			// reply observer; success is a short pulse after a busy turn settles.
+			const WORK_STATUS_SUCCESS_MS = 4000;
+			const workStatusRecords = new Map();
+			// Cooperative leases (apiVersion 7): at most one holder per (session, scope). The
+			// holder is a plugin; a TTL and release-on-unload keep a crashed plugin from
+			// holding a surface forever.
+			const LEASE_DEFAULT_TTL_MS = 30 * 1000;
+			const LEASE_MIN_TTL_MS = 1000;
+			const LEASE_MAX_TTL_MS = 10 * 60 * 1000;
+			const leases = new Map();
+			const leaseWatchers = new Map();
 			const listeners = new Set();
 			// Tavern's own context, for the sidebar a plugin panel opens in (set at apply).
 			let host = null;
@@ -40,6 +62,39 @@
 				if (input.when !== undefined && typeof input.when !== "function") throw new TypeError(kind + " 的 when 必须是函数");
 				return { id: String(input.id || input.label), label: input.label.trim(), when: input.when, run: input.run };
 			}
+			// Mode lists on the two card-workbench APIs; only "card" exists today, but a plugin
+			// may also ask for a play mode without Tavern changing.
+			function modesOf(value, label) {
+				const modes = value === undefined ? ["card"] : value;
+				if (!Array.isArray(modes) || modes.length === 0 || modes.length > 8) throw new TypeError(label + " 的 modes 需要 1–8 个模式名");
+				if (!modes.every(function (mode) { return typeof mode === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(mode); })) throw new TypeError(label + " 的 modes 只能用小写字母、数字和连字符");
+				return Array.from(new Set(modes));
+			}
+			// The public ReplyState; cardSaved/changed come from the view's cardSave so a direct
+			// tool save (no staged fields) still reads as "this turn changed the card".
+			function replyStateOf(sessionId, value) {
+				const input = value !== null && typeof value === "object" ? value : {};
+				const turn = Math.max(0, Number(input.turn) || 0);
+				const save = input.cardSave !== null && typeof input.cardSave === "object" ? {
+					turn: Math.max(0, Number(input.cardSave.turn) || 0),
+					path: String(input.cardSave.path || ""),
+					createsCard: input.cardSave.createsCard === true,
+					changed: input.cardSave.changed === true
+				} : null;
+				const savedHere = save !== null && save.path !== "" && turn > 0 && save.turn === turn;
+				return {
+					sessionId: String(sessionId || ""),
+					mode: typeof input.mode === "string" ? input.mode : "",
+					turn: turn,
+					text: typeof input.text === "string" ? input.text : "",
+					streaming: input.streaming === true,
+					busy: input.busy === true,
+					tool: typeof input.tool === "string" && input.tool !== "" ? input.tool : null,
+					cardSave: save,
+					cardSaved: savedHere && save.createsCard ? save.path : null,
+					changed: savedHere && (save.changed || save.createsCard)
+				};
+			}
 			// The input box of a game open in this page, for setInput / submitInput.
 			function composerFor(input, label) {
 				if (!input || typeof input.gameId !== "string" || !input.gameId) throw new TypeError(label + " 需要 gameId");
@@ -49,9 +104,321 @@
 				if (!scope || !conversation) throw new Error("这一局没有在当前页面打开，无法使用输入框");
 				return { input: conversation.input.for(scope), text: input.text };
 			}
+			function replySnapshot(sessionId) {
+				const record = replyStates.get(String(sessionId || ""));
+				return record ? record.state : replyStateOf(sessionId, null);
+			}
+			// Called by the observer while a reply streams; identical states are dropped so a
+			// Vue side repaint cannot feed itself back through the API.
+			function publishReply(value) {
+				const sessionId = String(value && value.sessionId || "");
+				if (sessionId === "") return;
+				const state = replyStateOf(sessionId, value);
+				const text = JSON.stringify(state);
+				const previous = replyStates.get(sessionId);
+				if (previous && previous.text === text) return;
+				replyStates.set(sessionId, { state: state, text: text });
+				const record = workStatusRecords.get(sessionId);
+				if (record) refreshWorkStatus(record, { settle: true, notify: true });
+				const entries = replySubscribers.get(sessionId);
+				if (!entries) return;
+				for (const entry of Array.from(entries)) {
+					if (!tavernPluginAllowed(entry.owner, sessionId)) continue;
+					entry.listener(state);
+				}
+			}
+			function presentReply(input) {
+				const sessionId = String(input && input.sessionId || "");
+				const mode = String(input && input.mode || "");
+				if (sessionId === "" || mode === "") return null;
+				const message = {
+					sessionId: sessionId,
+					turn: Math.max(0, Number(input.turn) || 0),
+					text: String(input.text || ""),
+					changed: input.changed === true,
+					streaming: input.streaming === true
+				};
+				for (const presenter of replyPresenters) {
+					if (presenter.modes.indexOf(mode) < 0) continue;
+					if (!tavernPluginAllowed(presenter.owner, sessionId)) continue;
+					const failureKey = presenter.owner + ":" + sessionId;
+					if (replyPresenterDisabled.has(failureKey)) continue;
+					let result;
+					try { result = presenter.present(message); }
+					catch (error) {
+						const count = (replyPresenterFailures.get(failureKey) || 0) + 1;
+						replyPresenterFailures.set(failureKey, count);
+						if (count >= 3) replyPresenterDisabled.add(failureKey);
+						try { tavernErrorHub.report("插件 " + presenter.owner, error); } catch (_) {}
+						continue;
+					}
+					const summary = result && result.fold && typeof result.fold.summary === "string" ? result.fold.summary.replace(/\s+/g, " ").trim() : "";
+					if (summary === "") continue;
+					return { owner: presenter.owner, key: presenter.key, fold: { summary: summary.slice(0, 60) } };
+				}
+				return null;
+			}
+
+			// ---- work status (apiVersion 7) ----
+
+			/** Raw fields of a session's live view; every read is defensive because a game may
+			 * not be open in this page (or the host may be an older build). */
+			function workStatusInput(sessionId) {
+				let snapshot = null;
+				try {
+					if (typeof liveTavernView !== "undefined" && liveTavernView && typeof liveTavernView.getSnapshot === "function") snapshot = liveTavernView.getSnapshot(sessionId);
+				} catch (_) {}
+				const view = snapshot && snapshot.view || null;
+				const reply = replyStates.get(String(sessionId || ""));
+				let row = null;
+				try {
+					const list = host && host.sessions && host.sessions.list;
+					if (list && typeof list.getSnapshot === "function") row = (list.getSnapshot().byId || {})[sessionId] || null;
+				} catch (_) {}
+				return {
+					phase: String(snapshot && snapshot.phase || "idle"),
+					viewError: String(snapshot && snapshot.error || ""),
+					activity: view && view.activity && typeof view.activity === "object" ? view.activity : null,
+					settleStatus: String(view && view.settleStatus || ""),
+					settleError: String(view && view.settleError || ""),
+					turn: Math.max(0, Number(view && view.latestAssistantTurn) || Number(reply && reply.state && reply.state.turn) || 0),
+					reply: reply ? reply.state : null,
+					running: !!(row && row.running === true)
+				};
+			}
+			function workStatusBusy(input) {
+				// The card workbench has no Tavern activity view; there the reply observer's
+				// busy flag is the only signal that something is running.
+				return input.running || !!(input.activity && input.activity.busy === true) || input.settleStatus === "running" || !!(input.reply && input.reply.busy === true);
+			}
+			/** The public shape: plain data only, so a plugin can compare or serialize it. */
+			function projectWorkStatus(sessionId, input, record) {
+				const now = Date.now();
+				const activity = input.activity;
+				const reply = input.reply;
+				const tool = reply && typeof reply.tool === "string" && reply.tool ? reply.tool : null;
+				const busy = workStatusBusy(input);
+				let state = "idle", reason = "idle", error = "";
+				if (input.viewError) { state = "error"; reason = "load"; error = input.viewError; }
+				else if (input.settleStatus === "error") { state = "error"; reason = "settlement"; error = input.settleError || "后台结算失败"; }
+				else if (busy) {
+					// A question waiting for the player is not "working": the reply is blocked on
+					// them, and a companion should look at the player rather than busy itself.
+					if (tool === "ask_user_question") { state = "waiting"; reason = "question"; }
+					else if (tool) { state = "working"; reason = "tool"; }
+					else if (input.settleStatus === "running" || activity && activity.role === "settlement") { state = "working"; reason = "settlement"; }
+					else if (reply && reply.streaming) { state = "thinking"; reason = "streaming"; }
+					else { state = "thinking"; reason = "busy"; }
+				} else if (record && record.successUntil > now) { state = "success"; reason = "settled"; }
+				return {
+					sessionId: String(sessionId || ""),
+					state: state,
+					reason: reason,
+					busy: busy,
+					turn: input.turn,
+					tool: tool,
+					phase: input.phase,
+					role: activity && typeof activity.role === "string" ? activity.role : null,
+					error: error,
+					updatedAt: now
+				};
+			}
+			function workStatusSame(left, right) {
+				return !!left && !!right && left.state === right.state && left.reason === right.reason && left.busy === right.busy
+					&& left.turn === right.turn && left.tool === right.tool && left.phase === right.phase && left.role === right.role && left.error === right.error;
+			}
+			function notifyWorkStatus(record) {
+				for (const entry of Array.from(record.listeners)) {
+					if (!tavernPluginAllowed(entry.owner, record.sessionId)) continue;
+					try { entry.listener(record.state); }
+					catch (error) { try { tavernErrorHub.report("插件 " + entry.owner + " 的工作状态回调", error); } catch (_) {} }
+				}
+			}
+			/**
+			 * Recompute one session's status. `settle` turns a busy→idle edge into a success
+			 * pulse; `notify` decides whether subscribers hear about a change (the first
+			 * computation is handed to the new subscriber by watchWorkStatus itself).
+			 */
+			function refreshWorkStatus(record, options) {
+				const input = workStatusInput(record.sessionId);
+				const busy = workStatusBusy(input);
+				const now = Date.now();
+				if (options && options.settle && record.busy && !busy && input.turn > 0 && input.settleStatus !== "error") {
+					record.successUntil = now + WORK_STATUS_SUCCESS_MS;
+					if (record.timer !== null) clearTimeout(record.timer);
+					record.timer = setTimeout(function () {
+						record.timer = null;
+						record.successUntil = 0;
+						refreshWorkStatus(record, { notify: true });
+					}, WORK_STATUS_SUCCESS_MS);
+				}
+				if (busy && record.timer !== null) {
+					clearTimeout(record.timer);
+					record.timer = null;
+					record.successUntil = 0;
+				}
+				const next = projectWorkStatus(record.sessionId, input, record);
+				record.busy = busy;
+				const changed = !workStatusSame(record.state, next);
+				record.state = next;
+				if (changed && options && options.notify) notifyWorkStatus(record);
+				return next;
+			}
+			function ensureWorkStatusRecord(sessionId) {
+				const id = String(sessionId || "");
+				let record = workStatusRecords.get(id);
+				if (record) return record;
+				record = { sessionId: id, state: null, busy: false, successUntil: 0, timer: null, listeners: new Set(), stopView: null, stopList: null };
+				workStatusRecords.set(id, record);
+				try {
+					if (typeof liveTavernView !== "undefined" && liveTavernView && typeof liveTavernView.subscribe === "function") {
+						const stop = liveTavernView.subscribe(id, function () { refreshWorkStatus(record, { settle: true, notify: true }); },
+							[["activity"], ["settleStatus"], ["settleError"], ["latestAssistantTurn"], ["settlementTurn"]]);
+						record.stopView = typeof stop === "function" ? stop : null;
+					}
+				} catch (_) {}
+				try {
+					const list = host && host.sessions && host.sessions.list;
+					if (list && typeof list.subscribe === "function") {
+						const stop = list.subscribe(function () { refreshWorkStatus(record, { settle: true, notify: true }); });
+						record.stopList = typeof stop === "function" ? stop : null;
+					}
+				} catch (_) {}
+				refreshWorkStatus(record, {});
+				return record;
+			}
+			function dropWorkStatusRecord(record) {
+				if (record.stopView) { try { record.stopView(); } catch (_) {} record.stopView = null; }
+				if (record.stopList) { try { record.stopList(); } catch (_) {} record.stopList = null; }
+				if (record.timer !== null) { clearTimeout(record.timer); record.timer = null; }
+				workStatusRecords.delete(record.sessionId);
+			}
+
+			// ---- cooperative leases (apiVersion 7) ----
+
+			function leaseKey(sessionId, scope) { return String(sessionId) + "\u0000" + String(scope); }
+			function normalizeLeaseScope(value) {
+				if (typeof value !== "string") return "";
+				const scope = value.trim();
+				return /^[a-z][a-z0-9._-]{0,31}$/.test(scope) ? scope : "";
+			}
+			function normalizeLeaseTtl(value) {
+				if (value === undefined || value === null) return LEASE_DEFAULT_TTL_MS;
+				if (typeof value !== "number" || !Number.isInteger(value) || value < LEASE_MIN_TTL_MS || value > LEASE_MAX_TTL_MS) return null;
+				return value;
+			}
+			function leaseSnapshotOf(record) {
+				return record ? { leaseId: record.leaseId, sessionId: record.sessionId, scope: record.scope, holder: record.owner, reason: record.reason, expiresAt: record.expiresAt } : null;
+			}
+			function leaseWatcherSet(key) {
+				let set = leaseWatchers.get(key);
+				if (!set) { set = new Set(); leaseWatchers.set(key, set); }
+				return set;
+			}
+			function notifyLease(key, snapshot, cause) {
+				const set = leaseWatchers.get(key);
+				if (!set) return;
+				for (const entry of Array.from(set)) {
+					if (!tavernPluginAllowed(entry.owner, entry.sessionId)) continue;
+					try { entry.listener(snapshot ? Object.assign({}, snapshot) : null, cause); }
+					catch (error) { try { tavernErrorHub.report("插件 " + entry.owner + " 的占用锁回调", error); } catch (_) {} }
+				}
+			}
+			function purgeLease(key) {
+				const record = leases.get(key);
+				if (!record) return null;
+				if (record.expiresAt > Date.now()) return record;
+				leases.delete(key);
+				if (record.timer !== null) { clearTimeout(record.timer); record.timer = null; }
+				notifyLease(key, null, "expired");
+				return null;
+			}
+			function armLeaseTimer(key, record, ttl) {
+				if (record.timer !== null) clearTimeout(record.timer);
+				record.timer = setTimeout(function () {
+					const current = leases.get(key);
+					if (!current || current.leaseId !== record.leaseId) return;
+					purgeLease(key);
+				}, ttl);
+			}
+			function readLease(sessionId, scope) {
+				const normalized = normalizeLeaseScope(scope);
+				if (typeof sessionId !== "string" || !sessionId || !normalized) return null;
+				return leaseSnapshotOf(purgeLease(leaseKey(sessionId, normalized)));
+			}
+			function renewLease(handle, ttlMs) {
+				const ttl = normalizeLeaseTtl(ttlMs);
+				if (ttl === null) throw new TypeError("renew 的 ttlMs 必须是 " + LEASE_MIN_TTL_MS + "–" + LEASE_MAX_TTL_MS + " 的整数");
+				const key = leaseKey(handle.sessionId, handle.scope);
+				const record = leases.get(key);
+				if (!record || record.leaseId !== handle.leaseId || record.expiresAt <= Date.now()) {
+					const error = new Error("占用已失效：请重新 acquireLease");
+					error.code = "TAVERN_PLUGIN_LEASE_LOST";
+					error.sessionId = handle.sessionId;
+					error.scope = handle.scope;
+					throw error;
+				}
+				record.expiresAt = Date.now() + ttl;
+				armLeaseTimer(key, record, ttl);
+				handle.expiresAt = record.expiresAt;
+				notifyLease(key, leaseSnapshotOf(record), "renewed");
+				return record.expiresAt;
+			}
+			function releaseLease(handle) {
+				const key = leaseKey(handle.sessionId, handle.scope);
+				const record = leases.get(key);
+				if (!record || record.leaseId !== handle.leaseId) return false;
+				leases.delete(key);
+				if (record.timer !== null) { clearTimeout(record.timer); record.timer = null; }
+				notifyLease(key, null, "released");
+				return true;
+			}
+			function acquireLease(service, input) {
+				if (!input || typeof input.sessionId !== "string" || !input.sessionId) throw new TypeError("acquireLease 需要 sessionId");
+				const scope = normalizeLeaseScope(input.scope);
+				if (!scope) throw new TypeError("acquireLease 的 scope 只能用小写字母、数字、点、下划线和连字符，并以字母开头");
+				const ttl = normalizeLeaseTtl(input.ttlMs);
+				if (ttl === null) throw new TypeError("acquireLease 的 ttlMs 必须是 " + LEASE_MIN_TTL_MS + "–" + LEASE_MAX_TTL_MS + " 的整数");
+				const owner = ownerOf(service);
+				const sessionId = input.sessionId;
+				const key = leaseKey(sessionId, scope);
+				const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 120) : "";
+				const existing = purgeLease(key);
+				if (existing && existing.owner !== owner) {
+					const error = new Error("这一局已有插件占用 " + scope + "：" + existing.owner);
+					error.code = "TAVERN_PLUGIN_LEASED";
+					error.sessionId = sessionId;
+					error.scope = scope;
+					error.holder = existing.owner;
+					error.expiresAt = existing.expiresAt;
+					throw error;
+				}
+				const now = Date.now();
+				const record = existing || { leaseId: "", sessionId: sessionId, scope: scope, owner: owner, reason: "", expiresAt: 0, timer: null };
+				if (!record.leaseId) record.leaseId = "lease-" + now.toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+				record.reason = reason;
+				record.expiresAt = now + ttl;
+				armLeaseTimer(key, record, ttl);
+				leases.set(key, record);
+				const handle = {
+					leaseId: record.leaseId,
+					sessionId: sessionId,
+					scope: scope,
+					holder: owner,
+					reason: reason,
+					expiresAt: record.expiresAt,
+					renew: function (nextTtl) { return renewLease(handle, nextTtl); },
+					release: function () { return releaseLease(handle); },
+					active: function () { return readLease(sessionId, scope); }
+				};
+				notifyLease(key, leaseSnapshotOf(record), existing ? "renewed" : "acquired");
+				owned(service, function () { return function () { releaseLease(handle); }; }, "tavernUi.acquireLease()");
+				return handle;
+			}
+
 			const service = {
 				ctx: undefined,
-				apiVersion: 5,
+				apiVersion: 7,
 				registerMediaRenderer(kind, render) {
 					if (typeof kind !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/.test(kind)) throw new TypeError("只能为插件自定义的 <插件名>/<类型> 注册显示方式");
 					if (typeof render !== "function") throw new TypeError("registerMediaRenderer 需要 render 函数");
@@ -182,6 +549,138 @@
 						const stopView = liveTavernView.subscribe(gameId, refresh, [["latestAssistantTurn"], ["activity"], ["settlementTurn"], ["settleStatus"]]);
 						return function () { disposed = true; stopView(); if (typeof stopSessions === "function") stopSessions(); };
 					}, "tavernUi.watchTurnState()");
+				},
+				// The latest assistant reply of the game open here (apiVersion 6), card workbench
+				// included: the text (streamed while it is written), the running tool, and the
+				// card this turn saved. Calls listener with the state now, then after each change.
+				watchReply(sessionId, listener) {
+					if (typeof sessionId !== "string" || !sessionId) throw new TypeError("watchReply 需要 sessionId");
+					if (typeof listener !== "function") throw new TypeError("watchReply 需要 listener 函数");
+					const owner = ownerOf(this);
+					return owned(this, function () {
+						let disposed = false;
+						const entry = {
+							owner: owner,
+							listener: function (state) {
+								if (disposed) return;
+								try { listener(state); } catch (error) { try { tavernErrorHub.report("插件 " + owner, error); } catch (_) {} }
+							}
+						};
+						let entries = replySubscribers.get(sessionId);
+						if (!entries) { entries = new Set(); replySubscribers.set(sessionId, entries); }
+						entries.add(entry);
+						if (tavernPluginAllowed(owner, sessionId)) entry.listener(replySnapshot(sessionId));
+						return function () {
+							disposed = true;
+							const current = replySubscribers.get(sessionId);
+							if (!current) return;
+							current.delete(entry);
+							if (!current.size) replySubscribers.delete(sessionId);
+						};
+					}, "tavernUi.watchReply()");
+				},
+				// What this game is doing now (apiVersion 7): idle / thinking / working /
+				// waiting / success / error, the turn, the running tool and the error. Calls
+				// listener with the current status, then after each change. Success lasts
+				// WORK_STATUS_SUCCESS_MS after a busy turn settles, then falls back to idle.
+				watchWorkStatus(sessionId, listener) {
+					if (typeof sessionId !== "string" || !sessionId) throw new TypeError("watchWorkStatus 需要 sessionId");
+					if (typeof listener !== "function") throw new TypeError("watchWorkStatus 需要 listener 函数");
+					const owner = ownerOf(this);
+					return owned(this, function () {
+						let disposed = false;
+						const entry = {
+							owner: owner,
+							listener: function (state) {
+								if (disposed) return;
+								try { listener(state); } catch (error) { try { tavernErrorHub.report("插件 " + owner + " 的工作状态回调", error); } catch (_) {} }
+							}
+						};
+						const record = ensureWorkStatusRecord(sessionId);
+						record.listeners.add(entry);
+						if (tavernPluginAllowed(owner, sessionId)) entry.listener(record.state);
+						return function () {
+							disposed = true;
+							record.listeners.delete(entry);
+							if (!record.listeners.size) dropWorkStatusRecord(record);
+						};
+					}, "tavernUi.watchWorkStatus()");
+				},
+				// The status right now, without subscribing (apiVersion 7). A session nobody
+				// watches yet gets a fresh read; success needs the busy→idle edge only
+				// watchWorkStatus can see.
+				getWorkStatus(sessionId) {
+					if (typeof sessionId !== "string" || !sessionId) throw new TypeError("getWorkStatus 需要 sessionId");
+					const record = workStatusRecords.get(sessionId);
+					if (record) return record.state;
+					return projectWorkStatus(sessionId, workStatusInput(sessionId), null);
+				},
+				// One holder per (session, scope), with a TTL (apiVersion 7). Scopes are the
+				// plugin's own names ("voice", "stage", "composer", …); Tavern enforces who may
+				// hold one, plugins cooperate by checking getLease/watchLease before acting.
+				acquireLease(input) {
+					return acquireLease(this, input);
+				},
+				getLease(sessionId, scope) {
+					if (typeof sessionId !== "string" || !sessionId) throw new TypeError("getLease 需要 sessionId");
+					return readLease(sessionId, scope);
+				},
+				// Calls listener with the current holder (or null) and after each change:
+				// acquired / renewed / released / expired. Returning a function releases the lease.
+				watchLease(sessionId, scope, listener) {
+					if (typeof sessionId !== "string" || !sessionId) throw new TypeError("watchLease 需要 sessionId");
+					const normalized = normalizeLeaseScope(scope);
+					if (!normalized) throw new TypeError("watchLease 的 scope 只能用小写字母、数字、点、下划线和连字符，并以字母开头");
+					if (typeof listener !== "function") throw new TypeError("watchLease 需要 listener 函数");
+					const owner = ownerOf(this);
+					return owned(this, function () {
+						const key = leaseKey(sessionId, normalized);
+						const entry = { owner: owner, sessionId: sessionId, listener: listener };
+						const current = leaseSnapshotOf(purgeLease(key));
+						leaseWatcherSet(key).add(entry);
+						if (tavernPluginAllowed(owner, sessionId)) {
+							try { listener(current, "current"); }
+							catch (error) { try { tavernErrorHub.report("插件 " + owner + " 的占用锁回调", error); } catch (_) {} }
+						}
+						return function () {
+							const set = leaseWatchers.get(key);
+							if (!set) return;
+							set.delete(entry);
+							if (!set.size) leaseWatchers.delete(key);
+						};
+					}, "tavernUi.watchLease()");
+				},
+				// Fold a finished reply in the main area into one line (apiVersion 6). present() runs
+				// while the message is drawn, must be synchronous, and returns null to keep the
+				// original message. The first registered presenter that answers wins; a presenter
+				// that throws three times is skipped for that session.
+				registerReplyPresenter(input) {
+					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerReplyPresenter 的 id 只能用小写字母、数字、点、下划线和连字符");
+					if (typeof input.present !== "function") throw new TypeError("registerReplyPresenter 需要 present 函数");
+					const owner = ownerOf(this);
+					const entry = { key: owner + ":" + input.id, owner: owner, modes: modesOf(input.modes, "registerReplyPresenter"), present: input.present };
+					return owned(this, function () {
+						if (replyPresenters.some(function (presenter) { return presenter.key === entry.key; })) throw new Error("回复呈现器 " + input.id + " 已注册");
+						const dispose = addTo(replyPresenters, entry);
+						return function () {
+							dispose();
+							for (const key of Array.from(replyPresenterFailures.keys())) if (key.indexOf(entry.owner + ":") === 0) replyPresenterFailures.delete(key);
+							for (const key of Array.from(replyPresenterDisabled)) if (key.indexOf(entry.owner + ":") === 0) replyPresenterDisabled.delete(key);
+						};
+					}, "tavernUi.registerReplyPresenter()");
+				},
+				// A block of the plugin's own above the input box (apiVersion 6), for card-workbench
+				// guides: the pet, its bubble and its option buttons live here. Only one slot per
+				// session; render returns React.
+				registerComposerSlot(input) {
+					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerComposerSlot 的 id 只能用小写字母、数字、点、下划线和连字符");
+					if (typeof input.render !== "function") throw new TypeError("registerComposerSlot 需要 render 函数");
+					const owner = ownerOf(this);
+					const entry = { key: owner + ":" + input.id, owner: owner, modes: modesOf(input.modes, "registerComposerSlot"), render: input.render };
+					return owned(this, function () {
+						if (composerSlots.some(function (slot) { return slot.key === entry.key; })) throw new Error("输入框停靠区 " + input.id + " 已注册");
+						return addTo(composerSlots, entry);
+					}, "tavernUi.registerComposerSlot()");
 				},
 				// What the stage shows (apiVersion 2): the latest turns with their dialogue annotations, and the card's characters.
 				getStage(gameId, options) {
@@ -411,7 +910,15 @@
 				turnViews: function () { return turnViews.slice(); },
 				// The latest registered illustrator handling `kind`; without a kind, the latest one that can draw.
 				illustrator: function (kind) { for (let index = illustrators.length - 1; index >= 0; index -= 1) if (kind === undefined ? illustrators[index].draw : illustrators[index].kinds.indexOf(kind) >= 0) return illustrators[index]; return null; },
-				startGroups: function () { return startGroups.map(function (group) { return { title: group.title, tabs: group.tabs.slice() }; }); }
+				startGroups: function () { return startGroups.map(function (group) { return { title: group.title, tabs: group.tabs.slice() }; }); },
+				// Reply observation (fed by the composer-dock observer) and the two workbench
+				// registries. Tavern's renderer uses presentReply/composerSlotFor directly.
+				publishReply: publishReply,
+				replySnapshot: replySnapshot,
+				presentReply: presentReply,
+				replyPresenters: function () { return replyPresenters.slice(); },
+				composerSlotFor: function (mode) { for (const slot of composerSlots) if (slot.modes.indexOf(mode) >= 0) return slot; return null; },
+				composerSlots: function () { return composerSlots.slice(); }
 			};
 		}
 		const tavernUiExtensions = createTavernUiExtensions();

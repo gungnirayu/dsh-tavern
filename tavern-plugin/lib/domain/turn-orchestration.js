@@ -12,6 +12,7 @@ import { normalizeResourcePath } from './file-resources.js'
 import { diffJson } from './json-mutation.js'
 import { hasTavernCredit, withTavernCredit } from './card-credit.js'
 import { STORY_SUBMIT_TOOL_NAME, storyToolCallEnabled } from './story-tool-submission.js'
+import { normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { styleReferenceFor } from './style-reference.js'
 import { variableUpdateFor } from './variable-update.js'
 import { replyProse } from './reply-prose.js'
@@ -80,6 +81,20 @@ function rememberCommit(chat, turn, value, before, now) {
 function stagedMap(chat) {
   if (chat.pendingCardChanges === null || typeof chat.pendingCardChanges !== 'object' || Array.isArray(chat.pendingCardChanges)) chat.pendingCardChanges = {}
   return chat.pendingCardChanges
+}
+
+// The workbench's card was written during this native turn (a tool save is immediate).
+// The commit reads it to tell plugins that this turn changed the card: the tool result is
+// not part of the message, so `changed` alone would stay false for every `tavern_update_card`.
+function rememberCardSave(chat, turn, value) {
+  const nativeTurn = Math.max(0, Number(turn) || 0)
+  if (!nativeTurn) return
+  chat.lastCardSave = {
+    turn: nativeTurn,
+    path: str(value && value.path),
+    createsCard: value && value.createsCard === true,
+    changed: value && value.changed === true
+  }
 }
 
 function clearStaleStages(chat, turn) {
@@ -361,7 +376,7 @@ export function createTurnOrchestrator(options) {
         ? await store.readCardExtensions(cardPath, chat)
         : null
       const presetRegexScripts = await resolvePresetRegexScripts(chat)
-      const regexScripts = composeTavernRegexScripts(extensions, presetRegexScripts)
+      const regexScripts = composeTavernRegexScripts(extensions, presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset)
       // As in SillyTavern, only permanent input rules change the stored player
       // message; prompt-only rules (e.g. a preset wrapping the input in tags)
       // reach the model and never the bubble, copy or saved history.
@@ -512,6 +527,7 @@ export function createTurnOrchestrator(options) {
       chat.cardName = result.card.name
     }
     if (chat.pendingCardChanges) delete chat.pendingCardChanges[String(input.turn)]
+    rememberCardSave(chat, input.turn, { path: chat.cardPath, createsCard: !cardPath, changed: result.changed })
     await store.writeChat(chat, { source: 'card.save' })
     return { saved: true, mode: 'card', changed: result.changed, createsCard: !cardPath, changedFields: result.changedFields || [] }
   }
@@ -662,7 +678,7 @@ export function createTurnOrchestrator(options) {
       const projectionText = assistantText
       reply = projectReply(sourceText, {
         projectionText,
-        regexScripts: composeTavernRegexScripts(extensions, presetRegexScripts),
+        regexScripts: composeTavernRegexScripts(extensions, presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset),
         placement: 2,
         isEdit: false,
         depth: 0
@@ -671,18 +687,22 @@ export function createTurnOrchestrator(options) {
     }
     if (assistantText === '') throw new Error('本轮最终回复为空，无法保存酒馆状态')
     const stage = takeStage(chat, turn)
+    // A direct tool save earlier in this turn (tavern_update_card) leaves no staged fields,
+    // so the commit has to read the record it left behind or every save looks unchanged.
+    const savedThisTurn = Number(chat.lastCardSave?.turn) === turn ? chat.lastCardSave : null
+    const savedChanged = savedThisTurn !== null && (savedThisTurn.changed === true || savedThisTurn.createsCard === true)
 
     const cardPath = cardPathOf(chat)
     if (mode === 'card' && cardPath === '') {
       const state = object(chat.workspace)
-      let changed = false
+      let changed = savedChanged
       const hasCardChanges = Object.keys(object(stage.fields)).length > 0
       if (hasCardChanges) {
         const draftChange = cards.update({ kind: 'draft', card: object(state.draft), player: state.player, patch: stage.fields })
         state.draft = draftChange.card
         state.player = draftChange.player
         chat.workspace = state
-        changed = draftChange.changed
+        changed = draftChange.changed || changed
       }
       const created = hasCardChanges ? await store.createCard(chat, state) : null
       if (created !== null) {
@@ -709,13 +729,13 @@ export function createTurnOrchestrator(options) {
     }
 
     if (mode === 'card') {
-      let changed = false
+      let changed = savedChanged
       let savedCard = { name: chat.cardName }
       if (Object.keys(object(stage.fields)).length > 0 || (Array.isArray(stage.rawOperations) && stage.rawOperations.length > 0)) {
         const result = await store.updateCard(cardPath, object(stage.fields), {
           ts: now(), instruction: userText, summary: '通过卡片模式设定对话更新人物卡'
         }, Array.isArray(stage.rawOperations) ? stage.rawOperations : [])
-        changed = result.changed
+        changed = result.changed || changed
         savedCard = result.card
       }
       workspace.commit(chat, turn)
@@ -767,6 +787,18 @@ export function createTurnOrchestrator(options) {
           const userMessage = { role: 'user', text: userText, ts: now(), native: true, ...(attachments.length ? { inputAttachments: attachments } : {}) }
           if (previousMvuVariables !== undefined) Object.assign(userMessage, { swipeId: 0, swipes: [userText], variables: [clone(previousMvuVariables)] })
           if (draft.promptTemplateInput?.turn === turn) Object.assign(userMessage, clone(draft.promptTemplateInput.message), {templateInputSource:userText})
+          // A wizard wrote its opening record into the floor it sent before the game
+          // existed; this is that floor arriving, so the record travels with it.
+          if (draft.pendingOpeningMessageVariables) {
+            const saved = clone(draft.pendingOpeningMessageVariables)
+            const base = userMessage.variables && typeof userMessage.variables[0] === 'object' && userMessage.variables[0] !== null ? clone(userMessage.variables[0]) : {}
+            const merged = { ...base, ...saved }
+            if (base.stat_data || saved.stat_data) merged.stat_data = { ...(base.stat_data || {}), ...(saved.stat_data || {}) }
+            userMessage.swipeId = 0
+            userMessage.swipes = [userText]
+            userMessage.variables = [merged]
+            delete draft.pendingOpeningMessageVariables
+          }
           draft.messages.push(userMessage)
         }
         delete draft.promptTemplateInput
@@ -865,16 +897,24 @@ export function createTurnOrchestrator(options) {
   }
 
   async function visibleTools(sessionId) {
-    // Every model call asks: mode and the web-search switch live in the header.
-    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled'])
+    // Every model call asks: mode, the web-search switch and the disabled tools live in the header.
+    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled', 'disabledForegroundTools'])
       : await (store.stateForSession || store.chatForSession)(sessionId)
     if (chat === undefined || chat === null) return []
     const mode = chat.mode || 'story'
-    const webTools = chat.webSearchEnabled === true ? ['web_search'] : []
-    const storyTools = storyToolCallEnabled(chat, await options.storyToolCall?.()) ? [STORY_SUBMIT_TOOL_NAME] : []
-    if (mode === 'script') return ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
-    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
-    return ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
+    const webTools = chat.webSearchEnabled === true ? ['web_search', 'web_fetch'] : []
+    // Input replay names the submission tool in history, so either direction
+    // requires it to be declared in this request.
+    const outputToolCall = (await options.storyToolCall?.()) === true
+    const inputToolCall = (await options.storyInputToolCall?.()) === true
+    const storyTools = storyToolCallEnabled(chat, outputToolCall || inputToolCall) ? [STORY_SUBMIT_TOOL_NAME] : []
+    // Card workbenches keep their fixed editing tools; the per-game switches are play-only.
+    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', 'web_fetch', 'tavern_research', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
+    const names = mode === 'script'
+      ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
+      : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
+    const disabled = new Set(normalizeDisabledForegroundTools(chat.disabledForegroundTools))
+    return names.filter(name => !disabled.has(name))
   }
 
   // Asked by request hooks on every model call: the header answers it, not the history.

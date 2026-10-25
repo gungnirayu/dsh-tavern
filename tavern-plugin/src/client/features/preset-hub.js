@@ -16,19 +16,20 @@
 			React.useEffect(function () { if (requestedSection) setSection(requestedSection); }, [requestedSection, props.tab && props.tab.meta]);
 			async function load() {
 				try {
-					const all = await Promise.all([rpc("listPresets", {}, sessionId), rpc("getSystemPrompts"), rpc("getUserPreferenceProfile", { sessionId: sessionId }, sessionId)]);
-					const presets = all[0] || {}; const prompts = all[1] && all[1].systemPrompts || {}; const profile = all[2] && all[2].userProfile || {};
+					const all = await Promise.all([rpc("listPresets", {}, sessionId), rpc("getSystemPrompts"), rpc("getUserPreferenceProfile", { sessionId: sessionId }, sessionId), rpc("getCardPersonas")]);
+					const presets = all[0] || {}; const prompts = all[1] && all[1].systemPrompts || {}; const profile = all[2] && all[2].userProfile || {}; const personas = all[3] && all[3].cardPersonas || {};
 					setSummary({
 						presets: (presets.presets || []).filter(function (item) { return item.valid === true && item.recognized === true; }), activePresetPath: presets.activePresetPath || "",
 						promptSets: prompts.promptSets || { activeId: "", sets: [] },
-						profiles: (profile.profiles || []).filter(function (item) { return item.hasConfirmed; }), defaultProfileId: profile.defaultProfileId || ""
+						profiles: (profile.profiles || []).filter(function (item) { return item.hasConfirmed; }), defaultProfileId: profile.defaultProfileId || "",
+						personas: Array.isArray(personas.items) ? personas.items : [], activePersonaId: personas.activeId || ""
 					});
 					setError("");
 				} catch (err) { setError(String(err && err.message || err)); }
 			}
 			React.useEffect(function () {
 				void load();
-				function onData(event) { if (tavernDataChangeAffects(event, ["presets", "user-profile", "system-prompts"], "preset-hub")) void load(); }
+				function onData(event) { if (tavernDataChangeAffects(event, ["presets", "user-profile", "system-prompts", "card-personas"], "preset-hub")) void load(); }
 				window.addEventListener("dsh-tavern-data-changed", onData);
 				return function () { window.removeEventListener("dsh-tavern-data-changed", onData); };
 			}, [sessionId, section]);
@@ -40,6 +41,7 @@
 			}
 			function selectPreset(path) { return run(async function () { await rpc("selectPreset", { path: path }, sessionId); return "新游戏默认预设已更新。"; }, ["presets"]); }
 			function selectPromptSet(id) { return run(async function () { await rpc("manageSystemPromptSet", { action: "select", id: id }); return "已切换系统提示词方案，将从下一次请求开始生效。"; }, ["system-prompts"]); }
+			function selectPersona(id) { return run(async function () { await rpc("manageCardPersona", { action: "select", id: id }); return id ? "已切换卡片工作台性格，将从下一次卡片 Agent 请求开始生效。" : "卡片工作台性格已切换为空白。"; }, ["card-personas"]); }
 			function selectProfile(id) { return run(async function () { await rpc("manageUserPreferenceProfile", { action: "default", profileId: id }, sessionId); return "新游戏默认长期偏好已更新。"; }, ["user-profile"]); }
 			const available = summary ? { preset: Boolean(summary.activePresetPath), systemPrompts: true, userProfile: Boolean(summary.defaultProfileId) } : {};
 			const parts = ["preset", "systemPrompts", "userProfile"];
@@ -98,6 +100,7 @@
 			if (section) {
 				const detail = section === "preset" ? h(presetLibraryFeature.Tab, { scope: props.scope, visible: props.visible, appendMention: props.appendMention })
 					: section === "systemPrompts" ? h(SystemPromptSidebarTab, null)
+					: section === "cardPersonas" ? h(CardPersonaTab, null)
 					: h(UserPreferenceProfileTab, { scope: props.scope });
 				return h("div", { className: "dsh-tavern-preset-hub-detail" },
 					h("div", { className: "dsh-tavern-preset-hub-back" }, h("button", { type: "button", className: "dsh-tavern-btn", onClick: function () { setSection(""); } }, "← 返回预设")),
@@ -106,7 +109,8 @@
 			const icons = {
 				preset: "M10 4a2 2 0 1 0 4 0a2 2 0 1 0-4 0M3 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M17 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 6l-3 8M16 6l3 8M9 19h6",
 				systemPrompts: "M10 3L6 21M18 3l-4 18M3 9h18M2 15h18",
-				userProfile: "M3 6h10m4 0h4M3 12h4m4 0h10M3 18h10m4 0h4M13 6a2 2 0 1 0 4 0a2 2 0 1 0-4 0M7 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0M13 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0"
+				userProfile: "M3 6h10m4 0h4M3 12h4m4 0h10M3 18h10m4 0h4M13 6a2 2 0 1 0 4 0a2 2 0 1 0-4 0M7 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0M13 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
+				cardPersonas: "M12 3a4 4 0 1 0 0 8a4 4 0 1 0 0-8M4 21c0-4 3.6-7 8-7s8 3 8 7"
 			};
 			function row(part, title, hint, select) {
 				return h("section", { className: "dsh-tavern-preset-hub-row", "aria-label": title },
@@ -120,7 +124,7 @@
 			return h("div", { className: "dsh-tavern-presets dsh-tavern-preset-hub" },
 				h("div", { className: "dsh-tavern-status-head" },
 					h("div", { className: "dsh-tavern-status-title" }, "预设"),
-					h("div", { className: "dsh-tavern-question-sub" }, "这三项决定故事怎么讲。导出时可选择其中几项，合成一个文件分享。"),
+					h("div", { className: "dsh-tavern-question-sub" }, "前三项决定故事怎么讲，导出时可选择其中几项合成一个文件分享；卡片工作台性格决定卡片 Agent 的性格。"),
 					h("div", { className: "dsh-tavern-system-prompt-top-actions" },
 						h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: function () { importInput.current && importInput.current.click(); } }, "导入"),
 						h("button", { className: "dsh-tavern-btn primary", disabled: busy || exporting !== null, onClick: beginExport }, "导出…"),
@@ -137,7 +141,10 @@
 							s.promptSets.sets.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); }))),
 					row("userProfile", "长期偏好", "新游戏默认使用；每局可在本局设置中单独切换",
 						h("select", { className: "dsh-tavern-settings-select", "aria-label": "新游戏默认长期偏好", value: s.defaultProfileId, disabled: busy, onChange: function (event) { void selectProfile(event.target.value); } },
-							h("option", { value: "" }, "不启用"), s.profiles.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); })))));
+							h("option", { value: "" }, "不启用"), s.profiles.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); }))),
+					row("cardPersonas", "卡片工作台性格", "卡片 Agent 使用；对所有卡片会话生效",
+						h("select", { className: "dsh-tavern-settings-select", "aria-label": "卡片工作台性格", value: s.activePersonaId, disabled: busy, onChange: function (event) { void selectPersona(event.target.value); } },
+							h("option", { value: "" }, "空白（默认）"), s.personas.map(function (item) { return h("option", { key: item.id, value: item.id }, item.name); })))));
 		}
 
 		// Shared by the 预设 tab and its detail pages: save an {name, text} export as a download.

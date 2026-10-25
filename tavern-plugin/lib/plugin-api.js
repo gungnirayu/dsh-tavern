@@ -108,6 +108,7 @@ export function createTavernPluginApi(deps) {
   const settlementTasks = new Map()
   const manualTasks = new Map()
   const toolScopes = new Map()
+  const toolNetworks = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
   const notified = new Set()
   // The latest state each plugin published for its page side, per game and name (memory only).
@@ -600,6 +601,12 @@ export function createTavernPluginApi(deps) {
 
     // Where a tool this plugin registered with DSH shows: in play, in the card workbench, or both.
     // Tavern's own tools are not affected.
+    toolNetwork({ name, capability = 'search' } = {}) {
+      if (typeof name !== 'string' || !/^[A-Za-z0-9_.:-]{1,120}$/.test(name) || reservedToolNames.has(name) || name === 'web_fetch' || deps.isControlledTool?.(name)) throw new TypeError('toolNetwork 只能声明插件自己的工具')
+      if (!['search', 'fetch'].includes(capability)) throw new TypeError('capability 只能是 search 或 fetch')
+      return register.call(this, toolNetworks, name, { owner: ownerOf(this), capability }, 'tavern.toolNetwork()', '工具 ' + name + ' 的联网能力已被声明')
+    },
+
     toolModes({ name, modes } = {}) {
       if (typeof name !== 'string' || !name || (deps.isControlledTool && deps.isControlledTool(name))) throw new TypeError('toolModes 只能设置插件自己注册的工具')
       if (!Array.isArray(modes) || !modes.length || modes.some(mode => !TOOL_MODES.includes(mode))) throw new TypeError('modes 只能是 play、card 中的一项或两项')
@@ -1214,7 +1221,7 @@ export function createTavernPluginApi(deps) {
     return entry ? entry.modes.slice() : null
   }
 
-  return Object.freeze({ service, toolModesFor, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved,
+  return Object.freeze({ service, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved,
     speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement,
     runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }

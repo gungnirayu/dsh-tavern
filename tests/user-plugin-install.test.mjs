@@ -194,6 +194,12 @@ test('检查更新：比已装版本新才算有更新；无 Release、固定分
   assert.equal(calls.filter(url => url.includes('/repos/author/newer/')).length, 1)
   assert.equal(calls.filter(url => url.includes('/repos/author/same/')).length, 1)
   assert.equal(calls.filter(url => url.includes('/repos/author/boom/')).length, 2)
+
+  // 手动点「检查更新」（fresh）要绕过缓存。
+  await installer.checkUpdates({ fresh: true })
+  assert.equal(calls.filter(url => url.includes('/repos/author/newer/')).length, 2)
+  assert.equal(calls.filter(url => url.includes('/repos/author/same/')).length, 2)
+  assert.equal(calls.filter(url => url.includes('/repos/author/boom/')).length, 3)
 })
 
 test('GitHub 安装用最新 Release；更新重新下载，旧版进备份；人物卡自带的插件不能覆盖', async t => {

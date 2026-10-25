@@ -1,4 +1,9 @@
+// Must stay first: it has to run before anything loads jsdom.
 import { createSessionViewProjection } from './domain/session-view-projection.js'
+import { createNetworkToolPolicy, installNetworkToolPolicy } from './domain/network-tools.js'
+import { installWebAccess } from './tools/web-access.js'
+import { readWebAccess } from './domain/web-access-settings.js'
+import { registerWorkbenchResearchTool } from './tools/workbench-research.js'
 import { createConversationBackgroundSettings } from './domain/conversation-background-settings.js'
 import { createChatWrites } from './domain/chat-writes.js'
 import { upgradeReferences, upgradedAnchor } from './domain/session-upgrade-references.js'
@@ -27,6 +32,7 @@ import { registerCardCoverTools } from './tools/card-cover.js'
 import { createCardValidationCheck } from './tools/card-validation-check.js'
 import { createSkillGatedTools } from './domain/skill-gated-tools.js'
 import { registerPlayChatTool } from './tools/play-chat.js'
+import { registerRuntimeHealthTool } from './tools/runtime-health.js'
 import { registerScriptTool } from './tools/script.js'
 import { registerWorldbookTools } from './tools/worldbook.js'
 import { registerPresetTools } from './tools/preset.js'
@@ -35,6 +41,8 @@ import { registerCardEditingTools } from './tools/card-editing.js'
 import { createConversationGuides } from './domain/conversation-guides.js'
 import { createGuideLibrary } from './domain/guide-library.js'
 import { createRegexLibrary } from './domain/regex-library.js'
+import { createTavernRegexSettings } from './domain/regex-settings.js'
+import { createRegexManager } from './domain/regex-manager.js'
 import { copyJsonTree } from './domain/copy-json-tree.js'
 import { createCandidateContextReader } from './domain/candidate-context-reader.js'
 import { createCandidateWorldbookPreparation } from './domain/candidate-worldbook-preparation.js'
@@ -175,7 +183,18 @@ import { LEDGER_SUBMIT_TOOL } from './domain/story-ledger.js'
 import { createManualLedger } from './domain/manual-ledger.js'
 import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
+import { createPolishRecords } from './domain/polish-records.js'
+import { createPolishPrereview, createPolishReviewer } from './domain/polish-run.js'
+import { createCardAutoReload } from './domain/card-auto-reload.js'
+import { createRuntimeLogBuffer, runtimeHealthReport } from './domain/runtime-health.js'
+import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
+import { createEngineJudge } from './domain/engine-judge.js'
+import { createStageDirectorStream } from './domain/stage-director-stream.js'
+import { stagePages } from './domain/stage-performance.js'
+import { stageDirectorCommit } from './stage-director-commit.js'
 import { createCastAssets } from './domain/cast-assets.js'
+import { createAssetPackService } from './asset-library/pack-v2/service.js'
+import { createStageMaterial, STAGE_LEASE_TTL_MS, STAGE_MEDIA_SCOPE, STAGE_READ_SCOPE } from './domain/stage-material.js'
 import { createSpeech } from './domain/speech.js'
 import { createAssetPacks } from './domain/asset-packs.js'
 import { createUploads } from './domain/uploads.js'
@@ -249,14 +268,18 @@ import { createSystemPromptDocuments } from './domain/system-prompt-documents.js
 // Runtime reads go through runtimePrompt() so panel overrides apply; the raw
 // file catalog only supplies built-in defaults.
 import { prompt as promptFile, SYSTEM_PROMPT_NAMES } from './prompt-catalog.js'
+import { activeCardPersonaText } from './domain/card-personas.js'
 import { createMaintenanceHandlers } from './rpc/maintenance.js'
 import { createCardHandlers } from './rpc/cards.js'
 import { createTemplateHandlers } from './rpc/template.js'
 import { createOpeningHandlers } from './rpc/opening.js'
 import { createResourceHandlers } from './rpc/resources.js'
+import { createRegexHandlers } from './rpc/regex.js'
 import { createMediaHandlers } from './rpc/media.js'
 import { createSettingsHandlers } from './rpc/settings.js'
 import { createPluginHandlers } from './rpc/plugins.js'
+import { createAssetLibraryHandlers } from './rpc/asset-library.js'
+import { stageSkinChoice, stageSkinPackIds } from './domain/stage-skin-choice.js'
 import { createConversationHandlers } from './rpc/conversations.js'
 import { createPlayHandlers } from './rpc/play.js'
 // dsh-tavern 宿主插件（profile 组合行）
@@ -417,6 +440,9 @@ export async function apply(ctx) {
   const apiDiagnostics = createTavernApiDiagnostics(profileData)
   const compatibilityDiagnostics = createTavernCompatibilityDiagnosticStore(profileData)
   const requestPerformance = createRequestPerformance()
+  // Tavern's own recent warnings and errors, for the debugging Agent's runtime health report.
+  const runtimeLogs = createRuntimeLogBuffer()
+  ctx.effect(() => runtimeLogs.install())
   const performanceDiagnostics = createPerformanceDiagnostics()
   const tavernRemoteAssets = createTavernRemoteAssetPinStore({
     onDiagnostic: row => performanceDiagnostics.opening(row),
@@ -454,6 +480,7 @@ export async function apply(ctx) {
     if (name === 'system-append' && tavernSettingsDocument?.systemAppendEnabled === false) return ''
     return resolveSystemPrompt(tavernSettingsDocument, name, promptFile)
   }
+  const webAccess = installWebAccess({ ctx, getConfig: () => tavernSettingsDocument?.webAccess })
   const promptDocuments = createSystemPromptDocuments()
   const presentSystemPrompts = promptDocuments.present
   const applicationUpdater = createApplicationUpdater({
@@ -668,11 +695,31 @@ export async function apply(ctx) {
     }
     return card
   }
-  async function readCardExtensions(cardPath, chat, settings) {
+  // The card on disk for update checks on every read of a playing game: read again only when its
+  // file changed (any way of editing a card writes that file). Shared and read-only.
+  const latestCards = new Map()
+  async function readLatestCard(cardPath) {
+    const normalized = str(cardPath) === '' ? '' : normalizeResourcePath(cardPath, 'card')
+    const stamp = normalized ? (await fileResources.metadata(normalized).catch(() => null))?.updatedAt : 0
+    const cached = latestCards.get(normalized)
+    if (stamp && cached?.stamp === stamp) return cached.card
+    const card = await readCard(normalized)
+    latestCards.delete(normalized)
+    if (stamp && card) {
+      latestCards.set(normalized, { stamp, card })
+      while (latestCards.size > 8) latestCards.delete(latestCards.keys().next().value)
+    }
+    return card
+  }
+  async function readCardExtensionSources(cardPath, chat) {
     const workspace = chat?.cardDefinitionSnapshot || await readCardWorkspace(cardPath)
     if (workspace === undefined) return undefined
-    const extensions = cardPreparation.present({ card: workspace, as: 'card-extensions' })
-    return withGlobalRegexScripts(extensions, settings ?? await tavernExtensionSettings.read())
+    return cardPreparation.present({ card: workspace, as: 'card-extensions' })
+  }
+  async function readCardExtensions(cardPath, chat, settings) {
+    const extensions = await readCardExtensionSources(cardPath, chat)
+    if (extensions === undefined) return undefined
+    return withGlobalRegexScripts(extensions, settings ?? await tavernExtensionSettings.read(), chat && chat.regexOverrides)
   }
   function presetRegexScripts(chat) {
     if (!chat || groupOfMode(chat.mode) !== 'play') return []
@@ -682,7 +729,7 @@ export async function apply(ctx) {
   // The regex a story/script round's text was projected with when it was saved (reply-prose.js).
   async function replyRegexScripts(chat) {
     if (!['story', 'script'].includes(chat?.mode || 'story')) return []
-    return composeTavernRegexScripts(await readCardExtensions(chat.cardPath || chat.cardId, chat), presetRegexScripts(chat))
+    return composeTavernRegexScripts(await readCardExtensions(chat.cardPath || chat.cardId, chat), presetRegexScripts(chat), chat && chat.regexOverrides && chat.regexOverrides.preset)
   }
   const readScript = createScriptReader({ resources: fileResources, version: path => profileData.version('resources/' + path) })
   function prepareTextImport(payload, emptyMessage) {
@@ -888,7 +935,24 @@ export async function apply(ctx) {
       return updateChat(chat.id, current => adoptConversationFeatures(adoptConversationBackground(current, tavernSettingsDocument), tavernSettingsDocument), { source: 'background-config.adopt' })
     }
   })
+  // Plugin/extra tools last seen in a play request, per game. The settings
+  // switches need the real model-facing tools; a game shows them after its
+  // first request.
+  const foregroundExtraTools = new Map()
+  function extraToolEntry(tool) {
+    return { name: tool.name, label: tool.name,
+      description: String(tool.description || '').replace(/\s+/g, ' ').trim().slice(0, 240) || '插件注册的前台工具。' }
+  }
   function chatForSession(sessionId) { return sessionChats.read(sessionId) }
+  const tavernRegexSettings = createTavernRegexSettings({ extensionSettings: tavernExtensionSettings })
+  const regexManager = createRegexManager({
+    regexSettings: tavernRegexSettings,
+    legacyLibrary: regexLibrary,
+    chatForSession,
+    groupOfMode,
+    readCardSources: readCardExtensionSources,
+    updateChat
+  })
   function sessionStateForSession(sessionId) {
     return requestPerformance.stage('readSessionState', () => sessionChats.readState(sessionId))
   }
@@ -939,6 +1003,11 @@ export async function apply(ctx) {
     return result
   }
   const castAssets = createCastAssets({ store: profileData })
+  // The asset library (docs/design/asset-library.md): one owner of the profile's packs, beside the tavern data root.
+  const assetLibrary = createAssetPackService({ assetRoot: path.join(path.dirname(dataRoot), 'asset-packs'), leaseTtlMs: STAGE_LEASE_TTL_MS,
+    authorizeLease: async ({ scope }) => scope === STAGE_MEDIA_SCOPE || scope === STAGE_READ_SCOPE })
+  const stageMaterial = createStageMaterial({ library: assetLibrary, castAssets, globalPackIds: async () => (await readTavernSettings()).globalEnabledPackIds, warn: error => console.warn('dsh-tavern: 舞台素材不可用', str(error?.message || error)) })
+  ctx.effect(() => () => { stageMaterial.dispose(); return assetLibrary.dispose() })
   // DSH cards (docs/design/dsh-card-format.md): asset packs stored once by content; big files uploaded to disk.
   const assetPacks = createAssetPacks({ root: dataRoot, store: profileData })
   const uploads = createUploads({ root: dataRoot })
@@ -976,7 +1045,7 @@ export async function apply(ctx) {
   })
   // Card files in and out: imports (JSON, PNG, CHARX, DSH card, plugin formats) and exports.
   const { importCard, importCardArchiveFile, importPluginCardFile, presentCardText, exportCardPng, exportCardFile } = createCardFiles({
-    cardPreparation, fileResources, castAssets, assetPacks, cardPlugins, cardSummaries, presetLibrary, importPreset,
+    cardPreparation, fileResources, castAssets, stageMaterial, assetPacks, cardPlugins, cardSummaries, presetLibrary, importPreset,
     readCardWorkspace, worldBooks, pluginApi: () => pluginApi
   })
   async function listCards() {
@@ -1526,17 +1595,57 @@ export async function apply(ctx) {
   // lets a library edit enter this game without the explicit reload button.
   async function cardUpdateStatus(chat, context = {}) {
     try {
+      // A game just opened plays the card it was given, which is the card on disk.
       if (context.fresh === true) return playCardSnapshots.libraryBoundStatus(chat, context.card)
-      const card = context.card ?? await readCard(chat.cardPath)
-      // A game that keeps no copy has no world book to offer as an update, but the
-      // constant prefix still has to follow an edited book on the next read.
-      const synced = context.busy === true ? null
-        : await playCardSnapshots.autoSync(chat, card)
-      // A legacy copy still needs explicit synchronization; only a game without one follows the library.
-      if (!chat.openingWorldbookSnapshot) return playCardSnapshots.libraryBoundStatus(chat, card)
-      // One library read now serves both the automatic refresh and the badge.
-      return await playCardSnapshots.updateStatus(chat, card, synced?.observed)
+      const status = await playCardSnapshots.currentStatus(chat, { busy: context.busy === true })
+      // An edited card or world book enters an idle game by itself; the page only hears about it.
+      if (context.busy !== true) cardAutoReload.schedule(chat.sessionId, status)
+      return { ...status, autoReloading: cardAutoReload.running(chat.sessionId), autoReloadError: cardAutoReload.failure(chat.sessionId) }
     } catch (error) { return {available:true,error:String(error.message || error)} }
+  }
+  const cardAutoReload = createCardAutoReload({
+    apply: (sessionId, digest) => applyCardUpdate(sessionId, digest, { auto: true }),
+    published: sessionId => sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'card-reload:' + Date.now() })
+  })
+  /** Replace a game's card and world book with the latest ones (what the old reload button did). */
+  async function applyCardUpdate(sessionId, digest, { auto = false } = {}) {
+    if (typeof digest !== 'string' || !digest) throw new Error('请刷新后确认人物卡和世界书更新')
+    const conflict = new Error('游戏状态已变化，未应用更新，请稍后重试')
+    // Rebuild from the latest snapshot on a concurrent write. Never merge an
+    // old prepared save over new state, or skip the exact revision check.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const chat = await chatForSession(sessionId)
+      if (!chat || !['story', 'script'].includes(chat.mode || 'story') || chat.requestMode === 'sillytavern') throw new Error('仅支持当前游玩会话')
+      if ((await sessionActivity(sessionId))?.busy || agentRegistry.get(sessionId)?.phase?.kind === 'running') throw new Error('请等待当前生成和后台任务完成后再应用人物卡')
+      // Applying the card restarts the card scripts; a regeneration left in progress could then never be restored.
+      if (chat.regenInProgress) throw new Error('上一次正文重新生成尚未完成：请先点「重新生成正文」完成或恢复它，再应用人物卡')
+      const card = await readCard(chat.cardPath)
+      if (!card) throw new Error('人物卡不存在')
+      const patch = await playCardSnapshots.replacement(chat, card, digest)
+      const prepared = await liveCardUpdate.prepare({...chat,...patch}, card, chat)
+      const nativeSession = sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session
+      if (nativeSession) prepareTemplateHistory(nativeSession, chat, prepared)
+      prepared.tavernHelperLifecycleRevision = (Number(chat.tavernHelperLifecycleRevision) || 0) + 1
+      // The page says so until the next turn.
+      if (auto) prepared.cardAutoReload = { at: Date.now(), turn: latestReplyTurn(chat) }
+      const extensions = await readCardExtensions(chat.cardPath, prepared)
+      await liveCardUpdate.project(prepared, card, {projections:[]}, {charName:card.name,macroState:chat.macroState,regexScripts:extensions.regexScripts})
+      await playCardSnapshots.replacement(chat, await readCard(chat.cardPath), digest)
+      try {
+        const saved = await updateChat(chat.id, current => {
+          if (current._storageRevision !== chat._storageRevision || agentRegistry.get(sessionId)?.phase?.kind === 'running' || ['pending','running','waiting-runtime'].includes(current.settleStatus)) throw conflict
+          return prepared
+        }, { source: auto ? 'card-context.auto-reload' : 'card-context.apply-update' })
+        if (nativeSession) await synchronizeTemplateHistory(nativeSession, saved, session => sessionStore.flush(session))
+        return await view(saved, card)
+      } catch (error) { if (error !== conflict) throw error }
+    }
+    throw conflict
+  }
+  function latestReplyTurn(chat) {
+    const messages = chat.messages || []
+    for (let index = messages.length - 1; index >= 0; index--) if (messages[index]?.role === 'assistant') return Number(messages[index].turn) || 0
+    return 0
   }
   const liveCardUpdate = createLiveCardUpdate({readGlobals:readPromptTemplateGlobalVariables,
     // Games without their own copy still preview against the book they play with.
@@ -1667,7 +1776,7 @@ export async function apply(ctx) {
     return await conversationInitialization.ensureOpening(sessionId)
   }
   const contextPlanner = createContextPlanner({ prompt: runtimePrompt, callModel: callModel, now: Date.now, logger: console })
-  const playCardSnapshots = createPlayCardSnapshots({ worldBooks, planner: contextPlanner, readCard: readChatCard, writeChat, updateChat,
+  const playCardSnapshots = createPlayCardSnapshots({ worldBooks, planner: contextPlanner, readCard: readChatCard, readLatestCard, writeChat, updateChat,
     userPreferenceProfile })
   const ensurePlayCardSnapshot = playCardSnapshots.ensure
   async function ensureNativeSystemPrefix(session, chat) {
@@ -1892,8 +2001,8 @@ export async function apply(ctx) {
     // Nor does it learn of a new one; the same signal reloads the list so the header counts it.
     onCreated: (_id, parentId) => sessionSignals.publish(parentId, { kind: 'subagents', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }),
     systemAppend: () => runtimePrompt('system-append'),
-    resolveModelSelection: async input => backgroundModelSelection(await backgroundConfigForSession(input.sessionId)) || input.selection,
-    resolveWebSearch: async input => (await backgroundConfigForSession(input.sessionId))?.webSearchEnabled === true,
+    resolveModelSelection: async input => input.task === 'stage-director' ? input.selection : backgroundModelSelection(await backgroundConfigForSession(input.sessionId)) || input.selection,
+    resolveWebSearch: async input => input.task !== 'stage-director' && (await backgroundConfigForSession(input.sessionId))?.webSearchEnabled === true,
     backgroundTools: BACKGROUND_TOOLS,
     // Set up after the runner: plugin tools are read when a background Session is set up.
     settlementItems: () => settlementItems,
@@ -1977,6 +2086,8 @@ export async function apply(ctx) {
     run: (chatId, signal) => wholeReads.scope('回复后预备', () => prepareAfterReply(chatId, signal))
   })
   turnSettled.subscribe(({ chatId, latest }) => { if (latest) return worldbookPrefilter.start(chatId) })
+  // A regenerated reply (no foreground end of its own) or one the pre-review has not read yet.
+  turnSettled.subscribe(({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
 
   // The replies each game prepared for (round and version, the latest few). Tavern's own
   // turns — a rollback, a body edit, a repair — end like replies but bring no new one:
@@ -2006,6 +2117,7 @@ export async function apply(ctx) {
   ctx.on('session/event', function (session, event) {
     if (event?.type !== 'user/message' || event.surfaceOp !== 'append' || event.data?.source?.kind !== 'user' || event.data.source.repair) return
     if (!session?.id || backgroundAgentRunner.owns(session.id)) return
+    polishPrereview.cancel(session.id)
     void readSessionMap().then(links => { const chatId = links[str(session.id)]; if (chatId) return worldbookPrefilter.cancel(chatId) }).catch(() => {})
   })
   ctx.effect(() => () => worldbookPrefilter.dispose())
@@ -2091,10 +2203,19 @@ export async function apply(ctx) {
     readChatCard
   })
   const pluginSettlementProgress = createPluginSettlementProgress()
+  // What each 精修 changed, shown on the 精修对比 page.
+  const polishRecords = createPolishRecords({ data: pluginData, turns: pluginTurns })
+  const polishReviewer = createPolishReviewer({ latestFloors: (sessionId, count) => chatHeaderWithLatestFloors(sessionId, count), readCard, prompt: runtimePrompt, callModel })
+  // 精修预审 (a setting, off by default): each reply is reviewed as soon as it is written.
+  const polishPrereview = createPolishPrereview({
+    enabled: async () => (await readTavernSettings()).polishPrereview === true,
+    readTexts: async sessionId => (await bodyEditor.read(sessionId)).parts.filter(part => part.kind === 'text').map(part => part.text),
+    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal)
+  })
   // Dialogue speakers and emotions, annotated by settlement (docs/design/cast-presentation.md).
   const castPresentation = createCastPresentation({
-    // On for every game with the global switch, and for games of a card whose stage is on (the stage reads the annotations).
-    enabled: async gameId => (await readTavernSettings()).castPresentation === true || (gameId ? await cardStageOn(str(gameId)) : false),
+    // On for every game with 对话气泡; 舞台模式 needs it too, so the stage always has its annotations.
+    enabled: async () => (await readTavernSettings()).castPresentation === true,
     turns: pluginTurns,
     data: pluginData,
     publish: (sessionId, annotation) => {
@@ -2102,13 +2223,70 @@ export async function apply(ctx) {
       pluginApi.castAnnotated(sessionId, annotation)
     }
   })
-  // Work riding on the main settlement call: Tavern's own items first, then plugins.
+  async function stageCatalog(sessionId) {
+    const card = await castCardOf(sessionId), manifest = await castAssets.read(card.path)
+    const material = await stageMaterial.catalog(card.path, card.name)
+    // BGM off (舞台设置 › 基础设置, stageToggles.music): no card offers music, so none plays and the director stops it.
+    const toggles = (await readTavernSettings()).stageToggles
+    if (!toggles.music) material.music = []
+    // 音效 off (stageToggles.sfx): no sound effect is offered or played.
+    if (!toggles.sfx) material.sfx = []
+    // 环境音 off (stageToggles.ambience): no ambience is offered or played, and the director stops what played.
+    if (!toggles.ambience) material.ambience = []
+    // 物品 off (stageToggles.items): no item is offered or shown.
+    if (!toggles.items) material.items = []
+    return { player: card.player, cast: await castView(sessionId, card.path, manifest), ...material }
+  }
+  // The BGM player's list: every lit track of the card's packs, in binding then pack order.
+  async function stageMusicTracks(sessionId) {
+    const card = await castCardOf(sessionId)
+    return { tracks: await Promise.all((await stageMaterial.catalog(card.path, card.name)).music.map(stageMaterial.track)) }
+  }
+  const publishStage = sessionId => sessionSignals.publish(sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
+  async function stageStreamSource(sessionId, turn) {
+    const chat = await chatHeaderForSession(sessionId, ['timeline', 'foregroundFrames', 'regenInProgress'])
+    if (!chat || chat.regenInProgress) return null
+    const operation = Object.values(chat.timeline?.operations || {}).filter(item => item.kind === 'body' && Number(item.turn) === Number(turn)).at(-1)
+    if (!operation || !chat.foregroundFrames?.[operation.id]) return null
+    return { chatId: chat.id, operationId: operation.id, status: operation.status, branchId: chat.timeline.branchId, revision: chat.timeline.revision }
+  }
+  // 舞台模式 › 判断模型: the key comes from the DSH credential service; the log has codes, counts and usage, never the key.
+  const stageJudge = createEngineJudge({ getConfig: async () => (await readTavernSettings()).stageJudge, credentials: () => ctx.get('credentials'),
+    log: event => console.info('dsh-tavern:', JSON.stringify(event)) })
+  const stageDirector = createStageDirector({ enabled: stageOn, turns: pluginTurns, data: pluginData, catalog: stageCatalog,
+    readContext: async body => {
+      const chat = await chatHeaderForSession(body.sessionId, ['timeline', 'foregroundFrames'])
+      const frame = body.operationId ? chat?.foregroundFrames?.[body.operationId] : Object.values(chat?.foregroundFrames || {}).filter(item => item.turn === body.turn && item.branchId === chat?.timeline?.branchId).at(-1)
+      if (!frame) return {}
+      const { writingRules, ...reference } = frame.context
+      return { input: frame.userInput?.projectedText || frame.userInput?.sourceText || '', ...reference }
+    },
+    binding: async sessionId => (await chatHeaderForSession(sessionId, ['timeline']))?.timeline,
+    // 舞台模式 › 可用演出 and 每轮上限, frozen with the turn.
+    commands: async () => { const settings = await readTavernSettings(); return { dimensions: settings.stageDimensions, actionCaps: settings.stageActionCaps } },
+    judge: { config: async () => (await readTavernSettings()).stageJudge, judge: (request, config) => stageJudge.judge(request, config) },
+    commit: stageDirectorCommit(chatPersistence),
+    selection: async sessionId => backgroundModelSelection(await backgroundConfigForSession(sessionId)),
+    runAgent: input => backgroundAgentRunner.run(input),
+    publish: publishStage })
+  const stageDirectorStream = createStageDirectorStream({ director: stageDirector, source: stageStreamSource, catalog: stageCatalog, publish: publishStage,
+    warn: error => console.warn('dsh-tavern: 舞台流已停止', str(error?.message || error)) })
+  const directorJobs = createSettlementJobs({ run: async (sessionId, signal) => {
+    const body = await pluginTurns.readPendingTurn(sessionId)
+    if (!await stageDirectorStream.finish(body, signal)) await stageDirector.run(body, signal)
+  }, onSettled: () => {} })
+  function directRound(sessionId) {
+    void directorJobs.cancel(sessionId, { wait: false }).then(() => directorJobs.start(sessionId))
+      .catch(error => console.warn('dsh-tavern: 舞台导演任务失败', str(error?.message || error)))
+  }
+  ctx.effect(() => () => { stageDirectorStream.dispose(); return directorJobs.dispose() })
   const settlementItems = createSettlementItems({ items: () => [castPresentation.settlement], plugins: () => pluginApi.settlement })
   const postureItem = createPostureItem({ prompt: () => runtimePrompt('posture-settlement'), tool: POSTURE_SUBMIT_TOOL })
   function castAssetView(cardPath, manifest) {
     const key = castAssets.keyOf(cardPath)
     const url = file => file ? '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: key, file }).toString() : ''
     return manifest.characters.map(character => ({ name: character.name, aliases: character.aliases || [], avatarUrl: url(character.avatar), avatars: {}, voices: character.voices || {},
+      voiceReferences: (character.voiceReferences || []).map(clip => ({ file: clip.file, text: clip.text })), voiceSource: character.voiceSource || null,
       sprites: Object.fromEntries(Object.entries(character.sprites || {}).map(([emotion, file]) => [emotion, url(file)])) }))
   }
   // The cast as everyone sees it: the player's own assets, then what plugins offer (a DSH card's packs).
@@ -2126,9 +2304,12 @@ export async function apply(ctx) {
     }
     return own
   }
-  async function cardStageOn(sessionId) {
-    const card = await castCardOf(sessionId).catch(() => null)
-    return Boolean(card && (await castAssets.read(card.path)).stage === true)
+  // 舞台模式 is global (舞台设置 › 基础设置, stageToggles.stage) and needs 对话气泡; a card does not switch it.
+  function stageSwitchedOn(settings) {
+    return settings.castPresentation === true && settings.stageToggles.stage === true
+  }
+  async function stageOn(sessionId) {
+    return stageSwitchedOn(await readTavernSettings()) && Boolean(await castCardOf(sessionId).catch(() => null))
   }
   async function castCardOf(sessionId) {
     const header = await chatHeaderForSession(str(sessionId), ['cardPath', 'cardName', 'mode', 'macroState'])
@@ -2143,28 +2324,94 @@ export async function apply(ctx) {
     const storyTurns = [...new Set((state?.messages || []).filter(message => message?.role === 'assistant').map(message => Number(message.turn || (message.greeting ? 1 : 0))).filter(turn => turn > 0))]
     const wanted = storyTurns.slice(-Math.max(1, Math.min(10, Number(count) || 5)))
     const annotated = await castPresentation.forTurns(str(sessionId), wanted)
+    const assets = await stageCatalog(str(sessionId))
+    // An item shows its entry's picture, a sound effect plays its entry's audio at the entry's 音量; one that left the
+    // catalog (switched off, removed, 物品 / 音效 off) is not shown or played.
+    const entryOf = event => event.op === 'item.play' ? assets.items.find(item => item.name === event.item) : event.op === 'sfx.play' ? assets.sfx.find(item => item.name === event.sfx) : undefined
+    const shown = events => Promise.all(events.filter(event => !['item.play', 'sfx.play'].includes(event.op) || entryOf(event)).map(async event => {
+      if (event.op === 'item.play') return { ...event, image: await stageMaterial.mediaUrl(entryOf(event)) }
+      if (event.op === 'sfx.play') return { ...event, audio: await stageMaterial.mediaUrl(entryOf(event)), volume: entryOf(event).volume ?? 1 }
+      return event
+    }))
     const turns = []
     for (const turn of wanted) {
       const material = await pluginTurns.readTurn(str(sessionId), turn).catch(() => null) || (turn === wanted.at(-1) ? await pluginTurns.readPendingTurn(str(sessionId)).catch(() => null) : null)
-      if (material && material.turn === turn) turns.push({ turn, text: material.text, lines: annotated.turns[turn] || [] })
+      if (material && material.turn === turn) {
+        const directed = await stageDirector.presentation(str(sessionId), turn, material.key)
+        turns.push({ turn, key: directed?.presentationKey || material.key, text: material.text, lines: annotated.turns[turn] || [],
+          pages: stagePages(material.text, annotated.turns[turn] || []), performances: await shown(directed?.performances || []) })
+      }
     }
-    const manifest = await castAssets.read(card.path)
-    const background = (manifest.backgrounds || [])[0]
-    // The stage is the card's choice: off for ordinary cards, on when the player or the card turned it on.
-    return { enabled: manifest.stage === true, player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
-      background: background ? '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: castAssets.keyOf(card.path), file: background.file }).toString() : '',
-      cast: await castView(sessionId, card.path, manifest), turns }
+    const preview = await stageDirectorStream.preview(str(sessionId))
+    if (preview) {
+      const index = turns.findIndex(item => item.turn === preview.turn)
+      const row = { turn: preview.turn, key: preview.key, text: preview.pages.map(page => page.text).join('\n'), lines: [], pages: preview.pages, performances: await shown(preview.performances) }
+      if (index < 0) turns.push(row)
+      else turns[index] = row
+    }
+    const stage = preview?.state || await stageDirector.state(str(sessionId), turns.at(-1)?.turn)
+    return { enabled: stageSwitchedOn(await readTavernSettings()), player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
+      background: await stageMaterial.mediaUrl(assets.background.find(item => item.name === stage.background)),
+      music: await stageMusic(assets.music.find(item => item.name === stage.music)),
+      // 环境音: the state's ambience while its entry is lit (a loop the stage plays alongside the BGM), or null.
+      ambience: await stageMusic(assets.ambience.find(item => item.name === stage.ambience)),
+      musicEnabled: (await readTavernSettings()).stageToggles.music, sfxEnabled: (await readTavernSettings()).stageToggles.sfx,
+      ambienceEnabled: (await readTavernSettings()).stageToggles.ambience, cast: assets.cast, turns, stage,
+      skin: await stageSkinOf(card.path).then(skin => ({ document: skin.document, base: skin.base })).catch(() => null),
+      // 入场演出 (stageToggles.entrance): the entrance of the card's own packs the stage opens with, or null.
+      entrance: (await readTavernSettings()).stageToggles.entrance ? await stageMaterial.entrance(card.path) : null }
   }
-  // One line in its speaker's voice on the chosen channel; { skip } when voicing is off or narration is silent.
+  // The skin a card's stage is drawn in (stage-skin-choice.js): { skin, fallback, document, base }, base being the URL
+  // its own files resolve against ('' for a built-in). The card's own default comes from its file, the rest from cast.json,
+  // its packs and the tavern settings.
+  async function stageSkinOf(cardPath) {
+    const settings = await readTavernSettings(), cast = await castAssets.read(cardPath)
+    const boundPackIds = Array.isArray(cast.boundPackIds) ? cast.boundPackIds : []
+    const packs = await Promise.all(stageSkinPackIds(boundPackIds, settings.stageSkin).map(packId => assetLibrary.getPackSnapshot({ packId }).catch(() => null)))
+    const workspace = await readCardWorkspace(cardPath).catch(() => undefined)
+    const cardDefault = workspace === undefined ? null : cardPreparation.present({ card: workspace, as: 'card-extensions' }).defaultSkin
+    const chosen = stageSkinChoice({ choice: cast.skinChoice ?? null, cardDefault, boundPackIds, global: settings.stageSkin, packs })
+    let base = ''
+    if (typeof chosen.skin === 'object') {
+      const pack = packs.find(item => item?.manifest.id === chosen.skin.packId), asset = pack.manifest.assets.find(item => item.kind === 'skins' && item.id === chosen.skin.assetId)
+      // A failed lease draws the document without its art; the stage's next read asks again (it never drops the skin).
+      base = await stageMaterial.skinBase(pack.manifest.id, asset.bundleKey, pack.manifest.bundles[asset.bundleKey].contentHash).catch(() => '')
+      if (base && asset.entry.includes('/')) base += asset.entry.replace(/[^/]*$/, '')
+    }
+    return { ...chosen, choice: cast.skinChoice ?? null, cardDefault, base }
+  }
+  async function stageMusic(item) {
+    return item ? await stageMaterial.track(item) : null
+  }
+  // One line in its speaker's voice: its 配音来源 (cast-presentation.md 22/N), else the chosen channel; { skip } when voicing is
+  // off or narration is silent.
   async function speakLine(sessionId, { speaker, text, emotion, narration } = {}) {
     const current = await speech.active()
     if (!current) return { skip: true, reason: 'off' }
     const card = await castCardOf(str(sessionId)).catch(() => null)
     const name = str(speaker).trim()
     const character = card && name ? (await castAssets.read(card.path)).characters.find(item => item.name === name || (item.aliases || []).includes(name)) : null
-    const voice = speech.voiceFor({ character, provider: current.provider, config: current.config, narration: narration === true })
+    const channel = narration === true ? current : await speech.channelFor({ character, current })
+    const voice = speech.voiceFor({ character, provider: channel.provider, config: channel.config, narration: narration === true })
     if (voice === null) return { skip: true, reason: 'narration' }
-    return speechReply(await speech.synthesize({ provider: current.provider.id, text, voice, emotion, gameId: str(sessionId), speaker: name, narration: narration === true }))
+    // A clone sends the character's own clips inline (cast-presentation.md 22/N).
+    const references = speech.referencesFor({ character, provider: channel.provider, narration: narration === true })
+    return speechReply(await speech.synthesize({ provider: channel.provider.id, text, voice, emotion, gameId: str(sessionId), speaker: name, narration: narration === true,
+      ...(references.length ? { references, readReference: file => castAssets.readFile(card.path, file) } : {}) }))
+  }
+  // The stage opening with 配音 on: the voices its cast speaks with on the channel in use, readied when the service offers it
+  // (cast-presentation.md 21/N). Never awaited by a line; a voice that fails to warm is still said when its line comes.
+  async function prepareVoices(sessionId) {
+    const current = await speech.active()
+    if (!current?.provider.prepare) return { prepared: 0 }
+    const card = await castCardOf(str(sessionId)).catch(() => null)
+    const characters = card ? (await castAssets.read(card.path)).characters : []
+    // Only who speaks with this channel's voices: a clone (its own inline clips) has no reference_id to warm.
+    const voices = new Set([...characters.filter(character => (character.voiceSource?.provider || current.provider.id) === current.provider.id && !character.voiceSource?.clone)
+      .map(character => speech.voiceFor({ character, ...current })), current.config.narratorVoice].filter(Boolean))
+    let prepared = 0
+    for (const voice of voices) if (await speech.prepare({ voice }).catch(() => false)) prepared++
+    return { prepared }
   }
   function speechReply(result) {
     return result.browser ? result : { url: '/api/dsh-tavern/speech-audio?id=' + result.id, mediaType: result.mediaType }
@@ -2180,6 +2427,14 @@ export async function apply(ctx) {
     for (const item of await conversationRegistry.list().catch(() => [])) {
       if (item && item.cardPath === cardPath && item.sessionId) sessionSignals.publish(item.sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
     }
+  }
+  // An asset pack changed (舞台素材): one card's games re-read their stage, or, for a pack any card may use, every card's.
+  function stageMaterialChanged(cardPath = '') {
+    void (async () => {
+      for (const item of await conversationRegistry.list().catch(() => [])) {
+        if (item && item.sessionId && item.cardPath && (!cardPath || item.cardPath === cardPath)) sessionSignals.publish(item.sessionId, { kind: 'cast', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
+      }
+    })()
   }
   async function castEdit(sessionId, edit) {
     const card = await castCardOf(sessionId)
@@ -2247,7 +2502,7 @@ export async function apply(ctx) {
     settingsChanged: (gameId, plugin) => sessionSignals.publish(gameId, { kind: 'plugin-settings', version: plugin + ':' + Date.now() + ':' + Math.random().toString(36).slice(2) }),
     // A plugin published new state for its page side (tavernUi.watchState re-reads it).
     publishState: (gameId, plugin, name) => sessionSignals.publish(gameId, { kind: 'plugin-state:' + plugin + ':' + name, version: Date.now() + ':' + Math.random().toString(36).slice(2) }),
-    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat([STORY_SUBMIT_TOOL_NAME, 'character_design_finish', 'worldbook_search', 'web_search', 'skill']).filter(Boolean),
+    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat([STORY_SUBMIT_TOOL_NAME, STAGE_UPDATE_TOOL.name, 'character_design_finish', 'worldbook_search', 'web_search', 'web_fetch', 'tavern_research', 'skill']).filter(Boolean),
     media: pluginMedia,
     data: pluginData,
     pluginData: pluginDataStore,
@@ -2820,7 +3075,10 @@ export async function apply(ctx) {
   const foregroundFrameBuilder = createForegroundFrameBuilder()
   const foregroundFrameSessionAdapter = createForegroundFrameSessionAdapter({ id: randomUUID })
   const turnOrchestrator = createTurnOrchestrator({
-    storyToolCall: async () => (await readTavernSettings()).storyToolCall,
+    // Either direction needs submit_story declared: output to submit this turn,
+    // input because the replayed history calls name that tool.
+    storyToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
+    storyInputToolCall: async () => (await readTavernSettings()).storyInputToolCall,
     store: {
       chatForSession,
       storyContextForSession: sessionId => storyContext({ sessionId }),
@@ -2881,6 +3139,12 @@ export async function apply(ctx) {
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
+    directRound,
+    afterReply: sessionId => polishPrereview.start(sessionId),
+    cancelDirector: (sessionId, turn) => {
+      stageDirectorStream.cancel(sessionId, turn)
+      if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
+    },
     waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
     prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
     cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
@@ -2973,7 +3237,7 @@ export async function apply(ctx) {
     void mvuSettlementReconciler.scan()
   }
   // ---------- 重新生成正文（生成即替换，无确认） ----------
-  const { regenerate: regenBody, replayFailed: replayFailedTurn, recover: recoverRegeneration, rollback: rollbackTurn, undoRollback: undoRollbackTurn } = createRoundHistory({
+  const { regenerate: regenBody, replayFailed: replayFailedTurn, recover: recoverRegeneration, rollback: rollbackTurn, rollbackTo: rollbackToTurn, undoRollback: undoRollbackTurn } = createRoundHistory({
     diagnostics: mvuDiagnostics,
     chats: { read: readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, forSession: chatForSession, readCard: readChatCard,
       readRevision: readChatRevision, write: writeChat, update: updateChat, patch: patchChat,
@@ -2995,6 +3259,7 @@ export async function apply(ctx) {
       dispatchEvent: function (event) { return tavernScriptHostAdapter.dispatchEvent(event) } },
     timeline: storyTimeline,
     queueSettlement,
+    bodyCommitted: directRound,
     cancelSettlement,
     present: presentStory,
     sessionPatch,
@@ -3007,10 +3272,11 @@ export async function apply(ctx) {
     timeline: storyTimeline,
     activity: chat => backgroundTasks.activity(chat),
     cancelPreparation: chatId => worldbookPrefilter.cancel(chatId),
+    beforeReplyEdit: sessionId => castPresentation.beforeEdit(sessionId),
     project: async (text, chat) => {
       const extensions = await readCardExtensions(chat.cardPath, chat)
       return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
-        regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts), placement: 2, isEdit: false, depth: 0 })
+        regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts, chat?.regexOverrides?.preset), placement: 2, isEdit: false, depth: 0 })
     },
     present: presentStory,
     sessionPatch,
@@ -3082,15 +3348,29 @@ export async function apply(ctx) {
     readConfig: backgroundConfigForSession, readChat: chatForSession, updateChat,
     modelCatalog: tavernModelCatalog, modelReasoning: selection => readBackgroundModelReasoning(llm, selection),
     isPlayMode: mode => groupOfMode(mode) === 'play',
+    extraTools: async sessionId => {
+      const cached = foregroundExtraTools.get(String(sessionId))
+      if (cached) return cached
+      // Before this game's first request (or after a restart) fall back to the
+      // host registry: plugin tools that opted into play, plus any other
+      // non-Tavern tool currently registered.
+      try {
+        return (typeof ctx.tools?.schemas === 'function' ? ctx.tools.schemas() : [])
+          .filter(tool => tool && typeof tool.name === 'string' && !controlledToolNames.has(tool.name))
+          .filter(tool => { const modes = pluginApi.toolModesFor(tool.name); return !modes || modes.includes('play') })
+          .map(extraToolEntry)
+          .sort((left, right) => left.name.localeCompare(right.name))
+      } catch { return [] }
+    },
     // Unloaded sessions recall after their next reply.
     onStyleEnabled: (sessionId, chatId) => { if (agentRegistry.get(sessionId)?.session) void worldbookPrefilter.start(chatId) }
   })
 
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
-  const rpcDeps = { TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
-    applicationUpdater, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog,
-    backgroundConfigForSession, bindScript, bodyEditor, callModel, candidateGenerator, candidateTasks,
-    cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardTaskPrompts, castAssets,
+  const rpcDeps = { webAccess, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
+    applicationUpdater, assetLibrary, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog,
+    backgroundConfigForSession, bindScript, bodyEditor, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
+    cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
     castCardOf, castEdit, castPresentation, castStage, castView, chatForSession, chatHeaderForSession,
     chatHistoryImporter, chatPersistence, commands, compactionAbort, compatibilityDiagnostics,
     conversationBackgroundSettings, conversationGuides, ctx, dataRoot, deleteCard, deleteChat, deleteChats,
@@ -3105,14 +3385,14 @@ export async function apply(ctx) {
     playCardSnapshots, pluginApi, pluginDataStore, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns,
     pluginSettlementProgress, prepareConversationFork, preparedSaveSessions, presentSystemPrompts,
     presentUserPreferenceProfile, presetLibrary, previewPreset, projectOpeningWindow,
-    readBackgroundSuppression, readCard, readCardExtensions, readCardWorkspace, readChat, readChatCard,
+    readBackgroundSuppression, readCard, readCardExtensions, readCardExtensionSources, readCardWorkspace, readChat, readChatCard,
     readOpeningWindow, readScript, readSessionMap, readTavernSettings, reconcileStory, reconcileWhenIdle,
-    regenBody, regexLibrary, removePluginGalleryItems, removePluginMediaVersion, renameResource,
-    replayFailedTurn, requestPerformance, retrySettlement, retryStyleReference, rollbackTurn,
+    regenBody, regexLibrary, regexManager, removePluginGalleryItems, removePluginMediaVersion, renameResource,
+    replayFailedTurn, requestPerformance, retrySettlement, retryStyleReference, rollbackTurn, rollbackToTurn,
     runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, sceneIllustrations, scriptContinuity,
     scriptNavigation, sessionActivity, sessionInventory, sessionOperation, sessionPatch,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setCardPlugins, setPlayerName,
-    skillImportFiles, sleep, speakLine, speech, speechReply, startChat, startPluginTask, stopBackground, str,
+    skillImportFiles, sleep, speakLine, prepareVoices, speech, speechReply, stageJudge, stageMaterial, stageMaterialChanged, stageMusicTracks, stageSkinOf, startChat, startPluginTask, stopBackground, str,
     tavernModelCatalog, tavernScriptHostAdapter, tavernSkills, templateHistoryFrom, undoRollbackTurn,
     updateCard, updateChat, updateTavernSettings, uploads, userPluginInstaller, userPreferenceProfile, view,
     withCompactionSession, worldBooks, worldbookRecallLog,
@@ -3126,9 +3406,11 @@ export async function apply(ctx) {
     createTemplateHandlers(rpcDeps),
     createOpeningHandlers(rpcDeps),
     createResourceHandlers(rpcDeps),
+    createRegexHandlers(rpcDeps),
     createMediaHandlers(rpcDeps),
     createSettingsHandlers(rpcDeps),
     createPluginHandlers(rpcDeps),
+    createAssetLibraryHandlers(rpcDeps),
     createConversationHandlers(rpcDeps),
     createPlayHandlers(rpcDeps))
 
@@ -3183,6 +3465,7 @@ export async function apply(ctx) {
   registerTavernHttpRoutes({
     ctx,
     castAssets,
+    assetLibrary,
     speech,
     exportCardFile,
     assetPacks,
@@ -3291,11 +3574,13 @@ export async function apply(ctx) {
   }
 
   const skillGatedTools = createSkillGatedTools()
-  const controlledToolNames = new Set([STORY_SUBMIT_TOOL_NAME, 'tavern_read_variables', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
+  const controlledToolNames = new Set([STORY_SUBMIT_TOOL_NAME, 'tavern_read_variables', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'web_fetch', 'tavern_research', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
   const foregroundStrategies = createForegroundOrchestrationStrategies({
     nativePlay: {
-      // History is replayed as calls of the same submission tool, so it follows that switch.
-      historyToolCall: async () => (await readTavernSettings()).storyToolCall,
+      // Input side: replay past bodies as calls of the submission tool.
+      historyToolCall: async () => (await readTavernSettings()).storyInputToolCall,
+      // Output side: whether a new body must be submitted through the tool.
+      storyOutputToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
       // Experiment switch for the replay layout: a word in a file, read per request
       // so one restart covers every arm. Absent or unreadable means the shipped one.
       historyLayout: async () => readHistoryLayoutFile(process.env.DSH_TAVERN_HISTORY_LAYOUT_FILE || historyLayoutFile()),
@@ -3321,7 +3606,17 @@ export async function apply(ctx) {
         const names = await turnOrchestrator.visibleTools(sessionId)
         return skillGatedTools(names, sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session)
       },
-      cardSystemPrompt: function () { return runtimePrompt('card-system') },
+      // Cache the plugin/extra tools that reached a play request. The settings
+      // panel reads this map; Tavern's own tools come from the static catalog.
+      recordTools: function (sessionId, tools) {
+        const extra = tools
+          .filter(tool => tool && typeof tool.name === 'string' && !controlledToolNames.has(tool.name))
+          .map(extraToolEntry)
+          .sort((left, right) => left.name.localeCompare(right.name))
+        foregroundExtraTools.set(String(sessionId), extra)
+        if (foregroundExtraTools.size > 300) foregroundExtraTools.delete(foregroundExtraTools.keys().next().value)
+      },
+      cardSystemPrompt: function () { return activeCardPersonaText(tavernSettingsDocument) },
       cardReferencePrompt: function () { return runtimePrompt('card-reference') },
       workspaceContext: function (cwd, projection) { return resourceWorkspaceContext(cwd, projection, runtimePrompt('card-workspace')) },
       ensureSessionPrefix: async function (input) {
@@ -3345,6 +3640,13 @@ export async function apply(ctx) {
     tavernRetryLimiter,
   })
 
+  installNetworkToolPolicy(ctx, createNetworkToolPolicy({
+    readHeader: chatHeaderForSession,
+    backgroundContext: id => backgroundAgentRunner.requestContext(id),
+    capabilityFor: name => pluginApi.toolNetworkFor(name),
+    settings: () => readWebAccess(tavernSettingsDocument?.webAccess)
+  }))
+
   registerModelStreamHooks({
     agentRegistry,
     backgroundAgentRunner,
@@ -3356,6 +3658,7 @@ export async function apply(ctx) {
     modelRequestLog,
     pluginCompactionNotes: pluginApi.compactionNotes,
     pluginSettlementProgress,
+    stageDirectorStream,
     requestCoordinates,
     runtimePrompt,
     sessionStateForSession,
@@ -3387,6 +3690,7 @@ export async function apply(ctx) {
     requestIdForTurn,
     runtimePrompt,
     sessionStore,
+    storyOutputToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
     turnOrchestrator,
     userMessageForTurn,
   })
@@ -3396,7 +3700,12 @@ export async function apply(ctx) {
   if (tools !== undefined) {
     tools.register(defineTool(createStorySubmissionTool({
       chatForSession,
-      enabled: async () => (await readTavernSettings()).storyToolCall,
+      // Input-only requests still declare the tool for their replayed history;
+      // accepting a real submission there is harmless.
+      enabled: async () => {
+        const settings = await readTavernSettings()
+        return settings.storyInputToolCall === true || settings.storyOutputToolCall === true
+      },
       isBackground: function (sessionId) { return backgroundAgentRunner.owns(sessionId) }
     })))
     registerGameplayTools({
@@ -3451,6 +3760,10 @@ export async function apply(ctx) {
       displayRuntimeStore,
     })
 
+    registerWorkbenchResearchTool({ ctx, tools, readHeader: chatHeaderForSession, getConfig: () => readWebAccess(tavernSettingsDocument?.webAccess) })
+    registerRuntimeHealthTool({ chatForSession, tools,
+      runtimeHealth: () => runtimeHealthReport({ version: TAVERN_PACKAGE_VERSION, performance: requestPerformance, logs: runtimeLogs }) })
+
     registerScriptTool({
       chatForSession,
       readScript,
@@ -3474,7 +3787,7 @@ export async function apply(ctx) {
       tools,
     })
 
-    registerRegexLibraryTools({ chatForSession, regexLibrary, tools })
+    registerRegexLibraryTools({ regexManager, tools })
 
     registerCardEditingTools({
       activeTurnOf,
@@ -3493,6 +3806,13 @@ export async function apply(ctx) {
   try {
     const recoveredIndex = await initializeRuntimeState()
     settleRuntimeReadiness({ ok: true })
+    // Cards from before the asset library move their stage material once, in the background.
+    setImmediate(async function () {
+      for (const cardPath of await fileResources.list('card').catch(() => [])) {
+        const name = (await cardSummaries.read(cardPath).catch(() => null))?.name
+        await stageMaterial.ready(cardPath, name).catch(error => console.warn('dsh-tavern: 舞台素材迁移失败', cardPath, str(error?.message || error)))
+      }
+    })
     setImmediate(function () {
       recoverRuntimeHistory(recoveredIndex).catch(function (error) {
         console.error('dsh-tavern: 后台恢复历史对话失败', error && error.message || error)

@@ -2,7 +2,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { projectPlayerContent } from './player-input-content.js'
 import { resolveRuntimePresetMacros } from './runtime-presets.js'
 import { projectRuntimePresetRequest } from './runtime-preset-lifecycle.js'
-import { STORY_SUBMIT_PROMPT, STORY_SUBMIT_TOOL_NAME } from './story-tool-submission.js'
+import { STORY_INPUT_ONLY_PROMPT, STORY_SUBMIT_PROMPT, STORY_SUBMIT_PROMPT_STRICT, STORY_SUBMIT_TOOL_NAME, withStorySubmitAck } from './story-tool-submission.js'
+import { NO_FOREGROUND_TOOLS_PROMPT, normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { projectHistoryAsToolCalls } from './history-tool-call.js'
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
 import { inputKind } from './session-turn-input.js'
@@ -268,7 +269,7 @@ function presetFrontSections(snapshot) {
   // system-prompt variable scanner would reject any residual {{...}} as a malformed variable, so the
   // section must be non-interpolating to keep those macros verbatim instead of failing the turn.
   return entries.filter(entry => str(entry?.content).trim() !== '')
-    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content), interpolate: false }))
+    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content) }))
 }
 
 export function createNativePlayOrchestrationStrategy(options) {
@@ -307,13 +308,22 @@ export function createNativePlayOrchestrationStrategy(options) {
       }
       // Persist/migrate the fixed system snapshot before native request assembly.
       if (typeof options.ensureSessionPrefix === 'function') await options.ensureSessionPrefix(input)
+      // A replayed transcript calls a tool. Strict providers reject a call whose
+      // declaration is missing, so replay only when this turn offers submit_story;
+      // the per-game tool switch can still remove it after the global settings say on.
+      const historyWanted = typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false
+      const outputWanted = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
+      const submitVisible = typeof options.visibleTools !== 'function'
+        || (await options.visibleTools(sessionId)).includes(STORY_SUBMIT_TOOL_NAME)
+      const submitOffered = historyWanted && submitVisible
       stagedRequests.set(sessionId, {
         turn: Math.max(0, Number(payload.turn) || 0),
         step: Math.max(1, Number(payload.step) || 1),
         scope: 'foreground',
         snapshot: snapshot || null,
         // Resolved here because the request projection below is synchronous.
-        historyToolCall: typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false,
+        historyToolCall: submitOffered,
+        storyOutputToolCall: outputWanted && submitVisible,
         historyLayout: typeof options.historyLayout === 'function' ? String(await options.historyLayout() || 'story') : 'story'
       })
     }
@@ -401,6 +411,13 @@ export function createNativePlayOrchestrationStrategy(options) {
     }
     const labelled = labelPresetFront(request.messages, frontTexts.get(sessionId))
     if (labelled !== request.messages) request = Object.assign({}, request, { messages: labelled })
+    // A real assistant turn placed before the current player input, not after
+    // it: providers still see the player's message last, and the model reads its
+    // own submission commitment right before answering.
+    if (staged.storyOutputToolCall === true) {
+      const acknowledged = withStorySubmitAck(request.messages, staged.turn)
+      if (acknowledged !== request.messages) request = Object.assign({}, request, { messages: acknowledged })
+    }
     if (request === optionsValue) return null
     return markRequestHandled(request, PROJECTED)
   }
@@ -419,6 +436,8 @@ export function createNativePlayOrchestrationStrategy(options) {
   async function assembleSystemPrompt(assembly, input) {
     const mode = await options.modeFor(input.sessionId)
     const visible = new Set(await options.visibleTools(input.sessionId))
+    const playMode = mode === 'story' || mode === 'script'
+    const disabled = new Set(playMode ? normalizeDisabledForegroundTools(input.chat?.disabledForegroundTools) : [])
     // Play rules arrive in the foreground frame. Still replace the inherited
     // sections explicitly so removing play-mode cannot restore DSH's persona.
     const cardEdit = mode === 'card' && input.chat?.cardEditContext?.version === 1
@@ -437,17 +456,13 @@ export function createNativePlayOrchestrationStrategy(options) {
       const workspace = options.workspaceContext(input.cwd, input.workspaceProjection)
       if (workspace !== '') sections.push({ name: 'tavern:resource-workspace', text: workspace })
     }
-    if (mode === 'story' || mode === 'script') {
+    if (playMode) {
       const raw = await options.resolvePreset(input.chat)
       const front = presetFrontSections(resolveRuntimePresetMacros(raw, { charName: input.chat?.cardName, macroState: input.chat?.macroState }).snapshot)
       sections.unshift(...front)
       frontTexts.set(input.sessionId, front.map(section => section.text))
       renderedFronts.set(input.sessionId, createHash('sha256').update(JSON.stringify(front.map(section => section.text))).digest('hex'))
-      // The submission contract travels with the tool, not with the preset: it is
-      // appended after the front so turning the switch off restores the saved prompt.
-      if (visible.has(STORY_SUBMIT_TOOL_NAME)) sections.push({ name: 'tavern:story-tool-submission', text: STORY_SUBMIT_PROMPT })
     }
-    assembly.sections = sections
     if (Array.isArray(assembly.contexts)) assembly.contexts = assembly.contexts.filter(section => section.name !== 'approval:policy')
     // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
     const group = mode === 'card' ? 'card' : 'play'
@@ -456,6 +471,34 @@ export function createNativePlayOrchestrationStrategy(options) {
       const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
       return !modes || modes.includes(group)
     })
+    // Record the plugin/extra tools before applying the per-game switches: the
+    // settings panel must keep listing a tool the player has switched off.
+    if (playMode && typeof options.recordTools === 'function') {
+      try {
+        options.recordTools(input.sessionId, assembly.tools
+          .filter(schema => !options.controlledToolNames.has(schema.name))
+          .map(schema => ({ name: schema.name, description: String(schema.description || '') })))
+      } catch { /* the tool catalog must never fail the request */ }
+    }
+    if (playMode) assembly.tools = assembly.tools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name))
+    // The submission contract follows the tools that actually survived the
+    // per-game switches and the plugin scopes. When only input replay is on, the
+    // tool is declared for the history but the model must write prose directly.
+    // The strict wording is only true when submit_story is the single tool.
+    if (playMode) {
+      const toolNames = new Set(assembly.tools.map(schema => schema.name))
+      const outputToolCall = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
+      if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) {
+        if (outputToolCall) {
+          sections.push({ name: 'tavern:story-tool-submission', text: toolNames.size === 1 ? STORY_SUBMIT_PROMPT_STRICT : STORY_SUBMIT_PROMPT })
+        } else {
+          sections.push({ name: 'tavern:story-tool-submission', text: STORY_INPUT_ONLY_PROMPT })
+        }
+      } else if (toolNames.size === 0) {
+        sections.push({ name: 'tavern:no-foreground-tools', text: NO_FOREGROUND_TOOLS_PROMPT })
+      }
+    }
+    assembly.sections = sections
     return assembly
   }
 

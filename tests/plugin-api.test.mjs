@@ -1065,3 +1065,20 @@ test('插件数据：不跟某一局走，每个插件只读写自己的那一�
   await image.savePluginData({ data: null })
   assert.equal(await image.readPluginData(), null)
 })
+
+test('插件联网声明随卸载释放，不能覆盖原生工具或重复声明', { skip: !cordis }, async t => {
+  const h = await harness(t, { reservedToolNames: ['web_search'] })
+  let service
+  const fiber = await h.root.plugin({ name: 'network-plugin', inject: ['tavern'], apply(ctx) {
+    service = ctx.tavern
+    service.toolNetwork({ name: 'reference_lookup', capability: 'search' })
+  } })
+  await tick()
+  assert.equal(h.api.toolNetworkFor('reference_lookup'), 'search')
+  assert.throws(() => service.toolNetwork({ name: 'web_search' }), /自己的工具/)
+  assert.throws(() => service.toolNetwork({ name: 'reference_lookup' }), /已被声明/)
+  assert.throws(() => service.toolNetwork({ name: 'other', capability: 'anything' }), /search 或 fetch/)
+  await fiber.dispose()
+  await tick()
+  assert.equal(h.api.toolNetworkFor('reference_lookup'), undefined)
+})

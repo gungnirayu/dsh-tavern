@@ -244,7 +244,9 @@ export function createUserPluginInstaller({ dataRoot, fetchImpl = fetch, now = (
      * Compare that Release with the installed package.json version so the settings list can
      * say "已是最新" instead of offering an update that changes nothing.
      */
-    async checkUpdates() {
+    async checkUpdates({ fresh = false } = {}) {
+      // 手动点「检查更新」时跳过缓存，确实去 GitHub 看一眼。
+      if (fresh) releases.clear()
       let folders = []
       try { folders = (await readdir(paths.plugins, { withFileTypes: true })).filter(item => item.isDirectory() && !item.name.startsWith('.')).map(item => item.name).sort() } catch {}
       const checked = await Promise.all(folders.map(async folder => {

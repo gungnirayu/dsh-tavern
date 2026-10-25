@@ -383,7 +383,7 @@
 					} catch (error) { tavernErrorHub.report("编辑输入", error); }
 					finally { setEditBusy(false); }
 				}
-				const renderedImages = parts.images.length > 0 ? props.renderMessageImages({ images: parts.images, align: "end" }) : null;
+				const renderedImages = renderTavernMessageImages(props, parts.images, "end");
 				const extras = parts.rest.map(function (block, index) {
 					return React.createElement("div", { key: index, className: "dsh-tavern-user-extra" }, React.createElement(DshUi.JsonBlock, { label: typeof props.t === "function" ? props.t("message.extraBlock") : "附加内容", payload: block, truncatedLabel: function (total) { return "内容过长（共 " + String(total) + " 项）"; } }));
 				});
@@ -420,7 +420,7 @@
 			}
 			function tavernAssistantViewPaths(turn, eager = true) {
 				return ["mode", eager ? "tavernHelper" : "$helperAvailable",
-					"tavernRuntimePolicy", "tavernMvuRuntime", "statusBarPlacement"].map(field => [field]).concat([["$projectionTurn", String(turn)], ["$projectionLatestTurn", String(turn)]]);
+					"cardSave", "tavernRuntimePolicy", "tavernMvuRuntime", "statusBarPlacement"].map(field => [field]).concat([["$projectionTurn", String(turn)], ["$projectionLatestTurn", String(turn)]]);
 			}
 			function tavernReceiptViewPaths(turn, receipt, latest) {
 				const paths = [["$mvuReceiptTurn", String(turn)], ["$settlementOwner", String(turn)]];
@@ -505,7 +505,31 @@
 					return React.createElement("details", { key: index, className: "dsh-tavern-assistant-reasoning", open: live }, React.createElement("summary", null, live ? "思考中…" : "思考过程"), React.createElement("pre", null, String(block.text || "")));
 				}));
 			}
+			// Card-workbench replies a plugin asked to fold (tavernUi.registerReplyPresenter):
+			// the answer to a presented question is one line, and 展开 brings the original back.
+			// Decisions are cached per turn so a re-render does not call into plugins again;
+			// 展开 survives scrolling a message out of view, but not a page reload.
+			const tavernReplyFoldDecisions = new Map();
+			const tavernReplyFoldOpen = new Set();
+			function tavernReplyFoldFor(input) {
+				if (!input.turn || String(input.text || "").trim() === "") return null;
+				const key = input.sessionId + ":" + input.turn;
+				const cached = tavernReplyFoldDecisions.get(key);
+				// A presenter that was disposed (plugin disabled, fold switch off) must
+				// not keep its cached fold: recompute and unfold on the next render.
+				const stillRegistered = Boolean(cached) && tavernUiExtensions.replyPresenters().some(function (presenter) { return presenter.owner === cached.owner; });
+				if (cached && cached.text === input.text && stillRegistered) return cached;
+				if (cached && !stillRegistered) tavernReplyFoldDecisions.delete(key);
+				const found = tavernUiExtensions.presentReply(input);
+				if (!found) { tavernReplyFoldDecisions.delete(key); return null; }
+				const entry = { text: input.text, owner: found.owner, summary: found.fold.summary };
+				tavernReplyFoldDecisions.set(key, entry);
+				// A long conversation should not pin every old decision in memory.
+				if (tavernReplyFoldDecisions.size > 200) tavernReplyFoldDecisions.delete(tavernReplyFoldDecisions.keys().next().value);
+				return entry;
+			}
 			function TavernAssistantNodeView(props) {
+				useTavernUiExtensions();
 				const data = props.node.data;
                 const historyNode = React.useRef(null);
 				const turnRef = props.node.location.kind === "turn" || props.node.location.kind === "step" ? props.node.location.turn : null;
@@ -518,6 +542,7 @@
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));
 				const sessionTransitioning = React.useSyncExternalStore(tavernSessionTransition.subscribe, tavernSessionTransition.getSnapshot, tavernSessionTransition.getSnapshot);
 				const tail = props.useTurnData("turn-tail");
+				const [, setFoldRevision] = React.useState(0);
 				// DSH draws one node per step. A turn with tool calls has several steps, but its story,
 				// pictures and receipts belong to the turn: only the step that closes it shows them;
 				// earlier steps keep their own (usually empty) text (#222).
@@ -622,7 +647,7 @@
 						return settled && !sessionTransitioning && Number.isSafeInteger(messageId) && liveState.view?.tavernRuntimePolicy?.trustedCardMode
 							? { sessionId: props.sessionId, messageId: messageId } : null;
 					})(),
-					renderMessageImages: props.renderMessageImages,
+					renderMessageImages: function (images) { return renderTavernMessageImages(props, images && images.images, images && images.align); },
 					plugin: pluginText,
 					cast: cast,
 					mentions: mentions,
@@ -634,6 +659,29 @@
 				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
+				// A registered presenter may fold this finished reply into one line; only the step
+				// that closes the turn may, so earlier tool steps keep their own (usually empty) text.
+				const replyTextForFold = (Array.isArray(data.blocks) ? data.blocks : []).filter(function (block) { return block && block.kind === "text"; }).map(function (block) { return String(block.text || ""); }).join("\n");
+				const cardSave = liveState.view?.cardSave;
+				const replyChanged = Boolean(cardSave && Number(cardSave.turn) === turn && (cardSave.changed === true || cardSave.createsCard === true));
+				const fold = settled && ownsTurn && !sessionTransitioning
+					? tavernReplyFoldFor({ sessionId: props.sessionId, mode: String(liveState.view?.mode || ""), turn: turn, text: replyTextForFold, changed: replyChanged, streaming: false })
+					: null;
+				const foldKey = props.sessionId + ":" + turn;
+				const foldOpen = fold !== null && tavernReplyFoldOpen.has(foldKey);
+				if (fold !== null && !foldOpen) {
+					return React.createElement("button", {
+						type: "button", className: "dsh-tavern-assistant-fold", "aria-expanded": false, title: "展开这一轮的原文",
+						onClick: function () { tavernReplyFoldOpen.add(foldKey); setFoldRevision(function (value) { return value + 1; }); }
+					},
+						React.createElement("span", { className: "dsh-tavern-assistant-fold-paw", "aria-hidden": true }, "🐾"),
+						React.createElement("b", null, fold.summary),
+						React.createElement("span", { className: "dsh-tavern-assistant-fold-hint" }, "· 展开"));
+				}
+				const foldBack = foldOpen ? React.createElement("button", {
+					type: "button", className: "dsh-tavern-assistant-fold-back", "aria-expanded": true, title: "收起到一行",
+					onClick: function () { tavernReplyFoldOpen.delete(foldKey); setFoldRevision(function (value) { return value + 1; }); }
+				}, "🐾 收起") : null;
 				const mvuReceiptNode = settled && ownsTurn ? React.createElement(TavernTurnMvuReceipt, { sessionId: props.sessionId, turn: storyTurn }) : null;
 				const trailingIllustration = React.createElement(React.Fragment, null,
 					pluginText && pluginText.placed.has("scene-illustration") ? null : illustration,
@@ -665,7 +713,7 @@
 				})) : null;
 				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
-				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, trailingIllustration, pluginActions, mvuReceiptNode, inlineStatus);
+				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, trailingIllustration, pluginActions, mvuReceiptNode, inlineStatus);
 			}
 			function TavernForkAssistantAction(props) {
 				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["forkTurnsByMessageId", String(props.messageId || "")]]);

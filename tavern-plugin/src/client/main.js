@@ -400,6 +400,18 @@ window.__ModuleLoader__.load({
 		}
 
 		function rpc(method, args, sessionId, requestOptions) {
+			// While DSH restarts (after an update) it accepts requests a moment before Tavern's
+			// routes and auth are mounted: they answer 404/401/5xx without running the handler.
+			// Wait that window out instead of reporting it; a lasting failure still surfaces.
+			const RESTART_STATUSES = [401, 404, 502, 503, 504];
+			async function fetchThroughRestart(url, request) {
+				const deadline = Date.now() + 8000;
+				for (let delay = 250; ; delay = Math.min(delay * 2, 2000)) {
+					const response = await fetch(url, request);
+					if (!RESTART_STATUSES.includes(response.status) || Date.now() + delay > deadline || request.signal?.aborted) return response;
+					await new Promise(function (resolve) { window.setTimeout(resolve, delay); });
+				}
+			}
 			const runtimeControl = ["claimTavernScriptWork", "startTavernScriptWork", "getTavernScriptWorkState", "heartbeatTavernScriptRuntime", "completeTavernHelperEvent", "releaseTavernHelperRuntime"].includes(method);
 			const controlChannel = runtimeControl && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
 			const started = Date.now();
@@ -437,7 +449,7 @@ window.__ModuleLoader__.load({
 			if (requestOptions && requestOptions.keepalive === true) request.keepalive = true;
 			const responsePromise = controlChannel
 				? Promise.resolve().then(() => controlChannel.control(method, JSON.parse(requestBody), requestOptions && requestOptions.signal))
-				: fetch("/api/dsh-tavern/" + method, request).then(async function (response) {
+				: fetchThroughRestart("/api/dsh-tavern/" + method, request).then(async function (response) {
                 if (trace) trace.headersMs = Math.round(performance.now() - clockStart);
                 const result = await readTavernJsonResponse(response, trace ? body => { trace.bodyChars = body.length; } : undefined);
                 if (trace) {
@@ -821,13 +833,30 @@ window.__ModuleLoader__.load({
 
 // @include features/plugin-extensions.js
 
+// @include features/reply-observer.js
+
 // @include features/speech.js
 
 // @include features/music.js
 
 // @include features/cast-presentation.js
 
-// @include features/cast-stage.js
+// @include-domain cast-stage-state.js
+// @include-domain stage-performance-playback.js
+// @include-domain stage-skin.js
+// @include-domain stage-entrance.js
+// @include features/stage-skin.js
+// @include modules/stage-runtime.js
+// @include features/stage-entrance.js
+// @include features/stage-runtime.js
+// @include features/stage-assets.js
+// @include features/stage-skins.js
+// @include features/stage-mode.js
+// @include features/stage-settings.js
+// @include modules/stage-music.js
+// @include modules/stage-sfx.js
+// @include modules/stage-bgm.js
+// @include features/stage-bgm.js
 
 // @include ui/message-frame.js
 
@@ -839,6 +868,7 @@ window.__ModuleLoader__.load({
 // @include features/sidebar.js
 
 // @include features/scene-images.js
+// @include modules/view-tabs.js
 // @include features/settings.js
 
 // @include features/text-layout.js
@@ -849,6 +879,7 @@ window.__ModuleLoader__.load({
 // @include features/regex-library.js
 
 // @include features/system-prompts.js
+// @include features/card-personas.js
 
 // @include features/resources-library.js
 
@@ -878,6 +909,7 @@ window.__ModuleLoader__.load({
 // @include features/play-controls.js
 
 // @include features/request-context.js
+// @include features/polish-compare.js
 
 
 		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "betterSidebar", "remote", "remote.commands", "tavernSessionSignals", "theme"];
@@ -900,6 +932,19 @@ window.__ModuleLoader__.load({
                 name: "conversation.view", id: "dsh-tavern:gallery", order: 12,
                 label: "画廊", inject: sessionId => ({ gallerySessionId: sessionId })
             }, SceneImageGallery)), "dsh-tavern: picture gallery");
+            ctx.effect(() => slots.inject("conversation.view", () => slots.register({
+                name: "conversation.view", id: "dsh-tavern:polish", order: 13,
+                label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
+            }, PolishComparisonView)), "dsh-tavern: polish comparison");
+            // 顶部标签（对话/轨迹/完整上下文/画廊/精修对比）的设置：设置页读这份
+            // 目录，标签行由 installTavernViewTabLayout 按保存的顺序显示或隐藏。
+            ctx.effect(function () {
+                const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };
+                const dispose = typeof slots.subscribe === "function" ? slots.subscribe("conversation.view", publish) : function () { };
+                publish();
+                return dispose;
+            }, "dsh-tavern: view tab catalog");
+            ctx.effect(function () { return installTavernViewTabLayout({ document: document, slots: slots }); }, "dsh-tavern: view tab layout");
 			// Public browser API for third-party plugins (docs/plugin-api.md).
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
@@ -907,6 +952,8 @@ window.__ModuleLoader__.load({
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
+			ctx.effect(() => tavernStageRuntime.start(ctx.sessions), "dsh-tavern: session-owned stage runtime");
+			ctx.effect(() => startTavernBgm(ctx.sessions), "dsh-tavern: BGM player");
 			ctx.effect(function () { return function () { if (tavernSessionSignals === signals) tavernSessionSignals = undefined; }; }, "dsh-tavern: remote session signals");
 			ctx.effect(function () { return tavernRuntimeGenerationMonitor.start(); }, "dsh-tavern: runtime generation monitor");
 			function reconcileLibraryTabTitles() {
@@ -1030,6 +1077,7 @@ window.__ModuleLoader__.load({
 			registerTavernStartPage(ctx, slots);
 			playControlsFeature.register({ ctx: ctx, slots: slots });
 			assistantRendererFeature.register({ ctx: ctx, slots: slots });
+			tavernReplyObserverFeature.register({ ctx: ctx, slots: slots });
 			ctx.effect(function () {
 				return slots.inject("conversation.input.right", function () { return slots.register({
 					name: "conversation.input.right",

@@ -21,7 +21,7 @@ export function createPluginHandlers(deps) {
       return listLegacyPlugins(userPluginPaths(dataRoot).profile)
     },
     async checkUserPluginUpdates(args) {
-      return { plugins: await userPluginInstaller.checkUpdates() }
+      return { plugins: await userPluginInstaller.checkUpdates({ fresh: args && args.fresh === true }) }
     },
     async enableUserPlugin(args) {
       return { plugin: await userPluginInstaller.enable(args && args.folder) }

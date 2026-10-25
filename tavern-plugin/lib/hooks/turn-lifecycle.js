@@ -3,11 +3,13 @@ import { inputEventForTurn } from '../domain/session-turn-input.js'
 import { roundAnchor } from '../domain/round-anchor.js'
 import { inputAttachments } from '../domain/player-input-content.js'
 import { prependSystemInstruction } from '../domain/system-append.js'
+import { markTavernSectionsLiteral } from '../domain/literal-sections.js'
 import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/session-stable-prefix.js'
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 import { turnRepliedByModel } from '../domain/story-alignment.js'
 import { sessionEvents } from '../domain/session-events.js'
+import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
 export function registerTurnLifecycleHooks({
   reconcileWhenIdle,
@@ -29,6 +31,7 @@ export function registerTurnLifecycleHooks({
   requestIdForTurn,
   runtimePrompt,
   sessionStore,
+  storyOutputToolCall,
   turnOrchestrator,
   userMessageForTurn,
 }) {
@@ -119,6 +122,10 @@ export function registerTurnLifecycleHooks({
       const extra = await pluginPromptSections({ gameId: agent.session.id })
       if (extra.length) assembled.sections = [...(assembled.sections || []), ...extra]
     }
-    return prependSystemInstruction(assembled, chat ? runtimePrompt('system-append') : '')
+    // The final reminder goes after those sections, so their length cannot bury
+    // the one contract that must be the last thing the model reads.
+    const hasSubmission = (assembled.sections || []).some(section => section.name === 'tavern:story-tool-submission')
+    const outputToolCall = hasSubmission && typeof storyOutputToolCall === 'function' ? (await storyOutputToolCall()) === true : false
+    return markTavernSectionsLiteral(prependSystemInstruction(appendStorySubmissionReminder(assembled, outputToolCall), chat ? runtimePrompt('system-append') : ''))
   })
 }

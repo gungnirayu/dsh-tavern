@@ -3,7 +3,7 @@
 export function createMediaHandlers(deps) {
   const { backgroundConfigForSession, castAssets, castCardOf, castEdit, castPresentation, castStage,
     castView, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns, removePluginGalleryItems,
-    removePluginMediaVersion, sceneIllustrations, speakLine, speech, speechReply, str } = deps
+    removePluginMediaVersion, sceneIllustrations, speakLine, prepareVoices, speech, speechReply, stageMusicTracks, str } = deps
   return {
     async pluginMediaForTurn(args) {
       return await pluginMediaForTurn(args && args.sessionId, args && args.turn)
@@ -21,6 +21,10 @@ export function createMediaHandlers(deps) {
     async castStage(args) {
       return await castStage(args && args.sessionId, args && args.count)
     },
+    // The BGM player's list for its game (manual picks).
+    async getStageMusicTracks(args) {
+      return await stageMusicTracks(str(args && args.sessionId))
+    },
     async castSetImage(args) {
       return await castEdit(args && args.sessionId, cardPath => castAssets.setImage({ cardPath, name: args.name, slot: args.slot, bytes: Buffer.from(str(args.data), 'base64') }))
     },
@@ -33,6 +37,17 @@ export function createMediaHandlers(deps) {
     async castSetVoice(args) {
       return await castEdit(args && args.sessionId, cardPath => castAssets.setVoice({ cardPath, name: args.name, provider: args.provider, voice: args.voice }))
     },
+    // A character's reference clips (audio + what it says) for channels that take them inline (cast-presentation.md 22/N).
+    async castAddVoiceReference(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.addVoiceReference({ cardPath, name: args.name, text: args.text, bytes: Buffer.from(str(args.data), 'base64') }))
+    },
+    async castRemoveVoiceReference(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.removeVoiceReference({ cardPath, name: args.name, file: str(args.file) }))
+    },
+    // A character's 配音来源: one configured channel, or its clone of the character's clips; '' is the channel in use.
+    async castSetVoiceSource(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.setVoiceSource({ cardPath, name: args.name, provider: args.provider, clone: args.clone === true }))
+    },
     async getSpeechSettings(args) {
       return await speech.present()
     },
@@ -44,6 +59,13 @@ export function createMediaHandlers(deps) {
     },
     async speechForLine(args) {
       return await speakLine(args && args.sessionId, args || {})
+    },
+    // A channel's own model list (Fish /v1/info) for 配音 › 模型.
+    async speechServiceInfo(args) {
+      return await speech.serviceInfo({ provider: args && args.provider })
+    },
+    async speechPrepare(args) {
+      return await prepareVoices(args && args.sessionId)
     },
     async castRemoveCharacter(args) {
       return await castEdit(args && args.sessionId, cardPath => castAssets.removeCharacter({ cardPath, name: args.name }))
