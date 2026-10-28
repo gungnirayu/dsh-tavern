@@ -106,3 +106,53 @@ test('联网资料保存源顺序与网页开关，测试显式触发，失败�
   assert.equal(await page.getByLabel('SearXNG 实例地址', { exact: true }).inputValue(), 'https://search.example')
   assert.equal(config.searxngUrl, '')
 })
+
+test('自动生成候选项在「剧情」里，挨着上下文压缩，默认关闭；开关只保存自己，失败保留原值', async t => {
+  const backend = fixture()
+  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
+  const group = page.getByRole('region', { name: '剧情', exact: true })
+  const toggle = group.getByRole('switch', { name: '自动生成候选项', exact: true })
+  await toggle.waitFor()
+  assert.equal(await group.getByRole('heading', { name: '上下文压缩', exact: true }).count(), 1)
+  assert.equal(await page.getByRole('region', { name: '显示与交互', exact: true }).getByRole('switch', { name: '自动生成候选项' }).count(), 0)
+  assert.match(await group.locator('.dsh-tavern-settings-row').filter({ hasText: '自动生成候选项' }).innerText(), /每轮会多一次后台请求/)
+  assert.equal(await toggle.isChecked(), false)
+  await toggle.click()
+  await group.getByText('已保存，所有游戏下一轮生效', { exact: true }).waitFor()
+  assert.equal(await toggle.isChecked(), true)
+  assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { candidateAutoGenerate: true })
+  backend.setFail(true)
+  await toggle.click()
+  await group.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
+  assert.equal(await toggle.isChecked(), true)
+})
+test('手机宽度下默认模型各行不撑破卡片，第二个下拉留在卡片内', async t => {
+  // 长模型名决定下拉的 min-content；短名字不会触发溢出，所以这里必须用长标识符。
+  const settings = { defaultForegroundModel: null, defaultBackgroundModel: { provider: 'deepseek', model: 'deepseek-v4.1-flash-thinking-preview' },
+    defaultWorkbenchModel: null, defaultPlaySettings: { playerName: '你', statusBarPlacement: 'sidebar', backgroundTasks: { variables: true, posture: true }, webSearchEnabled: false } }
+  const { page } = await openTavernSettings(t, { respond(method) {
+    if (method === 'getTavernSettings') return { settings, modelCatalog: [{ provider: 'deepseek', providerName: 'DeepSeek',
+      models: [{ id: 'deepseek-v4.1-flash-thinking-preview', name: 'deepseek/deepseek-v4.1-flash-thinking-preview' }] }], releaseCapabilities: {} }
+    if (method === 'getBackgroundModelReasoning') return { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }
+    if (method === 'updateTavernSettings') return { settings }
+  } })
+  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
+  for (const width of [360, 390, 412, 430]) {
+    await page.setViewportSize({ width, height: 1200 })
+    const layout = await page.evaluate(() => {
+      const right = document.querySelector('.dsh-tavern-gs-card').getBoundingClientRect().right
+      return {
+        pageOverflow: document.documentElement.scrollWidth > innerWidth,
+        rows: [...document.querySelectorAll('.dsh-tavern-model-row')].map(row => ({
+          outside: [...row.querySelectorAll('select')].filter(select => select.getBoundingClientRect().right > right + 0.5).length,
+          widths: [...row.querySelectorAll('select')].map(select => Math.round(select.getBoundingClientRect().width))
+        }))
+      }
+    })
+    assert.equal(layout.pageOverflow, false, `${width}: 设置页不产生横向滚动`)
+    for (const [index, row] of layout.rows.entries()) {
+      assert.equal(row.outside, 0, `${width}: 第 ${index + 1} 个模型行的下拉不越出卡片`)
+      assert.ok(row.widths.every(value => value > 80), `${width}: 第 ${index + 1} 个模型行的下拉仍有可用宽度 ${row.widths}`)
+    }
+  }
+})

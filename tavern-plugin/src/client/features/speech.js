@@ -25,9 +25,14 @@
 		}
 
 		// One line at a time: a new line stops the one being said. speak resolves true when it was heard to the end.
+		// tune({ level, rate }): the stage CONFIG's 配音 × 总音量 (0..1, features/stage-audio.js) and 配音倍速 (pitch kept,
+		// features/stage-runtime.js); the line being heard follows at once, the system's speech from its next line.
+		// watch(fn): fn(true) when a line starts to be heard, fn(false) when it ends or is stopped (the stage's 避让).
 		const tavernSpeech = (function () {
-			let current = null;
-			function stop() { const playing = current; current = null; if (playing) playing.cancel(); }
+			let current = null, level = 1, rate = 1, heard = false;
+			const watchers = new Set();
+			function hear(on) { if (heard === on) return; heard = on; watchers.forEach(function (fn) { fn(on); }); }
+			function stop() { const playing = current; current = null; if (playing) playing.cancel(); hear(false); }
 			function browser(reply, playing) {
 				return new Promise(function (resolve) {
 					const synth = window.speechSynthesis;
@@ -36,6 +41,8 @@
 					const voices = tavernBrowserVoices();
 					const voice = voices.find(function (item) { return item.name === reply.voice; }) || (!reply.voice ? voices.find(function (item) { return /^zh/i.test(item.lang); }) : null);
 					if (voice) { utterance.voice = voice; utterance.lang = voice.lang; } else utterance.lang = "zh-CN";
+					utterance.volume = level; utterance.rate = rate;
+					utterance.onstart = function () { if (current === playing) hear(true); };
 					utterance.onend = function () { resolve(true); };
 					utterance.onerror = function () { resolve(false); };
 					playing.cancel = function () { synth.cancel(); resolve(false); };
@@ -46,6 +53,9 @@
 			function audio(reply, playing) {
 				return new Promise(function (resolve) {
 					const element = new Audio(reply.url);
+					element.volume = level; element.preservesPitch = true; element.playbackRate = rate;
+					playing.element = element;
+					element.onplaying = function () { if (current === playing) hear(true); };
 					element.onended = function () { resolve(true); };
 					element.onerror = function () { resolve(false); };
 					playing.cancel = function () { element.pause(); resolve(false); };
@@ -59,7 +69,7 @@
 				const playing = { cancel: function () {} };
 				current = playing;
 				const done = reply.browser ? browser(reply, playing) : audio(reply, playing);
-				return done.finally(function () { if (current === playing) current = null; });
+				return done.finally(function () { if (current === playing) { current = null; hear(false); } });
 			}
 			async function speak(input) {
 				stop();
@@ -78,7 +88,19 @@
 				if (playing.stopped || current !== playing) return false;
 				return play(reply);
 			}
-			return { speak: speak, play: play, stop: stop };
+			function tune(next) {
+				if (next.level !== undefined) level = next.level;
+				if (next.rate !== undefined) rate = next.rate;
+				const element = current && current.element;
+				if (element) { element.volume = level; element.playbackRate = rate; }
+			}
+			// The share of the line heard so far (0..1), or null when it cannot be known (system speech, still loading).
+			function progress() {
+				const element = current && current.element;
+				return element && element.duration > 0 && Number.isFinite(element.duration) ? element.currentTime / element.duration : null;
+			}
+			function watch(fn) { watchers.add(fn); return function () { watchers.delete(fn); }; }
+			return { speak: speak, play: play, stop: stop, tune: tune, progress: progress, watch: watch };
 		})();
 
 		/** A small speaker button that says one line; a second press stops it. */
@@ -220,7 +242,17 @@
 			return { active: active, source: source, channel: channel, clone: Boolean(source && source.clone) };
 		}
 
-		/** A character's 配音来源 and its voice on that channel, in the character material list; 🔊 says a line with them. */
+		// A character's 配音语言 (33/N): one that is not 中文 has the story model write each of their lines once more in it, for
+		// the voice. The control shows effectiveVoiceLanguage (unset is 中文) and choosing 中文 stores '', so unset and 中文 are one state.
+		// 「其他语言…」 takes any BCP 47 code, checked once when it is saved; a code a card brought that is not listed stays as its code.
+		const TAVERN_VOICE_LANGUAGES = [["ja", "日语"], ["zh", "中文"], ["en", "英语"], ["ko", "韩语"], ["yue", "粤语"]];
+		const TAVERN_VOICE_LANGUAGE_OTHER = "*other";
+		function tavernVoiceLanguageOptions(value) {
+			const listed = TAVERN_VOICE_LANGUAGES.some(function (item) { return item[0] === value; }) ? TAVERN_VOICE_LANGUAGES : TAVERN_VOICE_LANGUAGES.concat([[value, value]]);
+			return listed.concat([[TAVERN_VOICE_LANGUAGE_OTHER, "其他语言…"]]);
+		}
+
+		/** A character's 配音来源, 配音语言 and its voice on that channel, in the character material list; 🔊 says a line with them. */
 		function TavernCastVoiceField(props) {
 			const h = React.createElement;
 			const settings = useTavernSpeechSettings();
@@ -229,13 +261,22 @@
 			const saved = provider && props.character && props.character.voices ? props.character.voices[provider.id] || "" : "";
 			const [value, setValue] = React.useState(saved);
 			React.useEffect(function () { setValue(saved); }, [saved, provider && provider.id]);
+			const [other, setOther] = React.useState(false);
 			if (!route.active) return null;
+			const language = effectiveVoiceLanguage(props.character && props.character.voiceLanguage);
+			function pickLanguage(code) { setOther(false); if (code && code !== language) props.onLanguage(code === "zh" ? "" : code); }
 			const listId = provider ? "dsh-tavern-cast-voices-" + provider.id.replace(/[^a-z0-9]/gi, "-") : "";
 			function commit() { if (value.trim() !== saved) props.onSave(provider.id, value.trim()); }
 			return h("span", { className: "dsh-tavern-cast-voice" },
 				h("select", { value: tavernVoiceSourceValue(route.source), disabled: props.busy, "aria-label": props.name + " 的配音来源",
 					onChange: function (event) { const parts = event.target.value.split("#"); props.onSource(parts[0], parts[1] === "clone"); } },
 					tavernVoiceSourceOptions(settings, route.active, route.source).map(function (option) { return h("option", { key: option.value, value: option.value }, option.label); })),
+				h("select", { value: other ? TAVERN_VOICE_LANGUAGE_OTHER : language, disabled: props.busy, "aria-label": props.name + " 的配音语言", title: "不是中文时，AI 会为这个角色额外写一句这门语言的台词用来配音，画面上仍显示中文。",
+					onChange: function (event) { if (event.target.value === TAVERN_VOICE_LANGUAGE_OTHER) setOther(true); else pickLanguage(event.target.value); } },
+					tavernVoiceLanguageOptions(language).map(function (item) { return h("option", { key: item[0], value: item[0] }, "配音语言：" + item[1]); })),
+				other ? h("input", { autoFocus: true, disabled: props.busy, maxLength: 35, placeholder: "例：de-DE", "aria-label": props.name + " 的其他配音语言代码",
+					onBlur: function (event) { pickLanguage(event.target.value.trim()); },
+					onKeyDown: function (event) { if (event.key === "Enter") pickLanguage(event.target.value.trim()); else if (event.key === "Escape") setOther(false); } }) : null,
 				provider ? h("input", { value: value, list: listId, disabled: props.busy, placeholder: provider.voice || "默认声音", "aria-label": props.name + " 的声音",
 					onChange: function (event) { setValue(event.target.value); }, onBlur: commit, onKeyDown: function (event) { if (event.key === "Enter") commit(); } }) : null,
 				provider ? h(TavernVoiceOptions, { id: listId, provider: provider }) : null,
