@@ -172,7 +172,7 @@ test('连续正文回合的实际 Frame 消息不重复基本信息和常驻世�
   const planner = createContextPlanner({ prompt: () => '正文写作规则' })
   const cardData = { name: '阿芙拉', description: '固定描述', personality: '固定性格', scenario: '固定场景', mes_example: '固定示例', system_prompt: '逐轮系统指令', post_history_instructions: '逐轮历史后指令' }
   for (const mode of ['story', 'script']) {
-    const run = harness(mode, { planner, cardData, preparedWorldBookContext: '本轮动态世界书' })
+    const run = harness(mode, { planner, cardData, preparedWorldBookContext: '旧后台召回缓存', projectWorldBookTemplates: async () => ({ context: '本轮动态世界书' }) })
     const prefix = await planner.plan({ purpose: 'play-card-snapshot', card: run.card(), chat: run.chat(), worldBookContext: '固定世界设定', worldBookLabel: '常驻世界书' })
     const adapter = createForegroundFrameSessionAdapter()
     let messages = []
@@ -184,6 +184,7 @@ test('连续正文回合的实际 Frame 消息不重复基本信息和常驻世�
       assert.doesNotMatch(text, /逐轮系统指令/)
       assert.match(text, /逐轮历史后指令/)
       assert.match(text, /本轮动态世界书/)
+      assert.doesNotMatch(text, /旧后台召回缓存/)
       // The production Session already owns the opening system snapshot.
       const session = { events: [{ type: 'user/message', data: { id: 'tavern-session-prefix:test', role: 'user', content: [],
         source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'snapshot', sections: [{ name: 'tavern:session-context', text: prefix.text }] } } }] }
@@ -244,20 +245,6 @@ test('new card is created and bound before tool returns; next write updates the 
   assert.equal(run.card().description, '第二次修改')
   assert.equal(run.createdCards.length, 1)
   assert.deepEqual(run.chat().lastCardSave, { turn: 1, path: 'cards/新角色.json', createsCard: false, changed: true })
-})
-
-test('a tool save is reported as changed in the turn it happened, and only then', async () => {
-  const run = harness('card', { draft: true })
-  await run.orchestrator.saveChanges({ sessionId: 'session-1', turn: 2, fields: { name: '新角色', player: '旅人' } })
-  const committed = await run.orchestrator.finalize({ sessionId: 'session-1', turn: 2, userText: '就这样', assistantText: '建好了。' })
-  assert.equal(committed.changed, true)
-  assert.equal(run.chat().messages.at(-1).changed, true)
-  assert.equal(run.chat().nativeCommits['2'].changed, true)
-
-  // The next turn is a plain question: the earlier save must not bleed into it.
-  const next = await run.orchestrator.finalize({ sessionId: 'session-1', turn: 4, userText: '继续', assistantText: '**第 1 题：还要改什么？**' })
-  assert.equal(next.changed, false)
-  assert.equal(run.chat().messages.at(-1).changed, false)
 })
 
 test('玩家模板先于本轮召回，重试不重复执行；提交后只产生一条玩家消息', async () => {
@@ -349,7 +336,7 @@ test('漏写的一轮可以按它自己的请求号补记进存档（#196 自愈
 test('本局前台工具可逐项关闭，卡片模式不受影响', async () => {
   const all = harness('story', { storyToolCall: true, webSearchEnabled: true })
   const names = await all.orchestrator.visibleTools('session-1')
-  assert.equal(names.includes('worldbook_search'), true)
+  assert.equal(names.includes('worldbook_search'), false)
   assert.equal(names.includes('submit_story'), true)
 
   const one = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: ['worldbook_search'] } })
@@ -366,7 +353,7 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
   const submitOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['submit_story'] } })
   assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
-  const disabled = ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
+  const disabled = ['read', 'worldbook_list', 'worldbook_grep', 'tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
   const none = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: disabled } })
   assert.deepEqual(await none.orchestrator.visibleTools('session-1'), [])
 

@@ -6,7 +6,7 @@ import { projectAgentContent, projectOpeningCommit } from './runtime-content-pro
 import { OFFICIAL_MVU_VERSION } from './official-mvu-assets.js'
 import { createScriptContinuity } from './script-continuity.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
-import { normalizeBackgroundTasks, normalizePlayDefaults } from './tavern-settings.js'
+import { normalizeConfiguredBackgroundTasks, normalizePlayDefaults } from './tavern-settings.js'
 import { ensureSessionSeedTrajectory } from './session-seed-trajectory.js'
 import { defaultUserPreferenceProfile } from './user-preference-profile.js'
 import { replyProse } from './reply-prose.js'
@@ -171,12 +171,12 @@ export function createConversationInitialization(options) {
     chat.userProfileId = profile?.profileId || 'default'
     chat.userProfileEnabled = profile?.hasConfirmed === true && profile.defaultEnabled === true
     chat.webSearchEnabled = groupOfMode(chat.mode) === 'play' && defaults.webSearchEnabled
-    chat.statusBarPlacement = defaults.statusBarPlacement
+    if (groupOfMode(chat.mode) === 'play') chat.worldbookStrategy = defaults.worldbookStrategy
     chat.conversationFeaturesVersion = 1
     chat.backgroundModelSelection = groupOfMode(chat.mode) === 'play' ? normalizeBackgroundModel(currentSettings.defaultBackgroundModel) : null
     chat.disabledWritingSkills = groupOfMode(chat.mode) === 'play' ? [...(currentSettings.defaultDisabledWritingSkills || [])] : []
     chat.backgroundConfigVersion = 1
-    chat.backgroundTasks = normalizeBackgroundTasks(groupOfMode(chat.mode) === 'play' ? defaults.backgroundTasks : {})
+    chat.backgroundTasks = normalizeConfiguredBackgroundTasks(groupOfMode(chat.mode) === 'play' ? defaults.backgroundTasks : {})
     chat.mvu = usesMvu ? {
       enabled: true,
       owner: 'official',

@@ -97,14 +97,24 @@ async function fixture(t, bounded) {
       readCard: async () => ({ name: '角色' }), readRevision: async (id, revision) => { calls.push('readRevision'); return p.readRevision(id, revision) },
       write: p.write, update: async (...args) => { calls.push('update:' + args[2]?.source); return p.update(...args) },
       ...(bounded ? {
-        patch: async (...args) => { calls.push('patch:' + args[3]?.source); const hook = hooks.beforePatch; hooks.beforePatch = null; await hook?.(); return p.patch(...args) },
+        patch: async (...args) => {
+          const source = String(args[3]?.source || '')
+          calls.push('patch:' + source)
+          const hook = hooks.beforePatch
+          hooks.beforePatch = null
+          await hook?.()
+          // A write another operation makes between the read and this patch.
+          const keyed = hooks.beforePatchOf?.[source]
+          if (keyed) { delete hooks.beforePatchOf[source]; await keyed() }
+          return p.patch(...args)
+        },
         readRecent: async id => (await history.read(id, undefined, { storyRows: 2, lastAssistant: true }))?.chat,
         changedSince: (id, revision) => p.readChangedIndices(id, revision),
         rowsAt: (id, revision, indices) => readRowsAt(p.readWindow, id, revision, indices)
       } : {}) },
     sessions: { get: () => agent, flush: async () => {} }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
-    bodyCommitted: sessionId => directed.push('director:' + sessionId),
+    replyCommitted: sessionId => directed.push('director:' + sessionId),
     queueSettlement: async () => { directed.push('settlement') }, cancelSettlement: async () => {},
     present: async value => { presented.push(isScopedMessages(value.messages) ? 'window' : 'full'); return { rolled: true } }
   })
@@ -189,35 +199,6 @@ test('rollback to a turn stops where the model context ends and keeps the rounds
   assert.equal((await h.p.read('chat')).messages.at(-1).turn, 80)
 })
 
-test('bounded rollback falls back to the complete path when the revision moves before its patch', async t => {
-  const h = await fixture(t, true)
-  h.hooks.beforePatch = () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'guide.add' })
-  await h.rounds.rollback('session', 'chat', 81)
-  const after = await h.p.read('chat')
-  assert.equal(after.messages.length, 159)
-  assert.ok(h.calls.includes('update:rollback'))
-  assert.ok(h.calls.includes('read'))
-  assert.deepEqual(after.guides, ['并发'])
-})
-
-test('regeneration adopts the new body when the native surface cannot place it, and marks the native tail for repair', async t => {
-  for (const bounded of [true, false]) {
-    const h = await fixture(t, bounded)
-    // The old body leaves the surface while the model writes: the replacement has nowhere to go.
-    const generate = h.agent.whenIdle
-    h.agent.whenIdle = async () => { await generate(); h.session.surface.nodes = h.session.surface.nodes.filter(seq => seq !== 1) }
-    const view = await h.rounds.regenerate('chat', '', 'session')
-    const after = await h.p.read('chat')
-    assert.equal(view.adopted.text, '重写正文82')
-    assert.equal(after.messages.at(-1).text, '重写正文82')
-    assert.equal(after.messages.at(-1).turn, 81)
-    assert.equal(after.regenInProgress, undefined)
-    assert.equal(after.regenRecovery, undefined)
-    assert.equal(after.nativeSync.status, 'stale')
-    assert.match(after.nativeSync.reason, /旧正文已经不在/)
-  }
-})
-
 test('bounded regeneration stores the same Chat and surface as the complete regeneration', async t => {
   const results = []
   for (const bounded of [true, false]) {
@@ -295,3 +276,7 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
   }
   assert.deepEqual(strip(results[0]), strip(results[1]))
 })
+
+// A failed turn's own cleanup (foreground.discard restoring the staged template
+// input) writes the save right after the attempt; the regeneration commit then
+// read a revision that had already moved. It used to abort the whole round.

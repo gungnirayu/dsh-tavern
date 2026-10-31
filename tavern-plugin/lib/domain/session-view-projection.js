@@ -137,7 +137,7 @@ export function createSessionViewProjection({
       cardUpdate,
       // The automatic card reload, shown until the next turn.
       cardAutoReload: chat.cardAutoReload && Number(chat.cardAutoReload.turn) === latestStoryTurn ? { at: chat.cardAutoReload.at } : null,
-      statusBarPlacement: chat.statusBarPlacement === 'body' ? 'body' : 'sidebar',
+      statusBarPlacement: runtimeSettings.defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar',
       posture: chat.posture || '',
       postureEnabled: chat.backgroundTasks?.posture !== false,
       styleReference: latestStyleReference(chat),
@@ -165,6 +165,8 @@ export function createSessionViewProjection({
       // tavernStatusView duplicated tavernStatusViews[0] in every read; clients use the list.
       tavernStatusViews: replyDisplay.statusViews || [],
       mvuReceipts: mvuReceiptsOf(chat),
+      // Replies 自动精修 reworded (body.polish), by turn, for the mark beside their receipt.
+      autoPolishedTurns: (Array.isArray(chat.messages) ? chat.messages : []).filter(message => message?.role === 'assistant' && message.polishedFrom).map(message => Number(message.turn) || 0),
       tavernHelper: helperContext ? { ...helperContext, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost: sessionOpeningDescriptor(chat, card), worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: applyRegexOverrides(activePresetSnapshot?.regexScripts || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), character: cardExtensions.characterRegexScripts || [] } } : null,
       tavernMvuRuntime: chat.mvu && chat.mvu.enabled === true ? {
         owner: chat.mvu.owner === 'official' ? 'official' : 'legacy',
@@ -341,7 +343,7 @@ export function createSessionViewProjection({
     }
     return [...turns].filter(turn => turn > 0).sort((left, right) => left - right)
   }
-  // The row plan (docs/design/transcript-row-plan.md) over what the view holds — the
+  // The row plan (Wiki「设计：transcript-row-plan」) over what the view holds — the
   // window of floors, or the whole short history — and the log since its first round, as
   // turn-keyed exceptions. The page shows exactly the rows it plans. The log grows every
   // turn without a save change, so every projection, cached or not, plans again; the cost
@@ -355,9 +357,9 @@ export function createSessionViewProjection({
       regeneration: { replacing, inProgress: chat.regenInProgress === true }, keepInput })
     return { transcriptTurns: plan.turns, transcriptFrom: plan.from }
   }
-  function volatileSessionViewFields(chat, activity, changes) {
+  async function volatileSessionViewFields(chat, activity, changes) {
     const fields = sessionStateView.volatile(chat, activity, changes)
-    return { ...fields, forkTurnsByMessageId: forkTurnsForChat(chat), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat),
+    return { ...fields, statusBarPlacement: (await readTavernSettings()).defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar', forkTurnsByMessageId: forkTurnsForChat(chat), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat),
       cardSave: cardSaveViewOf(chat),
       ...transcriptPlanFields(chat, sessionDebugEvidence(chat.sessionId), fields.replacingDshTurns, fields.keptInputTurns) }
   }
@@ -374,7 +376,7 @@ export function createSessionViewProjection({
 
   async function projectCachedSessionView(chat, previous, activity) {
     const mode = chat.mode || 'story'
-    const reused = Object.assign({}, previous, volatileSessionViewFields(chat, activity, {baseRevision:chat._storageRevision,indices:[],layoutChanged:false}))
+    const reused = Object.assign({}, previous, await volatileSessionViewFields(chat, activity, {baseRevision:chat._storageRevision,indices:[],layoutChanged:false}))
     if (mode === 'script') reused.scriptProgress = await scriptProgressOf(chat)
     return reused
   }
@@ -392,7 +394,7 @@ export function createSessionViewProjection({
     const mode = chat.mode || 'story'
     const previousMessages = previous.tavernHelper.messages
     const changes = {baseRevision:previous.tavernHelper.stateRevision,indices:[...dirtyMessageIndices],layoutChanged,changedHeaderFields}
-    const next = Object.assign({}, previous, volatileSessionViewFields(chat, activity, changes), {
+    const next = Object.assign({}, previous, await volatileSessionViewFields(chat, activity, changes), {
       posture: chat.posture || '',
       postureEnabled: chat.backgroundTasks?.posture !== false,
       styleReference: latestStyleReference(chat),
